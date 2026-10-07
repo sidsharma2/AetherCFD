@@ -1,0 +1,6 @@
+# OpenFOAM dictionaries, shell scripts and test fixtures must stay LF on every platform.
+* text=auto eol=lf
+*.sh text eol=lf
+tests/fixtures/** -text
+*.png binary
+*.pdf binary
