@@ -47,6 +47,9 @@ class MainWindow(QMainWindow):
         services.layouts = self.layouts
         self._build_menus()
         self._build_status()
+        from aethercfd.studio.palette.command_palette import install
+
+        self.palette = install(self)
         services.notification.connect(self._on_notify)
         services.case_changed.connect(self._on_case)
         services.backend_ready.connect(self._on_backend)

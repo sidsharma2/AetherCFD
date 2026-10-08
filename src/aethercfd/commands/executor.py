@@ -79,6 +79,9 @@ class Context:
     def emit(self, kind: str, payload: dict) -> None:
         for fn in list(self._listeners):
             fn(kind, payload)
+        from aethercfd.core.events import BUS
+
+        BUS.publish(kind, payload)  # GUI panels (journal, editors) follow commands via the bus
 
     # ------------------------------------------------------------------ files
     @staticmethod

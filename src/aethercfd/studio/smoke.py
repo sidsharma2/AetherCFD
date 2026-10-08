@@ -69,6 +69,26 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
                     panel._set_mode(2)
             _pump(app, 3.0)
             win.grab().save(str(out / "case_editor.png"))
+            wf = sv.panels.get("aether.workflow")
+            if wf is not None:
+                win.host.open_panel(wf)
+                _pump(app, 1.5)
+                win.grab().save(str(out / "case_workflow.png"))
+            pal = getattr(win, "palette", None)
+            if pal is not None:
+                pal.open()
+                pal.edit.setText("@deltaT")
+                _pump(app, 0.8)
+                kw = [pal.list.item(i).text() for i in range(min(5, pal.list.count()))]
+                pal.edit.setText("#controlDict")
+                _pump(app, 0.5)
+                files = [pal.list.item(i).text() for i in range(min(3, pal.list.count()))]
+                pal.edit.setText("residuals")
+                _pump(app, 0.3)
+                acts = [pal.list.item(i).text() for i in range(min(3, pal.list.count()))]
+                win.grab().save(str(out / "case_palette.png"))
+                pal.hide()
+                report["palette"] = {"keywords": kw, "files": files, "actions": acts}
             win.layouts.restore("run")
             _pump(app, 4.0)
             win.grab().save(str(out / "case_run.png"))
