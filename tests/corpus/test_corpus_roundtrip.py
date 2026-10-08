@@ -22,6 +22,7 @@ pytestmark = pytest.mark.corpus
 
 
 @pytest.mark.skipif(not CORPUS_ROOT.exists(), reason="no corpus on this machine")
+@pytest.mark.timeout(1800)  # ~22 GB / 12k files: 9 min warm, longer on a cold disk cache
 def test_corpus_lossless_roundtrip():
     t0 = time.perf_counter()
     report: dict = {"files": 0, "bytes": 0, "inexact": [], "untiled": [], "crashed": [], "with_errors": [],

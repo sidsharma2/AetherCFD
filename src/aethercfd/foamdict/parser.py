@@ -28,6 +28,9 @@ _LINE_DIRECTIVES = {"#includeFunc", "#includeFunction", "#includeModel", "#inclu
                     "#includeFvModel"}
 # directives that take no argument
 _NOARG_DIRECTIVES = {"#else", "#endif"}
+# directives whose "{ ... }" argument is an expression read verbatim, not a dictionary
+# ("xInC #eval{ $rIn * $cos15 };")
+_EXPR_BRACE_DIRECTIVES = {"#eval"}
 _ATOM_KINDS = (K.WORD, K.STRING, K.MACRO, K.DIRECTIVE, K.VERBATIM, K.BLOB, K.ERROR)
 #: deeper nesting than this is reported and the rest of the input is kept as flat atoms (real
 #: dictionaries nest < 10 deep; this only guards pathological or misdetected input)
@@ -153,9 +156,11 @@ class _Parser:
         if stop is not None and stop.kind is K.SEMI:
             self.take()
             return Entry(start=kt.start, end=stop.end, key=key, value=value, semi=stop.start)
-        # no ';' -- allowed only for a root-level "N ( ... )" list (polyMesh/boundary, points, ...)
-        top_list = root and key.text.isdigit() and len(items) == 1 and isinstance(items[0], ListNode)
-        if not top_list:
+        # no ';' -- allowed only for root-level stream data: "N ( ... )" lists (polyMesh/boundary,
+        # points, ...) and the bare numbers + lists of *.extendedFeatureEdgeMesh files
+        stream = root and Atom(K.WORD, 0, 0, key.text).is_number and all(
+            isinstance(x, ListNode) or (isinstance(x, Atom) and x.is_number) for x in items)
+        if not stream:
             where = value.end if items else kt.end
             self.diag(kt.start, where, f"missing ';' after {key.name!r}")
         return Entry(start=kt.start, end=value.end if items else kt.end, key=key, value=value)
@@ -177,7 +182,7 @@ class _Parser:
         else:
             t = self.peek()
             if t is not None and t.kind not in (K.RBRACE, K.SEMI, K.DIRECTIVE):
-                args.extend(self.parse_one_item(in_list=False))
+                args.extend(self.parse_one_item(in_list=False, prev=[self.atom(dt)]))
         end = args[-1].end if args else dt.end
         return Directive(dt.start, end, name, args, self.src[dt.end:end].strip())
 
@@ -223,6 +228,9 @@ class _Parser:
         if k is K.LBRACE:
             if prev is not None and self._uniform_count(prev, t) is not None:
                 return [self.parse_uniform(prev.pop())]  # type: ignore[arg-type]
+            if prev and isinstance(prev[-1], Atom) and prev[-1].kind is K.DIRECTIVE \
+                    and prev[-1].text in _EXPR_BRACE_DIRECTIVES:
+                return [self.parse_expr_block()]
             return [self.parse_dict()]
         if k in _ATOM_KINDS:
             self.i += 1
@@ -230,6 +238,22 @@ class _Parser:
         self.diag(t.start, t.end, f"unexpected {self.txt(t)!r}")
         self.i += 1
         return []
+
+    def parse_expr_block(self) -> Atom:
+        """'{ ... }' after #eval: kept as one verbatim atom up to the matching '}'."""
+        lb = self.take()
+        depth = 1
+        while (t := self.peek()) is not None:
+            self.i += 1
+            if t.kind is K.LBRACE:
+                depth += 1
+            elif t.kind is K.RBRACE:
+                depth -= 1
+                if depth == 0:
+                    return Atom(K.VERBATIM, lb.start, t.end, self.src[lb.start:t.end])
+        self.diag(lb.start, lb.end, "unterminated '{' (missing '}')")
+        end = self.toks[self.i - 1].end
+        return Atom(K.VERBATIM, lb.start, end, self.src[lb.start:end])
 
     def parse_list(self, count_atom: Atom | None) -> ListNode:
         lp = self.take()
@@ -269,7 +293,8 @@ class _Parser:
     @staticmethod
     def _uniform_count(prev: list[Item], lbrace: Token) -> int | None:
         """An integer atom *directly* followed by '{' ("17740{0}") starts a uniform list."""
-        if prev and isinstance(prev[-1], Atom) and prev[-1].kind is K.WORD and prev[-1].text.isdigit()                 and prev[-1].end == lbrace.start:
+        if prev and isinstance(prev[-1], Atom) and prev[-1].kind is K.WORD and prev[-1].text.isdigit() \
+                and prev[-1].end == lbrace.start:
             return int(prev[-1].text)
         return None
 

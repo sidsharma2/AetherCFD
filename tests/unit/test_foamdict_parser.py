@@ -194,3 +194,23 @@ def test_uniform_lists():
     assert root_list.ok and root_list.root.members[-1].value.items[0].uniform
     # a count separated from '{' by whitespace is NOT a uniform list
     assert not parse("a 5 {x 1;}").ok
+
+
+def test_eval_brace_expression_is_verbatim():
+    doc = parse("rIn 1;\nxInC    #eval{ $rIn  * $cos15 };\nnested #eval{ max({1, 2}) };\nb 2;\n")
+    assert doc.ok, doc.diagnostics
+    items = entry(doc, "xInC").value.items
+    assert [i.kind for i in items] == [K.DIRECTIVE, K.VERBATIM]
+    assert items[1].text == "{ $rIn  * $cos15 }"
+    assert entry(doc, "nested").value.items[1].text == "{ max({1, 2}) }"
+    assert entry(doc, "b").value.items[0].text == "2"
+    assert not parse("x #eval{ 1 + 2 ;\n").ok  # unterminated is still reported
+
+
+def test_stream_numbers_at_root_need_no_semicolon():
+    # *.extendedFeatureEdgeMesh: bare numbers between keyless lists
+    src = "FoamFile { class extendedFeatureEdgeMesh; }\n2\n(\n(0 0 0)\n(1 0 0)\n)\n" \
+          "// concaveStart mixedStart nonFeatureStart\n0 0 4\n// internalStart flatStart\n0 0 0 488\n1(2)\n"
+    assert parse(src).ok, parse(src).diagnostics
+    # a word in such a run is still a genuine missing ';'
+    assert not parse("0 0 endTime 5\n").ok
