@@ -77,9 +77,6 @@ class WelcomePanel(Panel):
         self.card.hide()
         lay.addWidget(_section("Open case"))
         lay.addWidget(self.card)
-        sv.case_changed.connect(self._on_case)
-        if sv.session is not None:
-            self._on_case(sv.session)
 
         cols = QHBoxLayout()
         left, right = QVBoxLayout(), QVBoxLayout()
@@ -102,6 +99,10 @@ class WelcomePanel(Panel):
         self._refresh_recent()
         sv.backend_ready.connect(self._on_backend)
         self.env.setText("OpenFOAM backend: not started yet (it starts when you open a case).")
+        # last: _on_case uses the Recent list built above (a case may already be open)
+        sv.case_changed.connect(self._on_case)
+        if sv.session is not None:
+            self._on_case(sv.session)
 
     def _on_case(self, session) -> None:
         self._refresh_recent()

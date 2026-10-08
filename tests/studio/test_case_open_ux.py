@@ -72,3 +72,11 @@ def test_automation_open_case(sv, qtbot, tmp_path):
     assert msg.startswith("opening")
     qtbot.waitUntil(lambda: sv.session is not None and Path(sv.session.root) == case.resolve(), timeout=5000)
     assert "already the open case" in a.open_case(str(case))
+
+
+def test_start_page_built_after_a_case_is_open(sv, qtbot, tmp_path):
+    case = _decomposed_case(tmp_path)
+    sv.open_case(case)
+    w = WelcomePanel(PanelContext(sv, "#main"))  # e.g. the layout restores the Start page after opening
+    qtbot.addWidget(w)
+    assert not w.card.isHidden() and "400" in w.card_info.text()
