@@ -8,7 +8,13 @@ import numpy as np
 import pytest
 
 from aethercfd.mesh.grading import design, n_for, sizes
-from aethercfd.mesh.wall import first_cell_height, plan_layers, skin_friction, sutherland_mu, yplus_of
+from aethercfd.mesh.wall import (
+    first_cell_height,
+    plan_layers,
+    skin_friction,
+    sutherland_mu,
+    yplus_of,
+)
 
 
 def test_geometric_sizes_match_blockmesh_convention():
