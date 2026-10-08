@@ -718,6 +718,58 @@ class ViewportPanel(Panel):
         rw.Finalize()
         return path
 
+    def beauty_scene(self, width: int, height: int, *, base: str = "outline", frame_stages: bool = True,
+                     background: str = "gradient", spp: int = 32):
+        """The visible scene for a ParaView path-traced render (aethercfd.results.beauty)."""
+        from aethercfd.results.beauty import Block, Scene
+
+        blocks = []
+        bar_title = self.scalar_bar.GetTitle() if self.scalar_bar.GetVisibility() else None
+        bar_done = False
+        for name, (actor, mapper) in self.actors.items():
+            is_stage = name in self.stage_info
+            if not is_stage and base == "hidden":
+                continue
+            if not actor.GetVisibility() and not (not is_stage and base in ("outline", "translucent")):
+                continue
+            prop = actor.GetProperty()
+            poly = mapper.GetInput()
+            if poly is None or poly.GetNumberOfCells() == 0:
+                continue
+            arr, assoc, rng, cmap = None, "cell", None, self.cmap.currentText()
+            if mapper.GetScalarVisibility() and not (not is_stage and base == "outline"):
+                arr = mapper.GetArrayName()
+                assoc = "point" if mapper.GetScalarMode() == vtk.VTK_SCALAR_MODE_USE_POINT_FIELD_DATA else "cell"
+                lut = mapper.GetLookupTable()
+                rng = tuple(lut.GetRange()) if lut is not None else None
+                if is_stage:
+                    cmap = self.stage_info[name].get("cmap") or cmap
+            show_bar = bool(arr and bar_title and not bar_done and (is_stage or not self.stage_info))
+            bar_done = bar_done or show_bar
+            blocks.append(Block(poly, arr, assoc, rng, cmap,
+                                opacity=(0.12 if not is_stage and base in ("outline", "translucent") else
+                                         prop.GetOpacity()),
+                                wireframe=(not is_stage and base == "outline") or
+                                prop.GetRepresentation() == vtk.VTK_WIREFRAME,
+                                smooth=prop.GetInterpolation() != vtk.VTK_FLAT, color=tuple(prop.GetColor()),
+                                bar=show_bar, title=bar_title or "",
+                                outline=not is_stage and base == "outline"))
+        cam = vtk.vtkCamera()
+        cam.DeepCopy(self.plotter.renderer.GetActiveCamera())
+        if frame_stages and self.stage_bounds() is not None:
+            saved = vtk.vtkCamera()
+            saved.DeepCopy(self.plotter.renderer.GetActiveCamera())
+            self.frame_stage(None, padding=0.06)
+            cam.DeepCopy(self.plotter.renderer.GetActiveCamera())
+            self.plotter.renderer.GetActiveCamera().DeepCopy(saved)
+            self.plotter.render()
+        bg = {"gradient": [(0.03, 0.035, 0.05), (0.20, 0.22, 0.27)], "dark": [(0.105, 0.11, 0.122)],
+              "black": [(0, 0, 0)], "white": [(1, 1, 1)]}.get(background, [(0.105, 0.11, 0.122)])
+        return Scene(blocks, {"position": list(cam.GetPosition()), "focal_point": list(cam.GetFocalPoint()),
+                              "view_up": list(cam.GetViewUp()), "view_angle": cam.GetViewAngle(),
+                              "parallel": bool(cam.GetParallelProjection()),
+                              "parallel_scale": cam.GetParallelScale()}, (width, height), bg, True, spp)
+
     def render_dialog(self) -> None:
         from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout
 
@@ -742,12 +794,24 @@ class ViewportPanel(Panel):
         frame = QCheckBox("Frame the visualization stages (zoom onto them)")
         frame.setChecked(bool(self.stages))
         frame.setEnabled(bool(self.stages))
+        from aethercfd.results.beauty import find_pvbatch
+
+        pvb = find_pvbatch(getattr(self.ctx.services.settings, "paraview_exe", None))
+        ray = QCheckBox("Ray-traced: path tracing + shadows + denoiser (ParaView" +
+                        (f", {pvb.parent.parent.name})" if pvb else " not found)"))
+        ray.setEnabled(pvb is not None)
+        spp = QComboBox()
+        for label, n in (("draft (8 samples)", 8), ("good (32)", 32), ("final (128)", 128)):
+            spp.addItem(label, n)
+        spp.setCurrentIndex(1)
         form.addRow("Resolution", res)
         form.addRow("Background", bg)
         form.addRow("Mesh surfaces", base)
         form.addRow(frame)
         form.addRow(transparent)
         form.addRow(bar)
+        form.addRow(ray)
+        form.addRow("Ray-tracing quality", spp)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(dlg.accept)
         bb.rejected.connect(dlg.reject)
@@ -759,6 +823,17 @@ class ViewportPanel(Panel):
         if not f:
             return
         w, h = res.currentData()
+        if ray.isChecked() and pvb is not None:
+            from aethercfd.results.beauty import render as beauty
+
+            scene = self.beauty_scene(w, h, base=base.currentText(), frame_stages=frame.isChecked(),
+                                      background=bg.currentText(), spp=int(spp.currentData()))
+            self.ctx.services.notify(f"Ray tracing {w}×{h} in ParaView (runs in the background)…")
+            self.ctx.services.run_bg(lambda: beauty(scene, f, pvbatch=pvb), lambda r: self.ctx.services.notify(
+                (f"Ray-traced render ({r[0]['backend']}): {f}" if r[0] and r[0]["ok"] else
+                 f"Ray-traced render failed: {r[1] or (r[0] or {}).get('log', '')[-300:]}"),
+                "info" if r[0] and r[0]["ok"] else "error"))
+            return
         try:
             self.render_image(f, w, h, background=bg.currentText(), transparent=transparent.isChecked(),
                               colorbar=bar.isChecked(), base=base.currentText(), frame_stages=frame.isChecked())

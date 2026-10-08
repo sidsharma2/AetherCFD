@@ -174,6 +174,17 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
                     t_r = time.perf_counter()
                     vp.render_image(render, 3840, 2160, background="gradient",
                                     base=_os.environ.get("AETHER_SMOKE_BASE", "outline"), frame_stages=True)
+                    if _os.environ.get("AETHER_SMOKE_BEAUTY"):
+                        from aethercfd.results.beauty import find_pvbatch
+                        from aethercfd.results.beauty import render as beauty
+
+                        pvb = find_pvbatch(sv.settings.paraview_exe)
+                        sc = vp.beauty_scene(1920, 1080, base="outline", frame_stages=True,
+                                             spp=int(_os.environ.get("AETHER_SMOKE_SPP", "16")))
+                        t_b = time.perf_counter()
+                        rb = beauty(sc, _os.environ["AETHER_SMOKE_BEAUTY"], pvbatch=pvb) if pvb else {"ok": False}
+                        report["beauty"] = {k: rb.get(k) for k in ("ok", "backend", "output")} | {
+                            "seconds": round(time.perf_counter() - t_b, 1), "log": rb.get("log", "")[-800:]}
                     report["render"] = {"path": render, "seconds": round(time.perf_counter() - t_r, 2)}
                 report["vis"] = {"stages": [s["type"] for s in vp.stages],
                                  "info": {k: {"cells": v["cells"], "notes": v["notes"], "label": v["label"]}
