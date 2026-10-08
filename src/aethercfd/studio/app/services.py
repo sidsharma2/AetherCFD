@@ -108,8 +108,19 @@ class AppServices(QObject):
     def run_bg(self, fn, on_done=None) -> None:
         """Run fn() on the thread pool; on_done((result, error)) on the GUI thread."""
         sig = _Relay(self)
-        if on_done is not None:
-            sig.done.connect(on_done)
+
+        def finish(res) -> None:
+            try:
+                if on_done is not None:
+                    on_done(res)
+            except RuntimeError as exc:  # the panel that asked was closed/deleted meanwhile
+                if "deleted" not in str(exc):
+                    raise
+                log.debug("background result dropped: %s", exc)
+            finally:
+                sig.deleteLater()  # one relay per job; do not accumulate them
+
+        sig.done.connect(finish)
         self.pool.start(_Job(fn, sig.done))
 
     # ------------------------------------------------------------------ case

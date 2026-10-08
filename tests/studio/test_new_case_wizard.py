@@ -24,6 +24,7 @@ def wizard(qtbot, tmp_path, monkeypatch):
     w.available = {"esi-v2306": {"pitzDaily": True, "forwardStep": True, "motorBike": False}}
     w.p1.fill_forks()
     yield w
+    sv.pool.waitForDone(10000)  # background jobs must not outlive the services
     sv.bridge.close()
 
 

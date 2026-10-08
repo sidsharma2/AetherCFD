@@ -23,6 +23,7 @@ def services(qtbot, tmp_path, monkeypatch):
     monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path / "cfg"))
     sv = AppServices()
     yield sv
+    sv.pool.waitForDone(10000)  # background jobs must not outlive the services
     sv.bridge.close()
 
 
