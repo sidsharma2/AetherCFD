@@ -61,6 +61,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"Python    {sys.version.split()[0]}  ({sys.executable})")
     print(f"Platform  {platform.platform()}")
     print()
+    from aethercfd.core.runtime import is_frozen
+
+    if is_frozen():  # packaged: the GUI libraries live in AetherCFD.exe, not in this console tool
+        from pathlib import Path
+
+        gui = Path(sys.executable).with_name("AetherCFD.exe")
+        failures = 0 if gui.is_file() else 1
+        print(f"  [{'ok ' if failures == 0 else 'ERR'}] packaged build; GUI {gui}")
+        if not args.no_backend:
+            failures += _doctor_backend(args.probe)
+        print()
+        print("all green" if failures == 0 else f"{failures} problem(s)")
+        return 0 if failures == 0 else 1
     rows = _check_imports()
     width = max(len(r[0]) for r in rows)
     failures = 0

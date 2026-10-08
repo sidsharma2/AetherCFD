@@ -95,6 +95,38 @@ def _setup_logging() -> None:
         root.addHandler(sh)
 
 
+def _run_module(module: str, args: list[str]) -> int:
+    """``AetherCFD.exe --run-module <module> ...``: the packaged app's stand-in for ``python -m``
+    (see aethercfd.core.runtime.module_argv). No Qt is imported on this path."""
+    import contextlib
+    import io
+    import runpy
+    import traceback
+
+    for name in ("stdout", "stderr"):  # windowed exe launched without pipes
+        if getattr(sys, name) is None:
+            setattr(sys, name, io.StringIO())
+    sys.argv = [module, *args]
+    try:
+        runpy.run_module(module, run_name="__main__", alter_sys=True)
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            return 0
+        if isinstance(code, int):
+            return code
+        print(code, file=sys.stderr)
+        return 1
+    except BaseException:
+        traceback.print_exc()
+        return 1
+    finally:
+        for stream in (sys.stdout, sys.stderr):
+            with contextlib.suppress(Exception):
+                stream.flush()
+    return 0
+
+
 def run() -> None:
     """Console/GUI entry point. Ends with os._exit: after the deterministic teardown above, Python's
     interpreter finalization would destroy the remaining Qt/QtWebEngine objects in arbitrary order,
@@ -103,6 +135,10 @@ def run() -> None:
     live in WSL independently of this process."""
     import os
 
+    from aethercfd.core.runtime import RUN_MODULE_FLAG
+
+    if len(sys.argv) > 2 and sys.argv[1] == RUN_MODULE_FLAG:
+        os._exit(_run_module(sys.argv[2], sys.argv[3:]))
     code = int(main() or 0)
     logging.getLogger("aethercfd.studio.teardown").info("teardown: main() returned %s, exiting", code)
     logging.shutdown()

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import math
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -43,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from aethercfd.commands.base import USER, Risk
+from aethercfd.core.runtime import module_argv
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
 from aethercfd.studio.theme.style import icon, mono_font
 from aethercfd.studio.theme.tokens import T
@@ -460,7 +460,7 @@ class ResidualsPanel(Panel):
                 "x_label": "Time" if self.xmode.currentIndex() == 1 else "Iteration",
                 "title": None, "decimate": 4000}
         (tmp / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
-        r = subprocess.run([sys.executable, "-m", "aethercfd.studio.export_plot", str(tmp / "spec.json")],
+        r = subprocess.run(module_argv("aethercfd.studio.export_plot", str(tmp / "spec.json")),
                            capture_output=True, text=True, timeout=120, creationflags=0x08000000)
         if r.returncode == 0:
             self.ctx.services.notify(f"Exported {out}.pdf and .png")
