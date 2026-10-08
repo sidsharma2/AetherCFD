@@ -144,6 +144,10 @@ class _Parser:
         if t.kind is K.LBRACE:
             d = self.parse_dict()
             return Entry(start=kt.start, end=d.end, key=key, dict=d)
+        if root and kt.kind is K.WORD and key.text.isdigit() and t.kind is K.LPAREN:
+            # keyless top-level "N ( ... )" list; files like *.eMesh hold several in a row
+            lst = self.parse_list(None)
+            return Entry(start=kt.start, end=lst.end, key=key, value=Value(lst.start, lst.end, [lst]))
         items, stop = self.parse_items(until_semi=True)
         value = Value(items[0].start if items else t.start, items[-1].end if items else t.start, items)
         if stop is not None and stop.kind is K.SEMI:
