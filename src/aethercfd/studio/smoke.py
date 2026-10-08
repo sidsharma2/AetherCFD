@@ -179,6 +179,16 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
                                  "info": {k: {"cells": v["cells"], "notes": v["notes"], "label": v["label"]}
                                           for k, v in vp.stage_info.items()}}
                 win.grab().save(str(out / "case_vis.png"))
+            if _os.environ.get("AETHER_SMOKE_COMBUSTION") == "1" and sv.panels.get("aether.combustion"):
+                cb = win.host.build_panel(win.host.open_panel(sv.panels.get("aether.combustion")).objectName())
+                cb.preset.setCurrentText("Sandia flame D (CH4/air 1:3 vol.)")
+                cb.compute_mixture()
+                t_c = time.perf_counter()
+                while "mixture" not in cb.report and time.perf_counter() - t_c < 60:
+                    _pump(app, 0.5)
+                _pump(app, 1.0)
+                win.grab().save(str(out / "case_combustion.png"))
+                report["combustion"] = {"Z_st": cb.report.get("mixture", {}).get("stoich", {}).get("Z_st")}
             from aethercfd.studio.app.automation import AppAutomation
 
             auto = AppAutomation(sv)

@@ -46,6 +46,7 @@ KEYWORDS = {
     "aether.editor": "edit dictionary text file code",
     "aether.workflow": "stages steps guide workflow progress",
     "aether.welcome": "start home recent cases",
+    "aether.combustion": "combustion cantera flame speed adiabatic temperature ignition delay chemistry mechanism creck gri flamelet regime borghi peters edc pasr soot reacting",
 }
 STAGE_ITEMS = [("qcriterion", "Q-criterion vortices (GPU)", "vortex vortices q criterion lambda2 swirl coherent "
                 "structures cuda gpu isosurface", "mdi6.weather-tornado"),

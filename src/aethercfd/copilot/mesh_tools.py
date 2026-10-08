@@ -150,7 +150,68 @@ def case_checks(ctx: ToolContext, p: ChecksParams) -> dict:
             "how_to_fix": "apply an edit with dict_set (file, key, value, insert_if_missing) and a rationale"}
 
 
+class CombustionParams(BaseModel):
+    fuel: str = Field("CH4:1", description="Fuel stream mole fractions, e.g. 'CH4:0.25, O2:0.1575, N2:0.5925' "
+                                           "(Sandia D)")
+    oxidizer: str = Field("O2:0.21, N2:0.79")
+    T_fuel: float = 300.0
+    T_ox: float = 300.0
+    p: float = Field(101325.0, description="Pressure [Pa]")
+    phi: float = Field(1.0, description="Equivalence ratio for premixed quantities")
+    mechanism: str = Field("gri30.yaml", description="Cantera mechanism (built-in name or YAML path)")
+    what: list[str] = Field(default_factory=lambda: ["stoichiometry", "flame_temperature", "transport"],
+                            description="any of stoichiometry, flame_temperature, transport, flame_speed (~20 s), "
+                                        "ignition, regime, advice")
+    u_prime: float | None = Field(None, description="Turbulence intensity [m/s] for the regime")
+    l_t: float | None = Field(None, description="Integral length [m] for the regime")
+    flame: str = Field("non-premixed", description="premixed | non-premixed | partially-premixed (advice)")
+    want: list[str] = Field(default_factory=lambda: ["temperature"], description="advice targets: temperature, "
+                                                                                    "CO, NOx, soot, extinction, ignition")
+    round_jet: bool = False
+
+
+def combustion_precalc(ctx: ToolContext, p: CombustionParams) -> dict:
+    from aethercfd.combustion import calc
+
+    st = calc.Streams(p.mechanism, p.fuel, p.oxidizer, p.T_fuel, p.T_ox, p.p)
+    out: dict = {}
+    if "stoichiometry" in p.what:
+        out["stoichiometry"] = calc.stoichiometric(st)
+    if "flame_temperature" in p.what:
+        r = calc.adiabatic_flame(st, [round(x, 2) for x in np.arange(0.6, 1.61, 0.1)])
+        out["flame_temperature"] = {"peak": r["peak"], "rows": [{"phi": x["phi"], "T_ad": round(x["T_ad"], 1),
+                                                                 "X_CO": x["X_CO"], "X_NO": x["X_NO"]}
+                                                                for x in r["rows"]]}
+    if "transport" in p.what:
+        out["transport_unburnt"] = calc.transport(st, phi=p.phi)
+    fl = None
+    if "flame_speed" in p.what or ("regime" in p.what and p.u_prime):
+        fl = calc.flame_speed(st, p.phi)
+        out["flame_speed"] = {"S_L": fl.S_L, "delta_L": fl.delta_L, "T_b": fl.T_ad}
+    if "ignition" in p.what:
+        out["ignition"] = [calc.ignition_delay(st, p.phi, T0) for T0 in (1100, 1300, 1500, 1800)]
+    if "regime" in p.what and p.u_prime and p.l_t and fl is not None:
+        out["regime"] = calc.regime(fl.S_L, fl.delta_L, p.u_prime, p.l_t, calc.transport(st, phi=p.phi)["nu"])
+    if "advice" in p.what:
+        from aethercfd.combustion.advisor import Situation, advise
+
+        fork = "foundation" if "foundation" in str(getattr(ctx.session.case().fork_guess, "family", "")).lower() \
+            else "esi"
+        reg = out.get("regime", {})
+        out["advice"] = [{"model": a.model, "why": a.why, "caveats": a.caveats, "turbulence": a.turbulence,
+                          "chemistry": a.chemistry, "files": a.files}
+                         for a in advise(Situation(p.flame, reg.get("regime"), reg.get("Da"), reg.get("Ka"),
+                                                   tuple(p.want), calc.gas_summary(p.mechanism)["species"],
+                                                   int(ctx.session.case().n_cells or 0), True, p.round_jet, fork))]
+    return out
+
+
 MESH_TOOLS = [
+    Tool("combustion_precalc", "Combustion pre-calculations with Cantera before a reacting run: stoichiometric "
+         "mixture fraction, adiabatic flame temperature vs phi (with CO/NO), mixture transport, laminar flame speed "
+         "and thickness, ignition delay, Peters regime (Da, Ka, Kolmogorov scale), and a ranked combustion-model "
+         "recommendation with the exact OpenFOAM dictionary entries for this case's fork.", CombustionParams,
+         combustion_precalc),
     Tool("case_checks", "Numerics lab and pre-run checks: steady/compressible/turbulence facts and findings "
          "(scheme boundedness, non-orthogonal correction vs the mesh, relaxation, turbulence fields, pressure "
          "dimensions, thermo range, BC consistency, disk projection) with the exact dict edits that fix them.",

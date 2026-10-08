@@ -30,6 +30,7 @@ dependencies = [
     "cupy-cuda12x>=13",
     "nvidia-cuda-nvrtc-cu12>=12.9.86",
     "nvidia-cuda-runtime-cu12>=12.9.79",
+    "cantera>=3.1",
 ]
 
 [project.scripts]
@@ -71,6 +72,7 @@ markers = [
     "wsl: needs the LMAE-OpenFOAM WSL distro (fast)",
     "wsl_slow: needs WSL and runs a solver (minutes)",
     "gl: needs a real OpenGL context (not the offscreen platform)",
+    "slow: takes more than a few seconds (e.g. a Cantera flame solve)",
 ]
 timeout = 300
 
