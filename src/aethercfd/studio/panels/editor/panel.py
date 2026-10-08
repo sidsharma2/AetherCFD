@@ -122,6 +122,8 @@ class EditorPanel(Panel):
         self.editor.redo_requested.connect(lambda: self.doc and self.doc.redo())
         self.editor.save_requested.connect(self.save)
         self.editor.document().contentsChange.connect(self._on_editor_change)
+        self._kw_timer = QTimer(self, singleShot=True, interval=400, timeout=self._select_keyword)
+        self.editor.cursorPositionChanged.connect(self._kw_timer.start)
         self.find = FindBar(self.editor)
         QShortcut(QKeySequence("Ctrl+F"), self, self.find.open, context=Qt.ShortcutContext.WidgetWithChildrenShortcut)
         QShortcut(QKeySequence("Escape"), self.find, self.find.hide,
@@ -371,6 +373,21 @@ class EditorPanel(Panel):
             self._rebuild_form(self.doc.parsed())
 
     # ------------------------------------------------------------------ save / conflicts
+    def _select_keyword(self) -> None:
+        """The keyword under the cursor -> Properties panel (value, provenance, line)."""
+        if self.path is None or not self.editor.hasFocus():
+            return
+        from aethercfd.foamdict.parser import parse
+        from aethercfd.foamdict.semantic import path_at
+
+        text = self.editor.toPlainText()
+        if len(text) > 2_000_000:
+            return
+        doc = parse(text)
+        path = [p for p in path_at(doc, self.editor.textCursor().position()) if p != "FoamFile"]
+        if path:
+            self.ctx.services.select({"kind": "keyword", "file": str(self.path), "path": path, "text": text})
+
     def save(self) -> None:
         if self.doc is None or self.readonly or not self.doc.dirty:
             return

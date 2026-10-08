@@ -81,7 +81,38 @@ def _add_component(poly: vtk.vtkPolyData, field: str, comp: str) -> str | None:
 class VtkWorker(QObject):
     meta_ready = Signal(str, int, object)  # viewport id, generation, dict
     data_ready = Signal(str, int, object)  # viewport id, generation, dict
+    probe_ready = Signal(str, int, object)  # viewport id, generation, dict (all fields at one cell)
     failed = Signal(str, int, str)
+
+    @Slot(str, int, dict)
+    def probe(self, vid: str, gen: int, req: dict) -> None:
+        """Every cell field at the cell containing req['point'] (internal meshes, req['time'])."""
+        try:
+            r = self._reader(req["case"], req.get("decomposed", False))
+            mb = r.read(req.get("time"), fields=None, patches=None)
+            for path, ds in iter_leaves(mb):
+                loc = vtk.vtkStaticCellLocator()
+                loc.SetDataSet(ds)
+                loc.BuildLocator()
+                cid = loc.FindCell(req["point"], 1e-9, vtk.vtkGenericCell(), [0, 0, 0], [0.0] * 8)
+                if cid < 0:
+                    continue
+                values = {}
+                cd = ds.GetCellData()
+                for i in range(cd.GetNumberOfArrays()):
+                    a = cd.GetArray(i)
+                    if a is None or a.GetName() in ("vtkOriginalCellIds",):
+                        continue
+                    values[a.GetName()] = list(a.GetTuple(cid))
+                self.probe_ready.emit(vid, gen, {"region": path, "cell": cid, "values": values,
+                                                 "point": list(req["point"]), "time": req.get("time"),
+                                                 "cell_type": ds.GetCellType(cid)})
+                return
+            self.probe_ready.emit(vid, gen, {"point": list(req["point"]), "cell": None, "values": {},
+                                             "time": req.get("time")})
+        except Exception as exc:
+            log.exception("viewport probe failed")
+            self.failed.emit(vid, gen, f"probe: {type(exc).__name__}: {exc}")
 
     def __init__(self):
         super().__init__()
@@ -110,15 +141,27 @@ class VtkWorker(QObject):
     def load(self, vid: str, gen: int, req: dict) -> None:
         t0 = time.perf_counter()
         try:
+            from pathlib import Path
+
+            from aethercfd.results import pipeline as pl
+
             r = self._reader(req["case"], req.get("decomposed", False))
             field = req.get("field")
-            mb = r.read(req.get("time"), fields=[field] if field else [], patches=req.get("patches"))
+            stages = [s for s in req.get("stages", []) if s.get("visible", True)]
+            available = set(r.meta.cell_arrays or r.refresh().cell_arrays)
+            want = ({field} if field else set()) | (pl.fields_needed(stages) & available)
+            patches = req.get("patches")
+            show_internal = req.get("show_internal", True)
+            if stages and patches is not None:
+                patches = list(dict.fromkeys([*patches, *[p for p in r.meta.patches if p.endswith("internalMesh")]]))
+            mb = r.read(req.get("time"), fields=sorted(want), patches=patches)
             blocks: dict[str, vtk.vtkPolyData] = {}
-            internal = []
+            internal, internal_paths = [], []
             for path, ds in iter_leaves(mb):
                 if path.endswith("internalMesh"):
                     internal.append(ds)
-                    if not req.get("slice"):
+                    internal_paths.append(path)
+                    if not req.get("slice") and show_internal:
                         blocks[path] = _geometry(ds)
                 else:
                     blocks[path] = _geometry(ds)
@@ -126,10 +169,41 @@ class VtkWorker(QObject):
             if sl and internal:
                 for i, ds in enumerate(internal):
                     blocks[f"slice{i}"] = _slice(ds, sl["origin"], sl["normal"])
+            stage_info: dict[str, dict] = {}
+            if stages and internal:
+                case = Path(req["case"])
+                mesh_dirs = [case / "constant" / (p.rsplit("/", 1)[0] if "/" in p else "") / "polyMesh"
+                             for p in internal_paths]
+                for s in stages:
+                    out = pl.run_stage(s, internal, field, req.get("component", "magnitude"), mesh_dirs=mesh_dirs)
+                    key = f"stage:{s.get('id')}"
+                    blocks[key] = out.poly
+                    stage_info[key] = {"scalar": out.scalar, "association": out.association, "range": out.range,
+                                       "cmap": out.cmap, "interpolated": out.interpolated, "label": out.label,
+                                       "notes": out.notes, "cells": out.poly.GetNumberOfCells(),
+                                       "opacity": float(s.get("opacity", 1.0))}
+            view = req.get("view") or {}
+            if view.get("mirror"):
+                ax = view["mirror"]
+                for name in list(blocks):
+                    blocks[f"{name}~mirror"] = pl.mirror(blocks[name], ax, float(view.get("mirror_origin", 0.0)))
+                    if name in stage_info:
+                        stage_info[f"{name}~mirror"] = stage_info[name]
+            if view.get("revolve"):
+                rv = view["revolve"]
+                for name in list(blocks):
+                    for k, poly in enumerate(pl.revolve(blocks[name], rv.get("axis", "z"), float(rv.get("angle", 5)),
+                                                        int(rv.get("copies", 72)),
+                                                        tuple(rv.get("origin", (0.0, 0.0, 0.0))))):
+                        blocks[f"{name}~rev{k}"] = poly
+                        if name in stage_info:
+                            stage_info[f"{name}~rev{k}"] = stage_info[name]
             scalar = None
             n_comp = 0
             lo, hi = np.inf, -np.inf
-            for poly in blocks.values():
+            for bname, poly in blocks.items():
+                if bname in stage_info:
+                    continue  # stages carry their own colouring
                 raw = poly.GetCellData().GetArray(field) if field else None
                 if raw is not None:
                     n_comp = raw.GetNumberOfComponents()
@@ -151,7 +225,7 @@ class VtkWorker(QObject):
             self.data_ready.emit(vid, gen, {
                 "blocks": blocks, "scalar": scalar, "range": (lo, hi) if lo <= hi else None,
                 "time": req.get("time"), "bounds": bounds if n_cells else None, "n_cells": n_cells,
-                "components": n_comp,
+                "components": n_comp, "stage_info": stage_info,
                 "seconds": time.perf_counter() - t0})
         except Exception as exc:
             log.exception("viewport load failed")

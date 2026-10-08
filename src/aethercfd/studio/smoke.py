@@ -131,10 +131,44 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
                 win.layouts.restore("post")
             _pump(app, 6.0)
             win.grab().save(str(out / "case_viewport.png"))
-            vp = next((win.host.panel(n) for n in win.host.docks() if n.startswith("aether.viewport")), None)
+            visible = [v for v in win.host.panels_of("aether.viewport") if v.isVisible()]
+            vp = visible[0] if visible else None
             if vp is not None:
                 report["viewport"] = {"actors": len(vp.actors), "scalar": vp.scalar, "range": vp.range,
                                       "gpu": win.services.gl_renderer, "info": vp.info.text()}
+            vis = sv.panels.get("aether.vis_controls")
+            if vp is not None and vis is not None and "viewport" not in skip:
+                visp = win.host.build_panel(win.host.open_panel(vis).objectName())
+                sv.set_active_viewport(vp)
+                custom = _os.environ.get("AETHER_SMOKE_STAGES")  # JSON list of stage dicts
+                if custom:
+                    vp.set_stages([{"id": f"x{i}", "visible": True, **s} for i, s in enumerate(json.loads(custom))])
+                    visp._retarget(vp)
+                else:
+                    visp.add("slice")
+                    visp.add("quality")
+                _pump(app, 8.0)
+                report["vis"] = {"stages": [s["type"] for s in vp.stages],
+                                 "info": {k: {"cells": v["cells"], "notes": v["notes"], "label": v["label"]}
+                                          for k, v in vp.stage_info.items()}}
+                win.grab().save(str(out / "case_vis.png"))
+            insp = sv.panels.get("aether.inspector")
+            if insp is not None:
+                ip = win.host.build_panel(win.host.open_panel(insp).objectName())
+                sv.select({"kind": "file", "path": str(sv.session.root / "0" / "U")})
+                _pump(app, 0.8)
+                report["inspector"] = {"title": ip.title.text(), "rows": ip.tree.topLevelItemCount()}
+                if vp is not None and vp.bounds is not None:
+                    b = vp.bounds
+                    vp._req_probe.emit(vp.vid, vp.gen, {"case": str(vp.case_root), "decomposed": False,
+                                                        "point": [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2,
+                                                                  (b[4] + b[5]) / 2],
+                                                        "time": vp.meta["times"][vp.time.currentIndex()]})
+                    _pump(app, 3.0)
+                    sel = sv.selection or {}
+                    report["probe"] = {"kind": sel.get("kind"), "cell": sel.get("cell"),
+                                       "fields": sorted(sel.get("values", {}))}
+                win.grab().save(str(out / "case_inspector.png"))
             report["case"] = {"root": str(sv.session.root), "backend": bool(sv.session.forks)}
     except Exception:
         errors.append(traceback.format_exc())

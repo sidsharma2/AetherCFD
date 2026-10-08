@@ -37,6 +37,8 @@ class AppServices(QObject):
     notification = Signal(str, str)  # message, level
     files_changed = Signal(list)  # [str] paths changed on disk (GUI thread)
     current_log_changed = Signal(str)  # the solver log the Residuals/Log panels follow
+    active_viewport_changed = Signal(object)  # the viewport the Visualization panel acts on
+    selection_changed = Signal(object)  # dict describing what the Properties panel shows
     _files_changed_bg = Signal(list)  # emitted from the watcher thread
 
     def __init__(self, parent: QObject | None = None):
@@ -61,6 +63,18 @@ class AppServices(QObject):
         from aethercfd.studio.bridge.log_follow import LogFollower
 
         self.follower = LogFollower(self, self)
+        self.active_viewport = None
+        self.selection: dict | None = None
+
+    def set_active_viewport(self, vp) -> None:
+        if vp is not self.active_viewport:
+            self.active_viewport = vp
+            self.active_viewport_changed.emit(vp)
+
+    def select(self, what: dict | None) -> None:
+        """Tell the Properties panel what the user is looking at: {"kind": "file"|"cell"|"keyword"|...}."""
+        self.selection = what
+        self.selection_changed.emit(what)
 
     def set_current_log(self, path: str | Path | None) -> None:
         p = str(path) if path else ""

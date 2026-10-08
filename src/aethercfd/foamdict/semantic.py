@@ -232,3 +232,23 @@ class DictView:
             if m.value is not None:
                 out[m.key.name] = self.doc.text(m.value.start, m.value.end).strip().strip('"')
         return out
+
+
+def path_at(doc, offset: int) -> list[str]:
+    """Keyword path of the innermost entry whose span contains ``offset`` (e.g. the editor cursor):
+    ['PIMPLE', 'nOuterCorrectors'] -- [] outside any entry."""
+    from aethercfd.foamdict.cst import Entry
+
+    path: list[str] = []
+    d = doc.root
+    while d is not None:
+        hit = None
+        for m in d.members:
+            if isinstance(m, Entry) and m.start <= offset <= m.end:
+                hit = m
+                break
+        if hit is None:
+            break
+        path.append(hit.key.name)
+        d = hit.dict
+    return path

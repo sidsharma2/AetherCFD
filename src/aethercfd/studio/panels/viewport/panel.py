@@ -67,6 +67,8 @@ class ViewportPanel(Panel):
     STATE_VERSION = 1
     _req_meta = Signal(str, int, dict)
     _req_load = Signal(str, int, dict)
+    _req_probe = Signal(str, int, dict)
+    stages_updated = Signal(dict)  # stage block -> info (scalar, range, notes, cells) after each load
 
     def __init__(self, ctx: PanelContext):
         super().__init__(ctx)
@@ -84,6 +86,10 @@ class ViewportPanel(Panel):
         self._first_data = True
         self._is2d = False
         self._pending_state: dict | None = None
+        self.stages: list[dict] = []  # Visualization pipeline (see aethercfd.results.pipeline)
+        self.view_opts: dict = {}  # mirror / revolve
+        self.stage_info: dict[str, dict] = {}
+        self.bar_stage: str | None = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
@@ -123,12 +129,14 @@ class ViewportPanel(Panel):
         self.plotter = QtInteractor(self, auto_update=False)
         self.plotter.set_background(T.viewport_bg)
         self.plotter.enable_anti_aliasing("fxaa")
+        self.plotter.enable_depth_peeling(number_of_peels=4)  # correct order for translucent base meshes
         self.plotter.add_axes(color=T.text_dim)
         split.addWidget(self.plotter)
         side = QWidget()
         sl = QFormLayout(side)
         self.patches = QListWidget()
         self.patches.itemChanged.connect(lambda *_: self.request_load())
+        self.patches.currentItemChanged.connect(self._select_patch)
         sl.addRow(QLabel("Show"))
         sl.addRow(self.patches)
         self.slice_on = QCheckBox("Slice through the mesh")
@@ -171,8 +179,10 @@ class ViewportPanel(Panel):
         w = shared_worker()
         self._req_meta.connect(w.meta, Qt.ConnectionType.QueuedConnection)
         self._req_load.connect(w.load, Qt.ConnectionType.QueuedConnection)
+        self._req_probe.connect(w.probe, Qt.ConnectionType.QueuedConnection)
         w.meta_ready.connect(self._on_meta)
         w.data_ready.connect(self._on_data)
+        w.probe_ready.connect(self._on_probe)
         w.failed.connect(self._on_fail)
         self.field.currentIndexChanged.connect(self._on_field_changed)
         self.comp.currentIndexChanged.connect(lambda *_: self.request_load(reset_range=True))
@@ -196,6 +206,8 @@ class ViewportPanel(Panel):
         sv.files_changed.connect(self._on_files_changed)
         self._refresh_meta_timer = QTimer(self, singleShot=True, interval=1500, timeout=self.request_meta)
         QTimer.singleShot(300, self._report_gpu)
+        self.plotter.installEventFilter(self)
+        sv.set_active_viewport(self)
         if sv.session is not None:
             self.set_case(sv.session.root)
 
@@ -285,6 +297,14 @@ class ViewportPanel(Panel):
                 return i
         return len(times) - 1
 
+    def _select_patch(self, cur, _prev=None) -> None:
+        """Reader names look like 'patch/inlet' or 'fluid/patch/inlet' -> Properties panel."""
+        if cur is None or cur.text().endswith("internalMesh"):
+            return
+        parts = cur.text().split("/")
+        region = parts[0] if len(parts) >= 3 else ""
+        self.ctx.services.select({"kind": "patch", "name": parts[-1], "region": region})
+
     def _patch_names(self) -> list[str]:
         return [self.patches.item(i).text() for i in range(self.patches.count())]
 
@@ -321,7 +341,10 @@ class ViewportPanel(Panel):
         req = {"case": str(self.case_root), "decomposed": self._decomposed(),
                "time": self.meta["times"][self.time.currentIndex()] if self.meta.get("times") else None,
                "field": self._vtk_names.get(self.field.currentText()), "component": self.comp.currentText(),
-               "patches": patches}
+               "patches": patches, "show_internal": any(p.endswith("internalMesh") for p in patches),
+               "stages": [{**s, "field": self._vtk_names.get(s["field"], s["field"])} if s.get("field") else s
+                          for s in self.stages],
+               "view": self.view_opts}
         if self.slice_on.isChecked() and self.bounds is not None:
             ax = self.slice_axis.currentIndex()
             b = self.bounds
@@ -344,6 +367,7 @@ class ViewportPanel(Panel):
                 actor, _m = self.actors.pop(name)
                 self.plotter.renderer.RemoveActor(actor)
         self.scalar = data["scalar"]
+        self.stage_info = data.get("stage_info", {})
         if data["bounds"] is not None:
             self.bounds = data["bounds"]
         if self.range is None or not self.lock.isChecked():
@@ -368,8 +392,15 @@ class ViewportPanel(Panel):
         if self.field.currentText() and data["scalar"] is None:
             msg += f" · '{self.field.currentText()}' is not written at this time"
             self.ctx.services.notify(f"Viewport: '{self.field.currentText()}' is not written at t = {data['time']:g}")
+        interp = sorted({i["label"] for k, i in self.stage_info.items() if i.get("interpolated") and "~" not in k})
+        if interp:
+            msg += " · interpolated: " + ", ".join(interp)
+        for k, i in self.stage_info.items():
+            for note in i.get("notes", []) if "~" not in k else []:
+                msg += f" · {i['label']}: {note}"
         self.info.setText(msg)
         self.plotter.render()
+        self.stages_updated.emit(self.stage_info)
 
     def _apply_display(self) -> None:
         rep = self.rep.currentIndex()
@@ -379,11 +410,51 @@ class ViewportPanel(Panel):
             m = max(abs(lo_hi[0]), abs(lo_hi[1]))
             lo_hi = (-m, m)
         lut = _lut(cmap, *(lo_hi or (0, 1)))
-        for _name, (actor, mapper) in self.actors.items():
+        stage_luts: dict[str, vtk.vtkLookupTable] = {}
+        bar = (lut, self.scalar) if self.scalar and lo_hi is not None else None
+        for name, (actor, mapper) in self.actors.items():
             prop = actor.GetProperty()
+            info = self.stage_info.get(name)
+            if info is not None:  # a pipeline stage: its own array, range and colour map
+                key = name.split("~")[0]
+                prop.SetRepresentationToSurface()
+                prop.SetEdgeVisibility(False)
+                prop.SetOpacity(info.get("opacity", 1.0))
+                if info.get("association") == "point":
+                    prop.SetInterpolationToGouraud()
+                else:
+                    prop.SetInterpolationToFlat()
+                prop.SetColor(0.85, 0.85, 0.88)
+                if info.get("scalar") and info.get("range"):
+                    slut = stage_luts.get(key)
+                    if slut is None:
+                        smap = info.get("cmap") or cmap
+                        slut = stage_luts[key] = _lut(smap if smap in CMAPS or smap == "gray" else cmap,
+                                                      *info["range"])
+                    if info.get("association") == "point":
+                        mapper.SetScalarModeToUsePointFieldData()
+                    else:
+                        mapper.SetScalarModeToUseCellFieldData()
+                    mapper.SelectColorArray(info["scalar"])
+                    mapper.SetLookupTable(slut)
+                    mapper.SetUseLookupTableScalarRange(True)
+                    mapper.ScalarVisibilityOn()
+                    if key == self.bar_stage or (bar is None and "~" not in name):
+                        bar = (slut, info["scalar"])
+                else:
+                    mapper.ScalarVisibilityOff()
+                continue
+            # the base mesh: translucent by default once pipeline stages are shown (they sit inside it)
+            base = self.view_opts.get("base") or ("translucent" if any(
+                s.get("visible", True) for s in self.stages) else "surface")
+            actor.SetVisibility(base != "hidden")
+            prop.SetOpacity({"translucent": 0.15, "outline": 0.35}.get(base, 1.0))
             prop.SetInterpolationToFlat()
-            prop.SetRepresentationToWireframe() if rep == 2 else prop.SetRepresentationToSurface()
-            prop.SetEdgeVisibility(rep == 1)
+            if rep == 2 or base == "outline":
+                prop.SetRepresentationToWireframe()
+            else:
+                prop.SetRepresentationToSurface()
+            prop.SetEdgeVisibility(rep == 1 and base == "surface")
             prop.SetEdgeColor(0.15, 0.15, 0.17)
             prop.SetColor(0.65, 0.67, 0.70)
             if self.scalar and lo_hi is not None:
@@ -394,13 +465,47 @@ class ViewportPanel(Panel):
                 mapper.ScalarVisibilityOn()
             else:
                 mapper.ScalarVisibilityOff()
-        if self.scalar and lo_hi is not None:
-            self.scalar_bar.SetLookupTable(lut)
-            self.scalar_bar.SetTitle(display_name(self.scalar))
+        if bar is not None:
+            self.scalar_bar.SetLookupTable(bar[0])
+            self.scalar_bar.SetTitle(display_name(bar[1]))
             self.scalar_bar.VisibilityOn()
         else:
             self.scalar_bar.VisibilityOff()
         self.plotter.render()
+
+    # ------------------------------------------------------------------ pipeline (Visualization panel)
+    def set_stages(self, stages: list[dict]) -> None:
+        self.stages = [dict(s) for s in stages]
+        self.request_load()
+
+    def set_view_options(self, opts: dict) -> None:
+        self.view_opts = dict(opts)
+        self.request_load()
+
+    def set_bar_stage(self, stage_id: str | None) -> None:
+        self.bar_stage = f"stage:{stage_id}" if stage_id else None
+        self._apply_display()
+
+    def field_names(self) -> list[str]:
+        return [self.field.itemText(i) for i in range(self.field.count())]
+
+    def showEvent(self, ev) -> None:  # the viewport you can see is the one the Visualization panel edits
+        super().showEvent(ev)
+        self.ctx.services.set_active_viewport(self)
+
+    def hideEvent(self, ev) -> None:
+        super().hideEvent(ev)
+        sv = self.ctx.services
+        if sv.active_viewport is self and sv.host is not None:
+            others = [p for p in sv.host.panels_of("aether.viewport") if p is not self and p.isVisible()]
+            sv.set_active_viewport(others[0] if others else None)
+
+    def eventFilter(self, obj, ev) -> bool:  # Qt override: a click/focus makes this the active viewport
+        from PySide6.QtCore import QEvent
+
+        if ev.type() in (QEvent.Type.FocusIn, QEvent.Type.MouseButtonPress):
+            self.ctx.services.set_active_viewport(self)
+        return False
 
     def _on_fail(self, vid: str, gen: int, msg: str) -> None:
         if vid == self.vid:
@@ -492,10 +597,20 @@ class ViewportPanel(Panel):
             if arr is not None:
                 val = arr.GetTuple(cid)
         p = picker.GetPickPosition()
-        txt = f"Probe at ({p[0]:.4g}, {p[1]:.4g}, {p[2]:.4g})  cell {cid}"
+        txt = f"Probe at ({p[0]:.4g}, {p[1]:.4g}, {p[2]:.4g})"
         if val is not None:
             txt += f"  {display_name(self.scalar)} = {', '.join(f'{v:.5g}' for v in val)}"
         self.ctx.services.notify(txt)
+        # all fields at that cell -> Properties panel (read on the worker)
+        self._req_probe.emit(self.vid, self.gen, {
+            "case": str(self.case_root), "decomposed": self._decomposed(), "point": list(p),
+            "time": self.meta["times"][self.time.currentIndex()] if self.meta.get("times") else None})
+
+    def _on_probe(self, vid: str, gen: int, data: dict) -> None:
+        if vid != self.vid:
+            return
+        values = {display_name(k): v for k, v in data.get("values", {}).items()}
+        self.ctx.services.select({"kind": "cell", "source": self.ctx.instance_id, **data, "values": values})
 
     def _report_gpu(self) -> None:
         try:
@@ -541,6 +656,7 @@ class ViewportPanel(Panel):
         cam = self.plotter.camera
         return {"field": self.field.currentText(), "component": self.comp.currentText(),
                 "rep": self.rep.currentIndex(), "cmap": self.cmap.currentText(), "follow": self.follow.isChecked(),
+                "stages": self.stages, "view": self.view_opts,
                 "camera": {"position": list(cam.position), "focal_point": list(cam.focal_point),
                            "view_up": list(cam.up)}}
 
@@ -551,8 +667,12 @@ class ViewportPanel(Panel):
         self.follow.setChecked(bool(state.get("follow", False)))
         if state.get("component"):
             self.comp.setCurrentText(state["component"])
+        self.stages = [s for s in state.get("stages", []) if isinstance(s, dict) and s.get("type")]
+        self.view_opts = dict(state.get("view") or {})
 
     def dispose(self) -> None:
+        if getattr(self.ctx.services, "active_viewport", None) is self:
+            self.ctx.services.set_active_viewport(None)
         try:
             self.plotter.close()
         except Exception:

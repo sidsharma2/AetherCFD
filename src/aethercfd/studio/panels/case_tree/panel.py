@@ -61,6 +61,7 @@ class CaseTreePanel(Panel):
         self.view.doubleClicked.connect(self._on_activate)
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._menu)
+        self.view.selectionModel().currentChanged.connect(self._on_current)
         lay.addWidget(self.view, 1)
         self.root: Path | None = None
         self._refresh_timer = QTimer(self, singleShot=True, interval=400, timeout=self.refresh)
@@ -68,6 +69,12 @@ class CaseTreePanel(Panel):
         ctx.services.case_changed.connect(lambda s: self.set_root(s.root if s else None))
         if ctx.services.session is not None:
             self.set_root(ctx.services.session.root)
+
+    def _on_current(self, cur, _prev) -> None:
+        """Selecting a file shows its details in the Properties panel."""
+        p = cur.siblingAtColumn(0).data(PATH_ROLE) if cur.isValid() else None
+        if p and Path(p).is_file():
+            self.ctx.services.select({"kind": "file", "path": p})
 
     # ------------------------------------------------------------------ model
     def _item(self, path: Path, label: str | None = None, *, is_dir: bool) -> list[QStandardItem]:
