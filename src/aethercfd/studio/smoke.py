@@ -28,6 +28,13 @@ def _pump(app: QApplication, seconds: float) -> None:
 
 
 def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
+    import faulthandler
+    import os as _os0
+
+    if _os0.environ.get("AETHER_SMOKE_WATCHDOG"):  # dump every thread's stack and exit if the run hangs
+        out.mkdir(parents=True, exist_ok=True)
+        _wd = open(out / "watchdog_stacks.txt", "w", encoding="utf-8")  # noqa: SIM115 -- open until exit
+        faulthandler.dump_traceback_later(float(_os0.environ["AETHER_SMOKE_WATCHDOG"]), exit=True, file=_wd)
     out.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
     old_hook = sys.excepthook
@@ -147,7 +154,27 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
                 else:
                     visp.add("slice")
                     visp.add("quality")
-                _pump(app, 8.0)
+                t_wait = time.perf_counter()
+                while time.perf_counter() - t_wait < float(_os.environ.get("AETHER_SMOKE_STAGE_WAIT", "60")):
+                    _pump(app, 1.0)
+                    if vp.stages and all(f"stage:{s['id']}" in vp.stage_info for s in vp.stages):
+                        break
+                _pump(app, 1.5)
+                render = _os.environ.get("AETHER_SMOKE_RENDER")
+                if render:
+                    if _os.environ.get("AETHER_SMOKE_VIEW") == "iso":
+                        vp.plotter.view_isometric()
+                        vp.plotter.reset_camera()
+                    if _os.environ.get("AETHER_SMOKE_AO", "1") == "1":
+                        vp.btn_ao.setChecked(True)
+                    _pump(app, 1.0)
+                    report["render_started"] = True
+                    (out / "smoke.partial.json").write_text(json.dumps(report, indent=1, default=str),
+                                                            encoding="utf-8")
+                    t_r = time.perf_counter()
+                    vp.render_image(render, 3840, 2160, background="gradient",
+                                    base=_os.environ.get("AETHER_SMOKE_BASE", "outline"), frame_stages=True)
+                    report["render"] = {"path": render, "seconds": round(time.perf_counter() - t_r, 2)}
                 report["vis"] = {"stages": [s["type"] for s in vp.stages],
                                  "info": {k: {"cells": v["cells"], "notes": v["notes"], "label": v["label"]}
                                           for k, v in vp.stage_info.items()}}

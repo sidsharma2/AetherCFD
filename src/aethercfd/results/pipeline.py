@@ -30,9 +30,10 @@ from vtk.util import numpy_support as nps
 CELLS = vtk.vtkDataObject.FIELD_ASSOCIATION_CELLS
 POINTS = vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS
 
-STAGE_TYPES = ["slice", "clip", "threshold", "contour", "streamlines", "glyphs", "schlieren", "quality"]
+STAGE_TYPES = ["slice", "clip", "threshold", "contour", "streamlines", "glyphs", "schlieren", "quality",
+               "qcriterion", "isosurface"]
 STAGE_FIELDS = {"threshold": "field", "contour": "field", "streamlines": "field", "glyphs": "field",
-                "schlieren": "source"}
+                "schlieren": "source", "isosurface": "field", "qcriterion": "field"}
 
 
 @dataclass
@@ -252,8 +253,13 @@ def stage_contour(spec, internal, field_name, comp) -> StageOutput:
     assoc = "point"
     if color and poly.GetPointData().GetArray(color) is None and poly.GetCellData().GetArray(color) is not None:
         assoc = "cell"
+    notes = []
+    sm, sub = int(spec.get("smooth", 0) or 0), int(spec.get("subdivide", 0) or 0)
+    if sm or sub:
+        poly = present_smooth(poly, sm, sub)
+        notes.append(f"smoothed for presentation ({sm} iterations, {sub} subdivisions): not the raw data")
     return StageOutput(poly, color, assoc, _range(poly, color, assoc), interpolated=True,
-                       label=f"contour {fname}")
+                       label=f"contour {fname}", notes=notes)
 
 
 def _seeds(spec, bounds) -> vtk.vtkAlgorithm:
@@ -474,15 +480,190 @@ def stage_quality(spec, internal, field_name, comp, *, mesh_dirs: list[Path]) ->
     return out
 
 
+def present_smooth(poly: vtk.vtkPolyData, iterations: int = 0, subdivide: int = 0) -> vtk.vtkPolyData:
+    """PRESENTATION ONLY: Taubin (windowed-sinc) smoothing that does not shrink the surface, optional Loop
+    subdivision, then smooth normals. Changes geometry for looks; callers label the result as smoothed."""
+    out = poly
+    if iterations > 0 and out.GetNumberOfPolys():
+        f = vtk.vtkWindowedSincPolyDataFilter()
+        f.SetInputData(out)
+        f.SetNumberOfIterations(int(iterations))
+        f.SetPassBand(0.05)
+        f.BoundarySmoothingOff()
+        f.FeatureEdgeSmoothingOff()
+        f.NonManifoldSmoothingOn()
+        f.NormalizeCoordinatesOn()
+        f.Update()
+        out = f.GetOutput()
+    if subdivide > 0 and out.GetNumberOfPolys():
+        clean = vtk.vtkCleanPolyData()
+        clean.SetInputData(out)
+        clean.Update()
+        sd = vtk.vtkLoopSubdivisionFilter()
+        sd.SetInputConnection(clean.GetOutputPort())
+        sd.SetNumberOfSubdivisions(min(int(subdivide), 2))
+        sd.Update()
+        out = sd.GetOutput()
+    if out is not poly:
+        n = vtk.vtkPolyDataNormals()
+        n.SetInputData(out)
+        n.SplittingOff()
+        n.ConsistencyOn()
+        n.ComputePointNormalsOn()
+        n.Update()
+        res = vtk.vtkPolyData()
+        res.ShallowCopy(n.GetOutput())
+        return res
+    return out
+
+
+def surface_to_poly(s) -> vtk.vtkPolyData:
+    """aethercfd.results.iso.Surface -> vtkPolyData with point normals (smooth shading) and scalars."""
+    poly = vtk.vtkPolyData()
+    pts = vtk.vtkPoints()
+    pts.SetData(nps.numpy_to_vtk(np.ascontiguousarray(s.points), deep=True))
+    poly.SetPoints(pts)
+    n = len(s.triangles)
+    conn = nps.numpy_to_vtk(np.ascontiguousarray(s.triangles.astype(np.int64).ravel()), deep=True,
+                            array_type=vtk.VTK_ID_TYPE)
+    offs = nps.numpy_to_vtk(np.arange(0, 3 * n + 1, 3, dtype=np.int64), deep=True, array_type=vtk.VTK_ID_TYPE)
+    cells = vtk.vtkCellArray()
+    cells.SetData(offs, conn)
+    poly.SetPolys(cells)
+    nrm = nps.numpy_to_vtk(np.ascontiguousarray(s.normals), deep=True)
+    nrm.SetName("Normals")
+    poly.GetPointData().SetNormals(nrm)
+    if s.scalars is not None:
+        sc = nps.numpy_to_vtk(np.ascontiguousarray(s.scalars), deep=True)
+        sc.SetName("colour")
+        poly.GetPointData().AddArray(sc)
+    return poly
+
+
+_PERM_CACHE: dict[tuple, np.ndarray] = {}
+
+
+def global_cell_order(case: Path, n_cells: int) -> np.ndarray | None:
+    """For a case read DECOMPOSED (processor meshes appended in processor order): the global OpenFOAM cell id
+    of every loaded cell, from processorN/constant/polyMesh/cellProcAddressing."""
+    from aethercfd.mesh.polymesh import _read_list
+
+    procs = sorted((p for p in case.glob("processor*") if p.name[9:].isdigit()), key=lambda p: int(p.name[9:]))
+    files = [p / "constant" / "polyMesh" / "cellProcAddressing" for p in procs]
+    if not files or not all(f.exists() for f in files):
+        return None
+    key = (str(case), tuple(f.stat().st_mtime for f in files))
+    if key not in _PERM_CACHE:
+        _PERM_CACHE.clear()
+        _PERM_CACHE[key] = np.concatenate([_read_list(f, "labels")[0] for f in files])
+    perm = _PERM_CACHE[key]
+    return perm if len(perm) == n_cells else None
+
+
+def _to_global(values: np.ndarray, perm: np.ndarray | None) -> np.ndarray:
+    if perm is None:
+        return values
+    out = np.empty_like(values)
+    out[perm] = values
+    return out
+
+
+def _check_order(ds, centres: np.ndarray, perm: np.ndarray | None, sample: int = 200) -> bool:
+    """Loaded cell i must sit where the mesh's cell (perm[i] or i) is: compare cell centres on a sample."""
+    n = ds.GetNumberOfCells()
+    idx = np.linspace(0, n - 1, min(sample, n)).astype(int)
+    b = [ds.GetCell(int(i)).GetBounds() for i in idx]
+    mid = np.array([[(x[0] + x[1]) / 2, (x[2] + x[3]) / 2, (x[4] + x[5]) / 2] for x in b])
+    target = centres[perm[idx] if perm is not None else idx]
+    span = np.array([x[1] - x[0] + x[3] - x[2] + x[5] - x[4] for x in b])
+    return bool(np.all(np.linalg.norm(mid - target, axis=1) <= np.maximum(span, 1e-12)))
+
+
+def _cell_numpy(ds, name: str, comp: str = "magnitude") -> np.ndarray | None:
+    arr = ds.GetCellData().GetArray(name)
+    if arr is None:
+        return None
+    a = nps.vtk_to_numpy(arr).astype(np.float64)
+    if a.ndim == 2 and a.shape[1] > 1:
+        return np.linalg.norm(a, axis=1) if comp == "magnitude" else a[:, "xyz".index(comp)]
+    return a
+
+
+def stage_gpu_iso(spec, internal, field_name, comp, *, mesh_dirs: list[Path], decomposed: bool = False) \
+        -> StageOutput:
+    """Q-criterion or any cell field contoured by the tet-decomposition engine (CUDA when available)."""
+    from aethercfd.core.gpu import array_module
+    from aethercfd.results import iso
+
+    kind = spec.get("type")
+    if not internal or not mesh_dirs:
+        return StageOutput(vtk.vtkPolyData(), notes=["no internal mesh"], label=kind)
+    ds, md = internal[0], mesh_dirs[0]
+    try:
+        tm = iso.tetmesh_for(md)
+    except Exception as exc:
+        return StageOutput(vtk.vtkPolyData(), notes=[f"mesh: {exc}"], label=kind)
+    if tm.n_cells != ds.GetNumberOfCells():
+        return StageOutput(vtk.vtkPolyData(), notes=[f"{ds.GetNumberOfCells()} loaded cells vs {tm.n_cells} in the "
+                                                     "mesh"], label=kind)
+    perm = global_cell_order(md.parent.parent, tm.n_cells) if decomposed else None
+    if decomposed and perm is None:
+        return StageOutput(vtk.vtkPolyData(), notes=["decomposed case without cellProcAddressing"], label=kind)
+    if not _check_order(ds, tm.xyz[tm.n_points:], perm):
+        return StageOutput(vtk.vtkPolyData(), notes=["loaded cells do not match the mesh cell order; not drawing "
+                                                     "a wrong surface"], label=kind)
+    xp, backend = array_module(spec.get("backend", "auto"))
+    notes = []
+    color_name = spec.get("color_by") or ("U" if kind == "qcriterion" else None)
+    color = _cell_numpy(ds, color_name) if color_name else None
+    color = _to_global(color, perm) if color is not None else None
+    if kind == "qcriterion":
+        Ucell = ds.GetCellData().GetArray(spec.get("field") or "U")
+        if Ucell is None:
+            return StageOutput(vtk.vtkPolyData(), notes=["U is not loaded"], label="Q-criterion")
+        U = xp.asarray(_to_global(nps.vtk_to_numpy(Ucell).astype(np.float64), perm))
+        L = iso.velocity_gradient(tm, U, xp)
+        q = iso.q_criterion(L, xp)
+        level = spec.get("level")
+        if level is None:
+            level = iso.auto_q_level(q, xp, float(spec.get("percentile", 99.0)))
+            notes.append(f"Q level {level:.4g} 1/s² (auto, {spec.get('percentile', 99.0):g}th percentile of Q > 0)")
+        scalar, label = q, "Q-criterion"
+    else:
+        name = spec.get("field") or field_name
+        vals = _cell_numpy(ds, name, spec.get("component", comp)) if name else None
+        if vals is None:
+            return StageOutput(vtk.vtkPolyData(), notes=[f"field {name!r} is not loaded"], label="isosurface")
+        level = spec.get("value")
+        if level is None:
+            level = float(np.median(vals))
+            notes.append(f"value {level:.4g} (median)")
+        scalar, label = xp.asarray(_to_global(vals, perm)), f"isosurface {name}"
+    s = iso.isosurface(tm, scalar, float(level), color_cells=color, backend=backend)
+    notes.append(f"{len(s.triangles):,} triangles in {s.seconds * 1000:.0f} ms on the {s.backend.upper()}")
+    poly = surface_to_poly(s)
+    sm, sub = int(spec.get("smooth", 0) or 0), int(spec.get("subdivide", 0) or 0)
+    if sm or sub:
+        poly = present_smooth(poly, sm, sub)
+        notes.append(f"smoothed for presentation ({sm} iterations, {sub} subdivisions): not the raw data")
+    out = StageOutput(poly, "colour" if s.scalars is not None else None, "point",
+                      None if s.scalars is None or not len(s.scalars) else (float(s.scalars.min()),
+                                                                             float(s.scalars.max())),
+                      cmap=spec.get("cmap"), interpolated=True, label=f"{label} ({s.backend})", notes=notes)
+    return out
+
+
 STAGES = {"slice": stage_slice, "clip": stage_clip, "threshold": stage_threshold, "contour": stage_contour,
           "streamlines": stage_streamlines, "glyphs": stage_glyphs, "schlieren": stage_schlieren}
 
 
 def run_stage(spec: dict, internal: list, field_name: str | None, comp: str = "magnitude", *,
-              mesh_dirs: list[Path] | None = None) -> StageOutput:
+              mesh_dirs: list[Path] | None = None, decomposed: bool = False) -> StageOutput:
     t = spec.get("type")
     if t == "quality":
         return stage_quality(spec, internal, field_name, comp, mesh_dirs=mesh_dirs or [])
+    if t in ("qcriterion", "isosurface"):
+        return stage_gpu_iso(spec, internal, field_name, comp, mesh_dirs=mesh_dirs or [], decomposed=decomposed)
     fn = STAGES.get(t)
     if fn is None:
         return StageOutput(vtk.vtkPolyData(), notes=[f"unknown stage {t!r}"])
@@ -497,7 +678,7 @@ def fields_needed(stages: list[dict]) -> set[str]:
             out.add(s[key])
             if s["type"] == "schlieren":
                 out.add(f"grad({s[key]})")
-        elif s.get("type") in ("streamlines", "glyphs"):
+        elif s.get("type") in ("streamlines", "glyphs", "qcriterion"):
             out.add("U")
         if s.get("color_by"):
             out.add(s["color_by"])

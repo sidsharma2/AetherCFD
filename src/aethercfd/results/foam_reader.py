@@ -46,6 +46,10 @@ class FoamResults:
         r.SkipZeroTimeOff()
         r.ListTimeStepsByControlDictOff()
         r.ReadZonesOff()
+        # keep polyhedra whole: cell i of the internal mesh is OpenFOAM cell i (quality maps and the GPU
+        # isosurface engine index cell data by OpenFOAM cell id)
+        if hasattr(r, "SetDecomposePolyhedra"):
+            r.SetDecomposePolyhedra(0)
         self.reader = r
         self.meta = ResultsMeta()
 

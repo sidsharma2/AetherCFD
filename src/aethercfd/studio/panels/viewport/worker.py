@@ -175,7 +175,8 @@ class VtkWorker(QObject):
                 mesh_dirs = [case / "constant" / (p.rsplit("/", 1)[0] if "/" in p else "") / "polyMesh"
                              for p in internal_paths]
                 for s in stages:
-                    out = pl.run_stage(s, internal, field, req.get("component", "magnitude"), mesh_dirs=mesh_dirs)
+                    out = pl.run_stage(s, internal, field, req.get("component", "magnitude"), mesh_dirs=mesh_dirs,
+                                       decomposed=bool(req.get("decomposed")))
                     key = f"stage:{s.get('id')}"
                     blocks[key] = out.poly
                     stage_info[key] = {"scalar": out.scalar, "association": out.association, "range": out.range,

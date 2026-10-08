@@ -27,6 +27,9 @@ dependencies = [
     "nvidia-ml-py>=12",
     "matplotlib>=3.9",  # publication plot export (runs in a subprocess with the user's style)
     "scipy>=1.18.1",
+    "cupy-cuda12x>=13",
+    "nvidia-cuda-nvrtc-cu12>=12.9.86",
+    "nvidia-cuda-runtime-cu12>=12.9.79",
 ]
 
 [project.scripts]

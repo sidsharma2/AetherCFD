@@ -119,9 +119,12 @@ class ViewportPanel(Panel):
                                              _tool("mdi6.axis-y-arrow", "Look along Y"),
                                              _tool("mdi6.axis-z-arrow", "Look along Z"))
         self.btn_iso = _tool("mdi6.cube-scan", "Isometric")
+        self.btn_ao = _tool("mdi6.circle-half-full", "Ambient occlusion (depth cues for 3D surfaces)", checkable=True)
         self.btn_shot = _tool("msc.device-camera", "Screenshot (PNG, 2x)")
+        self.btn_render = _tool("mdi6.image-filter-hdr", "Render image… (up to 8K, 8x anti-aliasing)")
         self.btn_side = _tool("msc.layout-sidebar-right", "Display options", checkable=True)
-        for b in (self.btn_fit, self.btn_x, self.btn_y, self.btn_z, self.btn_iso, self.btn_shot, self.btn_side):
+        for b in (self.btn_fit, self.btn_x, self.btn_y, self.btn_z, self.btn_iso, self.btn_ao, self.btn_shot,
+                  self.btn_render, self.btn_side):
             bar.addWidget(b)
         lay.addLayout(bar)
         # ---------------- view + sidebar
@@ -130,6 +133,7 @@ class ViewportPanel(Panel):
         self.plotter.set_background(T.viewport_bg)
         self.plotter.enable_anti_aliasing("fxaa")
         self.plotter.enable_depth_peeling(number_of_peels=4)  # correct order for translucent base meshes
+        self.plotter.enable_lightkit()  # key/fill/back lights: shape reads clearly on smooth surfaces
         self.plotter.add_axes(color=T.text_dim)
         split.addWidget(self.plotter)
         side = QWidget()
@@ -199,6 +203,8 @@ class ViewportPanel(Panel):
         self.btn_z.clicked.connect(lambda: self._view("xy"))
         self.btn_iso.clicked.connect(lambda: (self.plotter.view_isometric(), self.plotter.render()))
         self.btn_shot.clicked.connect(self.screenshot)
+        self.btn_render.clicked.connect(self.render_dialog)
+        self.btn_ao.toggled.connect(self._set_ao)
         self.btn_side.toggled.connect(self.side.setVisible)
         self.plotter.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.plotter.customContextMenuRequested.connect(self._context_menu)
@@ -412,6 +418,7 @@ class ViewportPanel(Panel):
         lut = _lut(cmap, *(lo_hi or (0, 1)))
         stage_luts: dict[str, vtk.vtkLookupTable] = {}
         bar = (lut, self.scalar) if self.scalar and lo_hi is not None else None
+        stage_bar = None
         for name, (actor, mapper) in self.actors.items():
             prop = actor.GetProperty()
             info = self.stage_info.get(name)
@@ -420,10 +427,15 @@ class ViewportPanel(Panel):
                 prop.SetRepresentationToSurface()
                 prop.SetEdgeVisibility(False)
                 prop.SetOpacity(info.get("opacity", 1.0))
-                if info.get("association") == "point":
-                    prop.SetInterpolationToGouraud()
+                if info.get("association") == "point":  # smooth, lit surfaces (isosurfaces, contours)
+                    prop.SetInterpolationToPhong()
+                    prop.SetAmbient(0.12)
+                    prop.SetDiffuse(0.85)
+                    prop.SetSpecular(0.35)
+                    prop.SetSpecularPower(28)
                 else:
                     prop.SetInterpolationToFlat()
+                    prop.SetSpecular(0.0)
                 prop.SetColor(0.85, 0.85, 0.88)
                 if info.get("scalar") and info.get("range"):
                     slut = stage_luts.get(key)
@@ -439,8 +451,9 @@ class ViewportPanel(Panel):
                     mapper.SetLookupTable(slut)
                     mapper.SetUseLookupTableScalarRange(True)
                     mapper.ScalarVisibilityOn()
-                    if key == self.bar_stage or (bar is None and "~" not in name):
-                        bar = (slut, info["scalar"])
+                    # the colour bar explains what the eye goes to: the selected stage, else the first stage
+                    if key == self.bar_stage or (stage_bar is None and "~" not in name):
+                        stage_bar = (slut, self._stage_bar_title(key, info))
                 else:
                     mapper.ScalarVisibilityOff()
                 continue
@@ -465,6 +478,8 @@ class ViewportPanel(Panel):
                 mapper.ScalarVisibilityOn()
             else:
                 mapper.ScalarVisibilityOff()
+        if stage_bar is not None and self.bar_stage != "field":
+            bar = stage_bar
         if bar is not None:
             self.scalar_bar.SetLookupTable(bar[0])
             self.scalar_bar.SetTitle(display_name(bar[1]))
@@ -472,6 +487,43 @@ class ViewportPanel(Panel):
         else:
             self.scalar_bar.VisibilityOff()
         self.plotter.render()
+
+    def _stage_bar_title(self, key: str, info: dict) -> str:
+        sid = key.split(":", 1)[1]
+        s = next((x for x in self.stages if x.get("id") == sid), {})
+        col = s.get("color_by") or ("U" if s.get("type") == "qcriterion" else s.get("field") or info.get("scalar"))
+        return f"|{col}|" if col == "U" else str(col)
+
+    def stage_bounds(self, stage_id: str | None = None) -> list[float] | None:
+        """Bounds of one stage's geometry (or all visible stages)."""
+        b = [float("inf"), float("-inf")] * 3
+        hit = False
+        for name, (actor, mapper) in self.actors.items():
+            if not name.startswith("stage:") or not actor.GetVisibility():
+                continue
+            if stage_id and name.split("~")[0] != f"stage:{stage_id}":
+                continue
+            poly = mapper.GetInput()
+            if poly is None or poly.GetNumberOfPoints() == 0:
+                continue
+            pb = poly.GetBounds()
+            for k in range(3):
+                b[2 * k] = min(b[2 * k], pb[2 * k])
+                b[2 * k + 1] = max(b[2 * k + 1], pb[2 * k + 1])
+            hit = True
+        return b if hit else None
+
+    def frame_stage(self, stage_id: str | None = None, padding: float = 0.08) -> bool:
+        """Zoom the camera onto a stage (keeps the viewing direction)."""
+        b = self.stage_bounds(stage_id)
+        if b is None:
+            return False
+        pad = [(b[2 * k + 1] - b[2 * k]) * padding for k in range(3)]
+        self.plotter.renderer.ResetCamera([b[0] - pad[0], b[1] + pad[0], b[2] - pad[1], b[3] + pad[1],
+                                           b[4] - pad[2], b[5] + pad[2]])
+        self.plotter.camera_set = True
+        self.plotter.render()
+        return True
 
     # ------------------------------------------------------------------ pipeline (Visualization panel)
     def set_stages(self, stages: list[dict]) -> None:
@@ -567,6 +619,144 @@ class ViewportPanel(Panel):
         cam.SetParallelScale((1 + padding) * max(h / 2 / 0.86, w / (2 * aspect)))
         self.plotter.renderer.ResetCameraClippingRange()
         self.plotter.camera_set = True  # stop pyvista from resetting our camera on its first render
+
+    def _set_ao(self, on: bool) -> None:
+        b = self.bounds or [0, 1, 0, 1, 0, 1]
+        diag = ((b[1] - b[0]) ** 2 + (b[3] - b[2]) ** 2 + (b[5] - b[4]) ** 2) ** 0.5 or 1.0
+        try:
+            if on:
+                self.plotter.enable_ssao(radius=0.02 * diag, bias=0.002 * diag, kernel_size=128, blur=True)
+            else:
+                self.plotter.disable_ssao()
+        except Exception as exc:
+            self.ctx.services.notify(f"Ambient occlusion unavailable: {exc}", "warn")
+        self.plotter.render()
+
+    def render_image(self, path: str, width: int, height: int, *, background: str = "dark",
+                     transparent: bool = False, msaa: int = 8, colorbar: bool = True, base: str = "as shown",
+                     frame_stages: bool = False) -> str:
+        """Offscreen render at full resolution with MSAA (a separate GL context: sharp edges and text at
+        4K/8K, independent of the window size). Same actors, camera and colours as on screen."""
+        rw = vtk.vtkRenderWindow()
+        rw.SetOffScreenRendering(1)
+        rw.SetMultiSamples(int(msaa))
+        rw.SetAlphaBitPlanes(1)
+        rw.SetSize(int(width), int(height))
+        ren = vtk.vtkRenderer()
+        rw.AddRenderer(ren)
+        bg = {"dark": (0.105, 0.11, 0.122), "black": (0, 0, 0), "white": (1, 1, 1)}.get(background, (0.105, 0.11, 0.122))
+        ren.SetBackground(*bg)
+        if background == "gradient":
+            ren.GradientBackgroundOn()
+            ren.SetBackground(0.03, 0.035, 0.05)
+            ren.SetBackground2(0.20, 0.22, 0.27)
+        kit = vtk.vtkLightKit()
+        kit.AddLightsToRenderer(ren)
+        for name, (actor, mapper) in self.actors.items():
+            is_stage = name in self.stage_info
+            if not is_stage and base == "hidden":
+                continue
+            if not actor.GetVisibility() and not (not is_stage and base in ("outline", "translucent")):
+                continue
+            m = vtk.vtkPolyDataMapper()
+            m.ShallowCopy(mapper)
+            m.SetInputData(mapper.GetInput())
+            a = vtk.vtkActor()
+            a.SetMapper(m)
+            a.GetProperty().DeepCopy(actor.GetProperty())
+            if not is_stage and base == "outline":
+                a.GetProperty().SetRepresentationToWireframe()
+                a.GetProperty().SetOpacity(0.12)
+                m.ScalarVisibilityOff()
+                a.GetProperty().SetColor(0.75, 0.78, 0.85)
+            elif not is_stage and base == "translucent":
+                a.GetProperty().SetOpacity(0.12)
+            ren.AddActor(a)
+        if base in ("outline", "translucent", "as shown"):
+            rw.SetAlphaBitPlanes(1)
+            ren.SetUseDepthPeeling(1)
+            ren.SetMaximumNumberOfPeels(6)
+        cam = vtk.vtkCamera()
+        cam.DeepCopy(self.plotter.renderer.GetActiveCamera())
+        ren.SetActiveCamera(cam)
+        sb_bounds = self.stage_bounds() if frame_stages else None
+        if sb_bounds is not None:
+            pad = [(sb_bounds[2 * k + 1] - sb_bounds[2 * k]) * 0.06 for k in range(3)]
+            ren.ResetCamera([sb_bounds[0] - pad[0], sb_bounds[1] + pad[0], sb_bounds[2] - pad[1],
+                             sb_bounds[3] + pad[1], sb_bounds[4] - pad[2], sb_bounds[5] + pad[2]])
+        if colorbar and self.scalar_bar.GetVisibility():
+            sb = vtk.vtkScalarBarActor()
+            sb.ShallowCopy(self.scalar_bar)
+            scale = height / max(1, self.plotter.height())
+            for tp_src, tp in ((self.scalar_bar.GetLabelTextProperty(), sb.GetLabelTextProperty()),
+                               (self.scalar_bar.GetTitleTextProperty(), sb.GetTitleTextProperty())):
+                tp.ShallowCopy(tp_src)
+                tp.SetFontSize(max(8, round(tp_src.GetFontSize() * scale)))
+                if background == "white":
+                    tp.SetColor(0.1, 0.1, 0.1)
+            ren.AddViewProp(sb)
+        ren.ResetCameraClippingRange()
+        rw.Render()
+        w2i = vtk.vtkWindowToImageFilter()
+        w2i.SetInput(rw)
+        if transparent:
+            w2i.SetInputBufferTypeToRGBA()
+        w2i.ReadFrontBufferOff()
+        w2i.Update()
+        writer = vtk.vtkPNGWriter()
+        writer.SetFileName(path)
+        writer.SetInputConnection(w2i.GetOutputPort())
+        writer.Write()
+        rw.Finalize()
+        return path
+
+    def render_dialog(self) -> None:
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Render image")
+        form = QFormLayout(dlg)
+        res = QComboBox()
+        for label, wh in (("1920 × 1080 (Full HD)", (1920, 1080)), ("2560 × 1440 (QHD)", (2560, 1440)),
+                          ("3840 × 2160 (4K)", (3840, 2160)), ("7680 × 4320 (8K)", (7680, 4320)),
+                          ("Square 3000 × 3000", (3000, 3000))):
+            res.addItem(label, wh)
+        res.setCurrentIndex(2)
+        bg = QComboBox()
+        bg.addItems(["dark", "gradient", "black", "white"])
+        transparent = QCheckBox("Transparent background (PNG alpha)")
+        bar = QCheckBox("Colour bar")
+        bar.setChecked(True)
+        base = QComboBox()
+        base.addItems(["as shown", "outline", "translucent", "hidden"])
+        if self.stages:
+            base.setCurrentText("outline")
+        frame = QCheckBox("Frame the visualization stages (zoom onto them)")
+        frame.setChecked(bool(self.stages))
+        frame.setEnabled(bool(self.stages))
+        form.addRow("Resolution", res)
+        form.addRow("Background", bg)
+        form.addRow("Mesh surfaces", base)
+        form.addRow(frame)
+        form.addRow(transparent)
+        form.addRow(bar)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        start = str((self.case_root or Path.home()) / f"render_{self.field.currentText()}_{self.time.currentText()}.png")
+        f, _ = QFileDialog.getSaveFileName(self, "Save rendered image", start, "PNG (*.png)")
+        if not f:
+            return
+        w, h = res.currentData()
+        try:
+            self.render_image(f, w, h, background=bg.currentText(), transparent=transparent.isChecked(),
+                              colorbar=bar.isChecked(), base=base.currentText(), frame_stages=frame.isChecked())
+            self.ctx.services.notify(f"Rendered {w}×{h}: {f}")
+        except Exception as exc:
+            self.ctx.services.notify(f"Render failed: {exc}", "error")
 
     def screenshot(self) -> None:
         start = str((self.case_root or Path.home()) / f"view_{self.field.currentText()}_{self.time.currentText()}.png")

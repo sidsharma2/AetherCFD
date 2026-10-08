@@ -38,14 +38,25 @@ from aethercfd.studio.theme.tokens import T
 
 AXES = ["x", "y", "z"]
 METRICS = ["nonOrthogonality", "skewness", "aspectRatio", "volumeRatio", "cellVolume"]
-TITLES = {"slice": "Slice", "clip": "Clip", "threshold": "Threshold", "contour": "Contour",
-          "streamlines": "Streamlines", "glyphs": "Vector glyphs", "schlieren": "Schlieren",
-          "quality": "Mesh quality"}
+TITLES = {"qcriterion": "Q-criterion vortices (GPU)", "isosurface": "Isosurface (GPU)", "slice": "Slice",
+          "clip": "Clip", "threshold": "Threshold", "contour": "Contour (VTK)", "streamlines": "Streamlines",
+          "glyphs": "Vector glyphs", "schlieren": "Schlieren", "quality": "Mesh quality"}
 ICONS = {"slice": "mdi6.box-cutter", "clip": "mdi6.content-cut", "threshold": "mdi6.filter-outline",
          "contour": "mdi6.chart-bell-curve", "streamlines": "mdi6.waves", "glyphs": "mdi6.arrow-top-right",
-         "schlieren": "mdi6.blur", "quality": "mdi6.grid"}
+         "schlieren": "mdi6.blur", "quality": "mdi6.grid", "qcriterion": "mdi6.weather-tornado",
+         "isosurface": "mdi6.layers-outline"}
 # (key, label, kind, default); kinds: axis frac bool field vfield int float optfloat text choice:<a|b>
 PARAMS: dict[str, list[tuple[str, str, str, object]]] = {
+    "qcriterion": [("level", "Q level [1/s²] (blank = auto)", "optfloat", None),
+                   ("percentile", "Auto level percentile", "float", 99.0), ("color_by", "Colour by", "field", "U"),
+                   ("cmap", "Colours", "choice:turbo|viridis|inferno|plasma|coolwarm|gray", "turbo"),
+                   ("opacity", "Opacity", "frac", 1.0), ("smooth", "Presentation smoothing (iterations)", "int0", 0), ("subdivide", "Presentation subdivision (0-2)", "int0", 0),
+                   ("backend", "Compute on", "choice:auto|cuda|cpu", "auto")],
+    "isosurface": [("field", "Field", "field", None), ("value", "Value (blank = median)", "optfloat", None),
+                   ("color_by", "Colour by", "field", None),
+                   ("cmap", "Colours", "choice:turbo|viridis|inferno|plasma|coolwarm|gray", "viridis"),
+                   ("opacity", "Opacity", "frac", 1.0), ("smooth", "Presentation smoothing (iterations)", "int0", 0), ("subdivide", "Presentation subdivision (0-2)", "int0", 0),
+                   ("backend", "Compute on", "choice:auto|cuda|cpu", "auto")],
     "slice": [("axis", "Normal", "axis", "z"), ("pos", "Position", "frac", 0.5)],
     "clip": [("axis", "Normal", "axis", "x"), ("pos", "Position", "frac", 0.5), ("invert", "Keep other side", "bool",
                                                                                   False),
@@ -54,7 +65,8 @@ PARAMS: dict[str, list[tuple[str, str, str, object]]] = {
                                                       "magnitude"),
                   ("lo", "From", "optfloat", None), ("hi", "To", "optfloat", None)],
     "contour": [("field", "Field", "field", None), ("values", "Values (blank = 5 auto)", "text", ""),
-                ("color_by", "Colour by", "field", None), ("opacity", "Opacity", "frac", 1.0)],
+                ("color_by", "Colour by", "field", None), ("opacity", "Opacity", "frac", 1.0),
+                ("smooth", "Presentation smoothing (iterations)", "int0", 0), ("subdivide", "Presentation subdivision (0-2)", "int0", 0)],
     "streamlines": [("field", "Vector field", "vfield", "U"), ("seed", "Seeds", "choice:line|plane|sphere", "line"),
                     ("axis", "Seed normal", "axis", "x"), ("pos", "Seed position", "frac", 0.05),
                     ("n", "Seed count", "int", 50), ("max_length", "Max length (x diagonal)", "float", 3.0)],
@@ -89,8 +101,11 @@ class VisPanel(Panel):
         self.btn_add.setMenu(m)
         self.btn_del = QToolButton(icon=icon("msc.trash"), toolTip="Remove stage", autoRaise=True)
         self.btn_dup = QToolButton(icon=icon("msc.copy"), toolTip="Duplicate stage", autoRaise=True)
+        self.btn_frame = QToolButton(icon=icon("msc.screen-full"), toolTip="Zoom the camera onto this stage",
+                                     autoRaise=True)
         bar.addWidget(self.btn_add)
         bar.addStretch(1)
+        bar.addWidget(self.btn_frame)
         bar.addWidget(self.btn_dup)
         bar.addWidget(self.btn_del)
         lay.addLayout(bar)
@@ -136,6 +151,7 @@ class VisPanel(Panel):
         self.list.itemChanged.connect(self._on_item_changed)
         self.btn_del.clicked.connect(self.remove)
         self.btn_dup.clicked.connect(self.duplicate)
+        self.btn_frame.clicked.connect(self._frame)
         for w in (self.mirror, self.rev_axis, self.base):
             w.currentIndexChanged.connect(lambda *_: self._view_timer.start())
         for w in (self.mirror_origin, self.rev_angle, self.rev_copies):
@@ -215,6 +231,12 @@ class VisPanel(Panel):
             self._rebuild_list(select=i + 1)
             self._apply_timer.start()
 
+    def _frame(self) -> None:
+        i = self.list.currentRow()
+        if self.vp is not None and 0 <= i < len(self.stages):
+            if not self.vp.frame_stage(self.stages[i]["id"]):
+                self.sv.notify("This stage has no geometry to frame yet", "warn")
+
     def _label(self, s: dict) -> str:
         extra = s.get("field") or s.get("source") or s.get("metric") or s.get("axis", "")
         return f"{TITLES[s['type']]}  ·  {extra}"
@@ -284,8 +306,8 @@ class VisPanel(Panel):
                     w.addItem(str(val))
                 w.setCurrentText(str(val))
             w.currentTextChanged.connect(lambda t: setv(t or None))
-        elif kind == "int":
-            w = QSpinBox(minimum=1, maximum=100000, value=int(val or 1))
+        elif kind in ("int", "int0"):
+            w = QSpinBox(minimum=0 if kind == "int0" else 1, maximum=100000, value=int(val or 0 if kind == "int0" else val or 1))
             w.valueChanged.connect(setv)
         elif kind == "float":
             w = QDoubleSpinBox(decimals=4, minimum=0.0, maximum=1e6, value=float(val or 0.0), singleStep=0.1)

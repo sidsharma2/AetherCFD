@@ -46,6 +46,9 @@ class Settings(BaseModel):
     wsl: WslSettings = Field(default_factory=WslSettings)
     guards: GuardSettings = Field(default_factory=GuardSettings)
     plot_style: str = r"D:\OpenFOAM\plot_style.py"
+    gpu: str = "high-performance"  # high-performance (discrete NVIDIA on Optimus laptops) | integrated | system
+    gpu_compute: str = "auto"  # auto (CUDA via CuPy when available) | cuda | cpu
+    claude_exe: str | None = None  # Claude Code CLI for the copilot (default: found automatically)
     recent_cases: list[str] = Field(default_factory=list)
     case_roots: list[str] = Field(default_factory=lambda: [r"D:\OpenFOAM"])
 
