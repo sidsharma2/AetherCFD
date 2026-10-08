@@ -104,3 +104,24 @@ def test_stage_scripts_never_sync_inputs_back():
 @pytest.mark.parametrize("app", ["simpleFoam", "./Allrun"])
 def test_step_log_names(app):
     assert RunStep(app).log in ("log.simpleFoam", "log.Allrun")
+
+
+def test_existing_step_log_is_kept_not_overwritten(tmp_path):
+    """The step() prologue moves an earlier log aside (continuation runs re-use the solver's log name)."""
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if bash is None:
+        import pytest
+
+        pytest.skip("no bash")
+    log = tmp_path / "log.rhoSimpleFoam"
+    log.write_text("stage A\n")
+    line = '  if [ -s "$log" ]; then mv -n "$log" "$log.$(date -r "$log" +%Y%m%d-%H%M%S)"; fi'
+    assert line in runner_sh(spec())
+    r = subprocess.run([bash, "-c", f'log={log.as_posix()!r}\n{line}\necho "stage B" > "$log"'], capture_output=True,
+                       text=True)
+    assert r.returncode == 0, r.stderr
+    kept = [p for p in tmp_path.iterdir() if p.name.startswith("log.rhoSimpleFoam.")]
+    assert len(kept) == 1 and kept[0].read_text() == "stage A\n" and log.read_text() == "stage B\n"

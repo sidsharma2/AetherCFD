@@ -67,6 +67,8 @@ def runner_sh(spec: RunSpec) -> str:
         '  if [ -f "$RUN_DIR/stop_requested" ]; then',
         '    echo "{\\"step\\":$idx,\\"state\\":\\"skipped\\",\\"t\\":$(date +%s)}" >> "$RUN_DIR/steps.jsonl"; return 0',
         "  fi",
+        # never overwrite an earlier run's log (a continuation re-runs the same solver): keep it beside
+        '  if [ -s "$log" ]; then mv -n "$log" "$log.$(date -r "$log" +%Y%m%d-%H%M%S)"; fi',
         '  echo "{\\"step\\":$idx,\\"state\\":\\"running\\",\\"log\\":\\"$log\\",\\"t\\":$(date +%s)}" >> "$RUN_DIR/steps.jsonl"',
         f'  ( ulimit -f {cap_blocks}; trap - USR1 USR2; exec nice -n {spec.nice} "$@" ) > "$log" 2>&1 &',
         "  local pid=$!",
