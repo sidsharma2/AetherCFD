@@ -46,6 +46,7 @@ KEYWORDS = {
     "aether.editor": "edit dictionary text file code",
     "aether.workflow": "stages steps guide workflow progress",
     "aether.welcome": "start home recent cases",
+    "aether.aethermesh": "mesh meshing quality hotspots grading blockmesh y+ yplus first cell layers stl geometry snappy cfmesh strategy wedge extrude feature angle",
     "aether.code": "code write own model solver turbulence model pope round jet c++ wmake compile library boundary condition source fvoption coded",
     "aether.combustion": "combustion cantera flame speed adiabatic temperature ignition delay chemistry mechanism creck gri flamelet regime borghi peters edc pasr soot reacting",
 }

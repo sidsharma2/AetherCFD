@@ -513,6 +513,14 @@ class ViewportPanel(Panel):
             hit = True
         return b if hit else None
 
+    def frame_bounds(self, b: list[float], padding: float = 0.6) -> None:
+        """Zoom onto a box (e.g. a mesh hotspot), with generous context around it."""
+        size = max(b[1] - b[0], b[3] - b[2], b[5] - b[4], 1e-12)
+        pad = size * padding
+        self.plotter.renderer.ResetCamera([b[0] - pad, b[1] + pad, b[2] - pad, b[3] + pad, b[4] - pad, b[5] + pad])
+        self.plotter.camera_set = True
+        self.plotter.render()
+
     def frame_stage(self, stage_id: str | None = None, padding: float = 0.08) -> bool:
         """Zoom the camera onto a stage (keeps the viewing direction)."""
         b = self.stage_bounds(stage_id)

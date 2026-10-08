@@ -49,12 +49,13 @@ JOUR = "aether.journal"
 START = "aether.welcome"
 AI = "aether.copilot"
 CHECKS = "aether.checks"
+AMESH = "aether.aethermesh"
 
 _setup1 = [Place(FLOW, Area.LEFT), Place(TREE, Area.LEFT), Place(START, Area.CENTER), Place(CHECKS, Area.RIGHT),
            Place(PROPS, Area.AUTOHIDE_RIGHT), Place(AI, Area.RIGHT), Place(TERM, Area.AUTOHIDE_BOTTOM), Place(JOUR, Area.AUTOHIDE_BOTTOM)]
 _run1 = [Place(TREE, Area.LEFT), Place(RES, Area.CENTER), Place(RUN, Area.RIGHT), Place(AI, Area.AUTOHIDE_RIGHT),
          Place(LOG, Area.BOTTOM)]
-_mesh1 = [Place(TREE, Area.LEFT), Place(V, Area.CENTER), Place(MESHQ, Area.RIGHT), Place(AI, Area.AUTOHIDE_RIGHT),
+_mesh1 = [Place(TREE, Area.LEFT), Place(V, Area.CENTER), Place(AMESH, Area.RIGHT), Place(AI, Area.AUTOHIDE_RIGHT),
           Place(LOG, Area.BOTTOM),
           Place(TERM, Area.AUTOHIDE_BOTTOM)]
 _post1 = [Place(TREE, Area.LEFT), Place(V, Area.CENTER), Place(VIS, Area.RIGHT), Place(PROPS, Area.RIGHT)]

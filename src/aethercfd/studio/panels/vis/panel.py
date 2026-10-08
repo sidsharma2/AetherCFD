@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
+from aethercfd.studio.widgets.spin import dspin
 
 AXES = ["x", "y", "z"]
 METRICS = ["nonOrthogonality", "skewness", "aspectRatio", "volumeRatio", "cellVolume"]
@@ -127,7 +128,7 @@ class VisPanel(Panel):
         self.rev_axis = QComboBox()
         self.rev_axis.addItems(AXES)
         self.rev_axis.setCurrentText("z")
-        self.rev_angle = QDoubleSpinBox(decimals=3, minimum=0.1, maximum=180, value=5.0, suffix="°")
+        self.rev_angle = dspin(5.0, 0.1, 180, 3, suffix="°")
         self.rev_copies = QSpinBox(minimum=2, maximum=720, value=72)
         vf.addRow("Mirror about", self.mirror)
         vf.addRow("Mirror plane at", self.mirror_origin)

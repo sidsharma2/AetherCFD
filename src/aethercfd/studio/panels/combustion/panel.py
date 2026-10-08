@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
 from aethercfd.studio.theme.style import mono_font
 from aethercfd.studio.theme.tokens import T
+from aethercfd.studio.widgets.spin import dspin
 
 PRESETS = {
     "Methane / air": ("CH4:1", "O2:0.21, N2:0.79", 300, 300),
@@ -75,8 +76,8 @@ class CombustionPanel(Panel):
         self.ox = QLineEdit()
         self.tf = QDoubleSpinBox(minimum=50, maximum=3000, suffix=" K", decimals=1)
         self.to = QDoubleSpinBox(minimum=50, maximum=3000, suffix=" K", decimals=1)
-        self.p = QDoubleSpinBox(minimum=0.01, maximum=500, value=1.0, suffix=" bar", decimals=3)
-        self.phi = QDoubleSpinBox(minimum=0.1, maximum=5, value=1.0, singleStep=0.05, decimals=2)
+        self.p = dspin(1.0, 0.01, 500, 3, suffix=" bar")
+        self.phi = dspin(1.0, 0.1, 5, 2, step=0.05)
         row = QHBoxLayout()
         row.addWidget(self.tf)
         row.addWidget(QLabel("oxidizer"))
@@ -280,11 +281,11 @@ class CombustionPanel(Panel):
         w = QWidget()
         lay = QVBoxLayout(w)
         f = QFormLayout()
-        self.reg_SL = QDoubleSpinBox(minimum=0.001, maximum=100, value=0.38, decimals=4, suffix=" m/s")
-        self.reg_dL = QDoubleSpinBox(minimum=0.0001, maximum=100, value=0.45, decimals=4, suffix=" mm")
-        self.reg_u = QDoubleSpinBox(minimum=0.0001, maximum=1000, value=2.0, decimals=3, suffix=" m/s")
-        self.reg_l = QDoubleSpinBox(minimum=0.001, maximum=10000, value=10.0, decimals=3, suffix=" mm")
-        self.reg_cell = QDoubleSpinBox(minimum=0.0001, maximum=10000, value=1.0, decimals=4, suffix=" mm")
+        self.reg_SL = dspin(0.38, 0.001, 100, 4, suffix=" m/s")
+        self.reg_dL = dspin(0.45, 0.0001, 100, 4, suffix=" mm")
+        self.reg_u = dspin(2.0, 0.0001, 1000, 3, suffix=" m/s")
+        self.reg_l = dspin(10.0, 0.001, 10000, 3, suffix=" mm")
+        self.reg_cell = dspin(1.0, 0.0001, 10000, 4, suffix=" mm")
         f.addRow("Laminar flame speed S_L", self.reg_SL)
         f.addRow("Flame thickness δ_L", self.reg_dL)
         f.addRow("Turbulence intensity u'", self.reg_u)
