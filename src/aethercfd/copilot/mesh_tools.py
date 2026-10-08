@@ -206,7 +206,55 @@ def combustion_precalc(ctx: ToolContext, p: CombustionParams) -> dict:
     return out
 
 
+class CodeCreateParams(BaseModel):
+    template: str = Field(description="kEpsilonPope | codedSource | codedFixedValue | solverCopy")
+    name: str = Field(description="C++ identifier for the new model/solver")
+    rationale: str
+    confidence: float = Field(ge=0, le=1)
+
+
+class CodeBuildParams(BaseModel):
+    name: str = Field(description="Folder name under <case>/aether-code/")
+    rationale: str
+    confidence: float = Field(ge=0, le=1)
+
+
+def code_templates(ctx: ToolContext, _p: ChecksParams) -> dict:
+    from aethercfd.codegen.templates import TEMPLATES
+
+    return {"templates": [{"id": t.id, "title": t.title, "fork": t.family, "kind": t.kind, "summary": t.summary,
+                           "usage": t.usage} for t in TEMPLATES],
+            "where": "sources go to <case>/aether-code/<name>/; libraries build into $FOAM_USER_LIBBIN in WSL"}
+
+
+def code_create(ctx: ToolContext, p: CodeCreateParams) -> dict:
+    from aethercfd.copilot.tools import Justified
+
+    dest = ctx.root / "aether-code" / p.name
+    return ctx.execute("code.create", {"template": p.template, "name": p.name, "dest": str(dest)},
+                       Justified(rationale=p.rationale, confidence=p.confidence))
+
+
+def code_build(ctx: ToolContext, p: CodeBuildParams) -> dict:
+    from aethercfd.copilot.tools import Justified
+
+    out = ctx.execute("code.build", {"dir": str(ctx.root / "aether-code" / p.name)},
+                      Justified(rationale=p.rationale, confidence=p.confidence))
+    data = out.pop("data", None) or {}
+    out["library"] = data.get("library")
+    out["diagnostics"] = data.get("diagnostics", [])[:30]
+    out["output_tail"] = (data.get("output") or "")[-4000:]
+    return out
+
+
 MESH_TOOLS = [
+    Tool("code_templates", "Templates for writing your own OpenFOAM physics (k-epsilon with Pope's round-jet "
+         "correction, coded sources, coded BCs, copy-a-solver).", ChecksParams, code_templates),
+    Tool("code_create", "Create OpenFOAM source code from a template in <case>/aether-code/<name> (user approves "
+         "the new files).", CodeCreateParams, code_create, mutates=True),
+    Tool("code_build", "Compile <case>/aether-code/<name> with wmake inside WSL using the case's OpenFOAM; returns "
+         "compiler diagnostics (file, line, message) to fix with write_file. Needs approval.", CodeBuildParams,
+         code_build, mutates=True),
     Tool("combustion_precalc", "Combustion pre-calculations with Cantera before a reacting run: stoichiometric "
          "mixture fraction, adiabatic flame temperature vs phi (with CO/NO), mixture transport, laminar flame speed "
          "and thickness, ignition delay, Peters regime (Da, Ka, Kolmogorov scale), and a ranked combustion-model "
