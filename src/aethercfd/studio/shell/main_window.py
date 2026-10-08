@@ -39,7 +39,12 @@ class MainWindow(QMainWindow):
         self.services = services
         services.window = self
         self.setWindowTitle("AetherCFD Studio")
-        self.setWindowIcon(icon("mdi6.weather-windy", T.accent))
+        from pathlib import Path
+
+        from PySide6.QtGui import QIcon
+
+        app_icon = Path(__file__).resolve().parents[1] / "resources" / "aethercfd.png"
+        self.setWindowIcon(QIcon(str(app_icon)) if app_icon.exists() else icon("mdi6.weather-windy", T.accent))
         self.resize(1600, 950)
         self.host = DockHost(self, services)
         services.host = self.host
