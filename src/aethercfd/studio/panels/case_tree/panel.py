@@ -146,6 +146,38 @@ class CaseTreePanel(Panel):
             item.appendRow([QStandardItem(f"… {len(children) - 5000} more"), QStandardItem("")])
         item.setData(True, LOADED_ROLE)
 
+    def reveal(self, path: Path) -> bool:
+        """Expand down to ``path`` and select it (used by the copilot to show the user a file)."""
+        target = str(Path(path))
+
+        def find(parent_item) -> QStandardItem | None:
+            n = parent_item.rowCount() if parent_item is not None else self.model.rowCount()
+            for r in range(n):
+                it = parent_item.child(r) if parent_item is not None else self.model.item(r)
+                if it is None:
+                    continue
+                p = it.data(PATH_ROLE)
+                if p == target:
+                    return it
+                if p is None or target.startswith(p.rstrip("\\/") + ("\\" if "\\" in p else "/")):
+                    self._fill(it)
+                    hit = find(it)
+                    if hit is not None:
+                        return hit
+            return None
+
+        it = find(None)
+        if it is None:
+            return False
+        idx = it.index()
+        parent = idx.parent()
+        while parent.isValid():
+            self.view.expand(parent)
+            parent = parent.parent()
+        self.view.setCurrentIndex(idx)
+        self.view.scrollTo(idx)
+        return True
+
     def _on_expand(self, index: QModelIndex) -> None:
         item = self.model.itemFromIndex(index.siblingAtColumn(0))
         if item is not None:

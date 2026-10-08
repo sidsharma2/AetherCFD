@@ -179,6 +179,17 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
                                  "info": {k: {"cells": v["cells"], "notes": v["notes"], "label": v["label"]}
                                           for k, v in vp.stage_info.items()}}
                 win.grab().save(str(out / "case_vis.png"))
+            from aethercfd.studio.app.automation import AppAutomation
+
+            auto = AppAutomation(sv)
+            report["automation"] = {
+                "open": auto.open_panel("checks"), "fuzzy": auto.open_panel("visualisation pannel"),
+                "actions": auto.actions("new case templ")[:2],
+                "point": auto.highlight("checks", "The Checks panel lists setup problems with one-click fixes.", 3),
+                "select": auto.select_file("system/controlDict"),
+                "overview_panels": len(auto.overview()["open_panels"])}
+            _pump(app, 1.0)
+            win.grab().save(str(out / "case_callout.png"))
             insp = sv.panels.get("aether.inspector")
             if insp is not None:
                 ip = win.host.build_panel(win.host.open_panel(insp).objectName())

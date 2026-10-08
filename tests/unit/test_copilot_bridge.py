@@ -84,6 +84,48 @@ def test_mcp_server_process_roundtrip(tmp_path):
         bridge.stop()
 
 
+class _FakeUi:
+    def __init__(self):
+        self.calls = []
+        self.polls = 0
+
+    def overview(self):
+        return {"perspective": "post", "open_panels": []}
+
+    def add_stage(self, kind, params):
+        self.calls.append((kind, params))
+        return "c1"
+
+    def stage_status(self, sid):
+        self.polls += 1
+        return None if self.polls < 3 else {"label": "Q-criterion (cuda)", "cells": 51112, "notes": ["ok"]}
+
+    def highlight(self, target, message, seconds):
+        self.calls.append(("highlight", target, message))
+        return f"pointing at {target}"
+
+    def show_field(self, *a):
+        return "ok"
+
+    def open_file(self, *a):
+        return "ok"
+
+
+def test_app_control_tools_with_a_gui(tmp_path):
+    s = _session(tmp_path)
+    ui = _FakeUi()
+    ts = ToolSet(ToolContext(s, ui=ui))
+    names = {t["name"] for t in ts.describe()}
+    assert {"app_overview", "add_view_stage", "point_at", "render_image", "app_trigger"} <= names
+    ok, text = ts.call("add_view_stage", {"type": "qcriterion", "params": {"percentile": 97}, "wait_s": 10})
+    d = json.loads(text)
+    assert ok and d["computed"] and d["cells"] == 51112 and ui.calls[0] == ("qcriterion", {"percentile": 97})
+    ok, text = ts.call("point_at", {"target": "checks", "message": "Here are the setup findings."})
+    assert ok and ui.calls[-1][0] == "highlight"
+    headless = {t["name"] for t in ToolSet(ToolContext(s)).describe()}
+    assert "add_view_stage" not in headless  # GUI tools only exist with a GUI
+
+
 def test_bridge_rejects_bad_token(tmp_path):
     s = _session(tmp_path)
     bridge = BridgeServer(lambda: ToolSet(ToolContext(s))).start()

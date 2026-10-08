@@ -166,6 +166,54 @@ class _UiHooks(QObject):
             return f"opened {path.name}" + (f" at line {line}" if line else "")
         return self._call(go)
 
+    # app automation (aethercfd.studio.app.automation), always on the GUI thread
+    def _auto(self, method: str, *args):
+        from aethercfd.studio.app.automation import AppAutomation
+
+        ev, box = threading.Event(), []
+
+        def go():
+            return getattr(AppAutomation(self.sv), method)(*args)
+        self._run.emit(go, (ev, box))
+        ev.wait(120)
+        return box[0] if box else "the GUI did not answer"
+
+    def overview(self) -> dict:
+        return self._auto("overview")
+
+    def open_panel(self, name: str) -> str:
+        return self._auto("open_panel", name)
+
+    def perspective(self, name: str) -> str:
+        return self._auto("perspective", name)
+
+    def select_file(self, path: str) -> str:
+        return self._auto("select_file", path)
+
+    def add_stage(self, kind: str, params: dict) -> str:
+        return self._auto("add_stage", kind, params)
+
+    def stage_status(self, sid: str):
+        return self._auto("stage_status", sid)
+
+    def remove_stage(self, sid: str | None) -> str:
+        return self._auto("remove_stage", sid)
+
+    def camera(self, view: str, stage_id: str | None) -> str:
+        return self._auto("camera", view, stage_id)
+
+    def render(self, width: int, height: int, background: str, base: str, frame: bool, name: str | None) -> str:
+        return self._auto("render", width, height, background, base, frame, name)
+
+    def highlight(self, target: str, message: str, seconds: float) -> str:
+        return self._auto("highlight", target, message, seconds)
+
+    def actions(self, query: str) -> list:
+        return self._auto("actions", query)
+
+    def trigger(self, label: str) -> str:
+        return self._auto("trigger", label)
+
 
 # ============================================================================ panel
 class CopilotPanel(Panel):

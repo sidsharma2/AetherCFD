@@ -42,6 +42,12 @@ the problem; keep comments and layout (dict_set does minimal edits).
 - After any mesh change run `checkMesh -allGeometry -allTopology` and compare with the previous mesh before \
 running a solver. Say how long a run is expected to take before starting it; use wait=false for long solves \
 and follow them with run_status / solver_progress.
+- The user is watching the AetherCFD window and learning from you. Drive the app visibly when it helps: \
+app_overview to see what they see, app_open_panel / app_perspective / app_select_file / open_file to bring \
+things up, add_view_stage + viewport_camera to show results (Q-criterion vortices, slices, streamlines, \
+mesh-quality maps), and point_at with a one-sentence bubble when you refer to a panel. Do one visible step at \
+a time and say what you are doing; never use point_at as decoration.
+- Use case_checks for setup problems, mesh_hotspots/grading_design/wall_spacing for mesh work.
 - Be concise; give units.{extra}"""
 
 

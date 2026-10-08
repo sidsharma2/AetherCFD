@@ -535,6 +535,128 @@ def open_file(ctx: ToolContext, p: OpenFileParams) -> dict:
     return {"result": ctx.ui.open_file(ctx.path(p.path), p.line)}
 
 
+# ============================================================================ app control (in front of the user)
+class AppPanelParams(BaseModel):
+    panel: str = Field(description="Panel name or id, fuzzy: e.g. 'Visualization', 'checks', 'residuals', "
+                                   "'3D Viewport', 'Mesh Quality', 'Properties', 'Terminal', 'Command Journal'")
+
+
+class PerspectiveParams(BaseModel):
+    name: str = Field(description="setup | meshing | run | post | code")
+
+
+class SelectFileParams(BaseModel):
+    path: str = Field(description="Case file to select in Case Files (details appear in Properties)")
+
+
+class AddStageParams(BaseModel):
+    type: str = Field(description="qcriterion | isosurface | slice | clip | threshold | contour | streamlines | glyphs | "
+                                  "schlieren | quality")
+    params: dict = Field(default_factory=dict, description=(
+        "Stage parameters, e.g. slice {'axis':'z','pos':0.5}; isosurface {'field':'T','value':1500,'color_by':'U'}; "
+        "qcriterion {'percentile':97,'color_by':'U','smooth':20,'subdivide':1}; streamlines {'field':'U','seed':"
+        "'line','axis':'x','pos':0.05,'n':60}; threshold {'field':'T','lo':1500}; quality {'metric':"
+        "'nonOrthogonality','min':60}; schlieren {'source':'rho','axis':'z'}. smooth/subdivide are presentation-only."))
+    wait_s: float = Field(60.0, ge=0, le=600, description="Wait for the stage to be computed and report its result")
+
+
+class RemoveStageParams(BaseModel):
+    stage_id: str | None = Field(None, description="Stage id from add_view_stage; omit to remove all stages")
+
+
+class CameraParams(BaseModel):
+    view: str = Field(description="iso | x | y | z | fit | frame (zoom onto a stage)")
+    stage_id: str | None = None
+
+
+class RenderParams(BaseModel):
+    width: int = Field(3840, ge=320, le=7680)
+    height: int = Field(2160, ge=240, le=4320)
+    background: str = Field("gradient", description="gradient | dark | black | white")
+    base: str = Field("outline", description="Mesh surfaces: as shown | outline | translucent | hidden")
+    frame: bool = Field(True, description="Zoom onto the visualization stages")
+    filename: str | None = None
+
+
+class HighlightParams(BaseModel):
+    target: str = Field(description="Panel to point at (fuzzy name), or 'menu', 'status bar', 'window'")
+    message: str = Field(description="Short explanation shown in a bubble next to it (1-2 sentences)")
+    seconds: float = Field(7.0, ge=1, le=30)
+
+
+class ActionsParams(BaseModel):
+    query: str = Field("", description="Fuzzy search over menu actions; '' lists them")
+
+
+class TriggerParams(BaseModel):
+    action: str = Field(description="Menu action label (fuzzy), e.g. 'New Case from Template', 'Reset Current "
+                                    "Perspective', 'Identify Monitors'")
+
+
+def _ui(ctx: ToolContext):
+    if ctx.ui is None:
+        raise ToolError("no GUI attached")
+    return ctx.ui
+
+
+def app_overview(ctx: ToolContext, _p: NoParams) -> dict:
+    return _ui(ctx).overview()
+
+
+def app_open_panel(ctx: ToolContext, p: AppPanelParams) -> dict:
+    return {"result": _ui(ctx).open_panel(p.panel)}
+
+
+def app_perspective(ctx: ToolContext, p: PerspectiveParams) -> dict:
+    return {"result": _ui(ctx).perspective(p.name)}
+
+
+def app_select_file(ctx: ToolContext, p: SelectFileParams) -> dict:
+    return {"result": _ui(ctx).select_file(p.path)}
+
+
+def app_add_stage(ctx: ToolContext, p: AddStageParams) -> dict:
+    ui = _ui(ctx)
+    sid = ui.add_stage(p.type, p.params)
+    if not str(sid).startswith("c"):
+        raise ToolError(str(sid))
+    deadline = time.monotonic() + p.wait_s
+    info = None
+    while time.monotonic() < deadline:
+        info = ui.stage_status(sid)
+        if info:
+            break
+        time.sleep(0.5)
+    out = {"stage_id": sid, "computed": bool(info)}
+    if info:
+        out.update({k: info.get(k) for k in ("label", "cells", "range", "notes", "interpolated")})
+    return out
+
+
+def app_remove_stage(ctx: ToolContext, p: RemoveStageParams) -> dict:
+    return {"result": _ui(ctx).remove_stage(p.stage_id)}
+
+
+def app_camera(ctx: ToolContext, p: CameraParams) -> dict:
+    return {"result": _ui(ctx).camera(p.view, p.stage_id)}
+
+
+def app_render(ctx: ToolContext, p: RenderParams) -> dict:
+    return {"image": _ui(ctx).render(p.width, p.height, p.background, p.base, p.frame, p.filename)}
+
+
+def app_highlight(ctx: ToolContext, p: HighlightParams) -> dict:
+    return {"result": _ui(ctx).highlight(p.target, p.message, p.seconds)}
+
+
+def app_actions(ctx: ToolContext, p: ActionsParams) -> dict:
+    return {"actions": _ui(ctx).actions(p.query)}
+
+
+def app_trigger(ctx: ToolContext, p: TriggerParams) -> dict:
+    return {"result": _ui(ctx).trigger(p.action)}
+
+
 # ============================================================================ the set
 BASE_TOOLS: list[Tool] = [
     Tool("case_overview", "Summary of the open OpenFOAM case: solver, fork, regions, patches with types and face "
@@ -573,6 +695,30 @@ BASE_TOOLS: list[Tool] = [
          ShowFieldParams, show_field, gui_only=True),
     Tool("open_file", "Open a case file in the AetherCFD editor at a line, for the user to look at.", OpenFileParams,
          open_file, gui_only=True),
+    Tool("app_overview", "What the user sees in AetherCFD: perspective, open panels, all available panels, the "
+         "viewport's field/time/fields/stages, the current selection.", NoParams, app_overview, gui_only=True),
+    Tool("app_open_panel", "Open (or bring forward) a panel by fuzzy name.", AppPanelParams, app_open_panel,
+         gui_only=True),
+    Tool("app_perspective", "Switch the window layout: setup, meshing, run, post or code.", PerspectiveParams,
+         app_perspective, gui_only=True),
+    Tool("app_select_file", "Select a case file in the Case Files tree; its details show in Properties.",
+         SelectFileParams, app_select_file, gui_only=True),
+    Tool("add_view_stage", "Add a visualization stage to the 3D viewport the user is looking at (Q-criterion vortices "
+         "and isosurfaces on the GPU, slices, clips, thresholds, streamlines, glyphs, schlieren, mesh-quality maps) and "
+         "wait for its result.", AddStageParams, app_add_stage, gui_only=True),
+    Tool("remove_view_stage", "Remove one visualization stage (or all).", RemoveStageParams, app_remove_stage,
+         gui_only=True),
+    Tool("viewport_camera", "Move the 3D camera: iso, x, y, z, fit, or frame a stage.", CameraParams, app_camera,
+         gui_only=True),
+    Tool("render_image", "Render the current 3D view offscreen at up to 8K with anti-aliasing into the case's "
+         ".aethercfd/local/renders folder; returns the image path.", RenderParams, app_render, gui_only=True),
+    Tool("point_at", "Point at a panel with a glowing outline and a short bubble message, so the user sees what you "
+         "are talking about. Use it when explaining the app or a result.", HighlightParams, app_highlight,
+         gui_only=True),
+    Tool("app_actions", "List or fuzzy-search the application's menu actions.", ActionsParams, app_actions,
+         gui_only=True),
+    Tool("app_trigger", "Trigger a menu action by (fuzzy) label, e.g. open the New Case wizard. Dialogs open for the "
+         "user; nothing destructive happens without their approval.", TriggerParams, app_trigger, gui_only=True),
 ]
 
 
