@@ -233,9 +233,8 @@ class VisPanel(Panel):
 
     def _frame(self) -> None:
         i = self.list.currentRow()
-        if self.vp is not None and 0 <= i < len(self.stages):
-            if not self.vp.frame_stage(self.stages[i]["id"]):
-                self.sv.notify("This stage has no geometry to frame yet", "warn")
+        if self.vp is not None and 0 <= i < len(self.stages) and not self.vp.frame_stage(self.stages[i]["id"]):
+            self.sv.notify("This stage has no geometry to frame yet", "warn")
 
     def _label(self, s: dict) -> str:
         extra = s.get("field") or s.get("source") or s.get("metric") or s.get("axis", "")
