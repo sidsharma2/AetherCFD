@@ -52,7 +52,14 @@ class LayoutStore:
             self._rotate_backups(p)
         atomic_write_bytes(p, json.dumps(data, indent=1).encode("utf-8"))
 
-    def _rotate_backups(self, p: Path, keep: int = 5) -> None:
+    def _rotate_backups(self, p: Path, keep: int = 5, min_age_s: float = 600.0) -> None:
+        """Keep the last ``keep`` versions, at most one per ``min_age_s``: autosave runs every few seconds
+        while panels move, and must not push the last good layout out of the backups within a minute."""
+        import time
+
+        b1 = p.with_suffix(".bak1.json")
+        if b1.exists() and time.time() - b1.stat().st_mtime < min_age_s:
+            return
         for i in range(keep - 1, 0, -1):
             src = p.with_suffix(f".bak{i}.json")
             if src.exists():

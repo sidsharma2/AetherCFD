@@ -280,7 +280,8 @@ class ViewportPanel(Panel):
         for i in range(len(times) - 1, -1, -1):
             d = names.get(round(times[i], 12), f"{times[i]:g}")
             base = self.case_root / d
-            if (base / field).exists() or (base / f"{field}.gz").exists() or                     (self.case_root / "processor0" / d / field).exists():
+            if (base / field).exists() or (base / f"{field}.gz").exists() \
+                    or (self.case_root / "processor0" / d / field).exists():
                 return i
         return len(times) - 1
 
@@ -505,6 +506,35 @@ class ViewportPanel(Panel):
         if renderer and self.ctx.services.window is not None:
             self.ctx.services.gl_renderer = renderer
             self.ctx.services.window.set_gpu(renderer)
+
+    # ------------------------------------------------------------------ scripted control (copilot)
+    def show_field(self, field: str, time: str | None = None, slice_axis: str | None = None) -> str:
+        names = [self.field.itemText(i) for i in range(self.field.count())]
+        if not names:
+            return "the viewport has no results loaded for this case yet"
+        if field not in names:
+            return f"field {field!r} is not available; available: {', '.join(names[:40])}"
+        self.field.setCurrentText(field)
+        if time is not None:
+            times = [self.time.itemText(i) for i in range(self.time.count())]
+            try:
+                t = f"{float(time):g}"
+            except ValueError:
+                t = time
+            if t not in times:
+                return f"time {time} is not available; times: {', '.join(times[-15:])}"
+            self.follow.setChecked(False)
+            self.time.setCurrentText(t)
+        if slice_axis and slice_axis.lower()[:1] in ("x", "y", "z"):
+            self.slice_axis.setCurrentIndex("xyz".index(slice_axis.lower()[0]))
+            self.slice_pos.setValue(500)
+            self.slice_on.setChecked(True)
+            self.btn_side.setChecked(True)
+        else:
+            self.slice_on.setChecked(False)
+        self.request_load(reset_range=True)
+        return (f"showing {field} at t = {self.time.currentText()}"
+                + (f", mid-plane slice normal to {slice_axis}" if self.slice_on.isChecked() else ""))
 
     # ------------------------------------------------------------------ panel API
     def save_state(self) -> dict:

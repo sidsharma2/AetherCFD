@@ -96,6 +96,16 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
             win.layouts.restore("run")
             _pump(app, 4.0)
             win.grab().save(str(out / "case_run.png"))
+            ai = sv.panels.get("aether.copilot")
+            if ai is not None:  # panel + Claude discovery only; never sends a prompt (that costs usage)
+                d = win.host.open_panel(ai)
+                _pump(app, 4.0)
+                cp = win.host.build_panel(d.objectName())
+                if cp is not None:
+                    report["copilot"] = {"cli": str(cp.cli.exe) if cp.cli else None,
+                                         "signed_in": bool(cp.auth and cp.auth.logged_in),
+                                         "status": cp.status.text(), "banner": cp.banner.isVisible()}
+                win.grab().save(str(out / "case_copilot.png"))
             import os as _os
 
             skip = set(_os.environ.get("AETHER_SMOKE_SKIP", "").split(","))

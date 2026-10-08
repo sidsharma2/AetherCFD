@@ -114,8 +114,14 @@ class LayoutManager(QObject):
         if not self._suspend_autosave:
             self._save_timer.start()
 
+    def open_panel_names(self) -> list[str]:
+        return [n for n, d in self.host.docks().items() if not d.isClosed() and n != "aether.workbench#main"]
+
     def save_now(self) -> None:
         if self._suspend_autosave:
+            return
+        if not self.open_panel_names():
+            log.info("layout %s not saved: no panels are open (keeping the previous one)", self.current)
             return
         try:
             snap = self.snapshot()
@@ -133,8 +139,8 @@ class LayoutManager(QObject):
             how = "recipe"
             if hit is not None:
                 how, variant = hit
-                if not self._apply_variant(variant):
-                    how = "recipe"
+                if not self._apply_variant(variant) or not self.open_panel_names():
+                    how = "recipe"  # unreadable, or restored to an empty window: use the recipe
             if how == "recipe":
                 self.apply_recipe(perspective(pid) or PERSPECTIVES[0])
             self.clamp_all()

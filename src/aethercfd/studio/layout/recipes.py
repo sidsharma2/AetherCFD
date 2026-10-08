@@ -47,11 +47,14 @@ VIS = "aether.vis_controls"
 PROPS = "aether.inspector"
 JOUR = "aether.journal"
 START = "aether.welcome"
+AI = "aether.copilot"
 
 _setup1 = [Place(FLOW, Area.LEFT), Place(TREE, Area.LEFT), Place(START, Area.CENTER),
-           Place(PROPS, Area.AUTOHIDE_RIGHT), Place(TERM, Area.AUTOHIDE_BOTTOM), Place(JOUR, Area.AUTOHIDE_BOTTOM)]
-_run1 = [Place(TREE, Area.LEFT), Place(RES, Area.CENTER), Place(RUN, Area.RIGHT), Place(LOG, Area.BOTTOM)]
-_mesh1 = [Place(TREE, Area.LEFT), Place(V, Area.CENTER), Place(MESHQ, Area.RIGHT), Place(LOG, Area.BOTTOM),
+           Place(PROPS, Area.AUTOHIDE_RIGHT), Place(AI, Area.RIGHT), Place(TERM, Area.AUTOHIDE_BOTTOM), Place(JOUR, Area.AUTOHIDE_BOTTOM)]
+_run1 = [Place(TREE, Area.LEFT), Place(RES, Area.CENTER), Place(RUN, Area.RIGHT), Place(AI, Area.RIGHT),
+         Place(LOG, Area.BOTTOM)]
+_mesh1 = [Place(TREE, Area.LEFT), Place(V, Area.CENTER), Place(MESHQ, Area.RIGHT), Place(AI, Area.RIGHT),
+          Place(LOG, Area.BOTTOM),
           Place(TERM, Area.AUTOHIDE_BOTTOM)]
 _post1 = [Place(TREE, Area.LEFT), Place(V, Area.CENTER), Place(VIS, Area.RIGHT), Place(PROPS, Area.RIGHT)]
 _code1 = [Place(TREE, Area.LEFT), Place(START, Area.CENTER), Place(TERM, Area.BOTTOM)]

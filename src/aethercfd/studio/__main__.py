@@ -16,6 +16,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--perspective", default=None)
     ap.add_argument("--reset-layout", action="store_true", help="ignore saved layouts (use recipes)")
     args = ap.parse_args(argv)
+    if args.smoke:
+        _isolate_config(Path(args.smoke_out))
     _setup_logging()
 
     from aethercfd.studio.app.bootstrap import bootstrap
@@ -59,6 +61,24 @@ def main(argv: list[str] | None = None) -> int:
         code = app.exec()
     _teardown(app, win)
     return code
+
+
+def _isolate_config(out: Path) -> None:
+    """Smoke runs get their own config folder (layouts start from the recipes) so they never overwrite
+    the user's saved layouts or recent-case list; settings.toml (WSL distros, case roots) is copied in."""
+    import os
+    import shutil
+
+    from aethercfd.core.settings import config_dir
+
+    real = config_dir()
+    iso = (out / "config").resolve()
+    if iso.exists():
+        shutil.rmtree(iso)  # our own previous smoke run's throwaway config
+    iso.mkdir(parents=True)
+    if (real / "settings.toml").exists():
+        shutil.copy2(real / "settings.toml", iso / "settings.toml")
+    os.environ["AETHERCFD_CONFIG_DIR"] = str(iso)
 
 
 def _teardown(app, win) -> None:

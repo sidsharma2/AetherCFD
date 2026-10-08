@@ -150,6 +150,23 @@ class DockHost(QObject):
         host = d.widget() if d else None
         return host.panel if isinstance(host, LazyPanelHost) else None
 
+    def build_panel(self, name: str) -> Panel | None:
+        """The panel behind a dock, built now if it has not been shown yet."""
+        d = self._docks.get(name)
+        host = d.widget() if d else None
+        return host.ensure() if isinstance(host, LazyPanelHost) else None
+
+    def panels_of(self, type_id: str) -> list[Panel]:
+        """Live (built, not closed) panels of one type; the focused/most recent one first."""
+        out = []
+        focused = self.manager.focusedDockWidget()
+        for name, d in self._docks.items():
+            if self.split_name(name)[0] == type_id and not d.isClosed():
+                p = self.panel(name)
+                if p is not None:
+                    out.insert(0, p) if d is focused else out.append(p)
+        return out
+
     # ------------------------------------------------------------------ creation
     def create_dock(self, spec: PanelSpec | None, name: str, *, args: dict | None = None) -> ads.CDockWidget:
         """Create (not yet place) a dock for a panel type; unknown types get a placeholder."""
