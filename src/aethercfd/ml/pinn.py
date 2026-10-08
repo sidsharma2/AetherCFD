@@ -133,7 +133,8 @@ def start(job: PinnJob, *, ml_python: str | None = None, job_dir: str | Path | N
     py = find_ml_python(ml_python)
     if py is None:
         raise RuntimeError("no PyTorch environment: set ml_python or create .ml-env (see README)")
-    jd = Path(job_dir) if job_dir else Path(tempfile.mkdtemp(prefix="aether-pinn-"))
+    # absolute: the worker runs with the job folder as its working directory
+    jd = (Path(job_dir) if job_dir else Path(tempfile.mkdtemp(prefix="aether-pinn-"))).resolve()
     jd.mkdir(parents=True, exist_ok=True)
     arrays = {"x_data": job.x_data, "y_data": job.y_data, "x_colloc": job.x_colloc, "x_eval": job.x_eval}
     for k in ("u_colloc", "s_colloc", "w_data"):
