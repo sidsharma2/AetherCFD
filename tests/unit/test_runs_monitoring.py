@@ -53,9 +53,10 @@ def test_golden_residuals_match_autofoam_on_bfs():
 @pytest.mark.skipif(not SANDIA_LOG.exists(), reason="corpus not available")
 def test_large_log_parses_fast_and_counts_repeated_solves():
     text = SANDIA_LOG.read_bytes().decode("utf-8", errors="replace")
-    t0 = time.perf_counter()
+    # CPU time of this process (not wall time): robust when the laptop is busy with other work
+    t0 = time.process_time()
     parser, steps = parse_log_text(text)
-    assert time.perf_counter() - t0 < 2.0
+    assert time.process_time() - t0 < 2.0
     assert len(steps) == 5000 and parser.finished
     s = steps[2]
     assert s.residuals["p"].n_solves == 3 and s.residuals["p"].initial == pytest.approx(0.01804323735)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 
@@ -26,7 +27,8 @@ class _Job(QRunnable):
         except Exception as exc:  # reported on the GUI thread
             log.exception("background job failed")
             res, err = None, exc
-        self.done.emit((res, err))
+        with contextlib.suppress(RuntimeError):  # receiver gone (app shutting down)
+            self.done.emit((res, err))
 
 
 class AppServices(QObject):

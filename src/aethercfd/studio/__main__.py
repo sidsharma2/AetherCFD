@@ -54,9 +54,54 @@ def main(argv: list[str] | None = None) -> int:
     if args.smoke:
         from aethercfd.studio.smoke import run_smoke
 
-        return run_smoke(app, win, Path(args.smoke_out), qt_warnings)
-    return app.exec()
+        code = run_smoke(app, win, Path(args.smoke_out), qt_warnings)
+    else:
+        code = app.exec()
+    _teardown(app, win)
+    return code
+
+
+def _teardown(app, win) -> None:
+    """Deterministic shutdown: delete the window tree and its WebEngine pages while QApplication still
+    exists, then let PySide tear the application down -- leaving it to interpreter finalization (random
+    order) can hang on QtWebEngine."""
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    log = logging.getLogger("aethercfd.studio.teardown")
+    log.info("teardown: deleting window tree")
+    win.deleteLater()
+    for i in range(3):
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+        log.info("teardown: pass %d done", i)
+
+
+def run() -> None:
+    """Console/GUI entry point. Ends with os._exit: after the deterministic teardown above, Python's
+    interpreter finalization would destroy the remaining Qt/QtWebEngine objects in arbitrary order,
+    which hangs the process (observed: the window closes, the process never ends). Everything that
+    must persist (layouts, journal, settings) is written synchronously before this point, and runs
+    live in WSL independently of this process."""
+    import os
+
+    code = int(main() or 0)
+    logging.getLogger("aethercfd.studio.teardown").info("teardown: main() returned %s, exiting", code)
+    logging.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if sys.platform == "win32":
+        # os._exit -> ExitProcess still runs DLL_PROCESS_DETACH, where QtWebEngine's Chromium can
+        # deadlock (observed). TerminateProcess skips DLL detach; all state is already on disk.
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        # declare types: undeclared, the pseudo-handle (-1) is passed as a 32-bit int and the call
+        # fails silently on x64
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        k32.TerminateProcess(k32.GetCurrentProcess(), code)
+    os._exit(code)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    run()

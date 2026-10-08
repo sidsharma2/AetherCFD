@@ -34,10 +34,12 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from aethercfd.commands.base import USER, Risk
@@ -105,7 +107,15 @@ class RunPanel(Panel):
     def __init__(self, ctx: PanelContext):
         super().__init__(ctx)
         sv = ctx.services
-        lay = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        body = QWidget()
+        scroll.setWidget(body)
+        outer.addWidget(scroll)
+        lay = QVBoxLayout(body)  # scrolls instead of squashing when the dock is short
         lay.setContentsMargins(8, 8, 8, 8)
         # --- start form
         form = QFormLayout()
@@ -172,6 +182,7 @@ class RunPanel(Panel):
         self.history.horizontalHeader().setStretchLastSection(True)
         self.history.verticalHeader().hide()
         self.history.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.history.setMinimumHeight(120)
         lay.addWidget(self.history, 1)
         self.run_id: str | None = None
         self.end_time: float | None = None
@@ -498,12 +509,15 @@ class SolverLogPanel(Panel):
             self._fmt[k] = f
         self._pending: list[str] = []
         sv.follower.reset.connect(self._reset)
-        sv.follower.lines.connect(self._pending.extend)
+        sv.follower.lines.connect(self._on_lines)  # (not self._pending.extend: _flush swaps the list)
         self._timer = QTimer(self, interval=50, timeout=self._flush)  # <= 20 Hz
         self._timer.start()
         if sv.current_log:
             self._reset(sv.current_log)
             self._pending.extend(sv.follower.tail_lines)
+
+    def _on_lines(self, lines: list) -> None:
+        self._pending.extend(lines)
 
     def _reset(self, path: str) -> None:
         self.view.clear()

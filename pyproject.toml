@@ -32,7 +32,7 @@ dependencies = [
 aethercfd = "aethercfd.scripting.cli:main"
 
 [project.gui-scripts]
-aethercfd-studio = "aethercfd.studio.__main__:main"
+aethercfd-studio = "aethercfd.studio.__main__:run"
 
 [dependency-groups]
 dev = [

@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="dist/xterm.css">
+<style>
+  html, body { margin: 0; height: 100%; background: #1e1f22; overflow: hidden; }
+  #t { position: absolute; inset: 4px 4px 2px 6px; }
+</style>
+</head>
+<body>
+<div id="t"></div>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script src="dist/xterm.js"></script>
+<script src="dist/addon-fit.js"></script>
+<script src="dist/addon-search.js"></script>
+<script>
+  const term = new Terminal({
+    fontFamily: "'Cascadia Mono', Consolas, monospace", fontSize: 13, cursorBlink: true,
+    scrollback: 10000, allowProposedApi: true,
+    theme: { background: '#1e1f22', foreground: '#d6d6d6', cursor: '#d6d6d6', selectionBackground: '#2b4a72' }
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.loadAddon(new SearchAddon.SearchAddon());
+  term.open(document.getElementById('t'));
+  fit.fit();
+  window.term = term;
+  new QWebChannel(qt.webChannelTransport, (ch) => {
+    const bridge = ch.objects.bridge;
+    bridge.output.connect((data) => term.write(data));
+    term.onData((d) => bridge.input(d));
+    term.onResize(({cols, rows}) => bridge.resize(cols, rows));
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === 'keydown' && e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+        bridge.copy(term.getSelection()); return false;
+      }
+      if (e.type === 'keydown' && e.ctrlKey && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
+        bridge.paste(); return false;
+      }
+      return true;
+    });
+    bridge.ready(term.cols, term.rows);
+  });
+  new ResizeObserver(() => { try { fit.fit(); } catch (e) {} }).observe(document.getElementById('t'));
+</script>
+</body>
+</html>

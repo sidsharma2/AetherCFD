@@ -72,7 +72,29 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
             win.layouts.restore("run")
             _pump(app, 4.0)
             win.grab().save(str(out / "case_run.png"))
-            win.layouts.restore("post")
+            import os as _os
+
+            skip = set(_os.environ.get("AETHER_SMOKE_SKIP", "").split(","))
+            term_spec = None if "terminal" in skip else sv.panels.get("aether.terminal")
+            if term_spec is not None:
+                d = win.host.open_panel(term_spec)
+                _pump(app, 6.0)
+                term = win.host.panel(d.objectName())
+                if term is not None:
+                    term.write("echo AETHER_CHECK $WM_PROJECT_VERSION $(pwd)\r")
+                    _pump(app, 3.0)
+                    got = {}
+                    term.view.page().runJavaScript(
+                        "(()=>{let b=term.buffer.active,o=[];for(let i=0;i<b.length;i++){let l=b.getLine(i);"
+                        "if(l)o.push(l.translateToString(true));}return o.join('@@');})()", 0,
+                        lambda v: got.setdefault("text", v))
+                    _pump(app, 1.5)
+                    text = got.get("text") or ""
+                    line = next((ln for ln in text.split("@@") if ln.startswith("AETHER_CHECK")), None)
+                    report["terminal"] = {"check_line": line, "tail": [x for x in text.split("@@") if x.strip()][-4:]}
+                    win.grab().save(str(out / "case_terminal.png"))
+            if "viewport" not in skip:
+                win.layouts.restore("post")
             _pump(app, 6.0)
             win.grab().save(str(out / "case_viewport.png"))
             vp = next((win.host.panel(n) for n in win.host.docks() if n.startswith("aether.viewport")), None)
@@ -87,4 +109,5 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
     (out / "smoke.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps({k: report[k] for k in ("ok", "errors", "bad_warnings")}, indent=1))
     win.close()
+    _pump(app, 0.5)
     return 0 if report["ok"] else 1
