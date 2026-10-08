@@ -234,4 +234,7 @@ class MainWindow(QMainWindow):
         if s is not None and s.runs is not None:
             s.runs.shutdown()  # stops monitoring only; runs keep going in WSL
         self.services.bridge.close()
+        from aethercfd.studio.panels.viewport.worker import stop_shared_worker
+
+        stop_shared_worker()
         super().closeEvent(e)

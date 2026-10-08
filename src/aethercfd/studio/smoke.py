@@ -72,6 +72,13 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
             win.layouts.restore("run")
             _pump(app, 4.0)
             win.grab().save(str(out / "case_run.png"))
+            win.layouts.restore("post")
+            _pump(app, 6.0)
+            win.grab().save(str(out / "case_viewport.png"))
+            vp = next((win.host.panel(n) for n in win.host.docks() if n.startswith("aether.viewport")), None)
+            if vp is not None:
+                report["viewport"] = {"actors": len(vp.actors), "scalar": vp.scalar, "range": vp.range,
+                                      "gpu": win.services.gl_renderer, "info": vp.info.text()}
             report["case"] = {"root": str(sv.session.root), "backend": bool(sv.session.forks)}
     except Exception:
         errors.append(traceback.format_exc())
