@@ -10,3 +10,4 @@ dist/
 .aethercfd/local/
 spikes/out/
 src/aethercfd/studio/resources/xterm/node_modules/
+.ml-env/

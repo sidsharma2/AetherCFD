@@ -33,11 +33,14 @@ the CPU.
 | Physics | **Combustion** (Cantera): Z_st, T_ad(φ), transport, laminar flame speed and thickness, ignition delay, Peters regime and mesh resolution, model advisor (EDC, PaSR, laminar, flamelets) with exact dictionaries per fork, counterflow flamelets; CRECK and GRI mechanisms; **Physics Code**: your own models/solvers from templates (e.g. k-ε with Pope's round-jet correction), built with wmake in WSL, wired into the case |
 | Run | Run (plan-first; write-now, stop & write, pause, kill; guards), Residuals, Solver Log, Terminal (WSL, one OpenFOAM version sourced) |
 | Visualize | 3D Viewport on the real FV mesh + **Visualization** pipeline: Q-criterion vortices and isosurfaces on the GPU (CUDA marching tetrahedra on any polyhedral mesh), slices, clips, thresholds, contours, streamlines, glyphs, schlieren (exact with OpenFOAM's grad(rho)), mesh-quality maps, mirror/revolve, presentation smoothing; **Render image** up to 8K with 8× MSAA, or **ray-traced** through ParaView (OptiX path tracer on RTX) |
-| Analyse | **Python Console** (the open case as numpy: `data.fields()`, `data.residuals()`, plots inline, journalled `do(...)`); **Diff** (two files, vs another case, or before a journalled change); **Analysis**: POD/DMD modes of saved fields (growth rates of a diverging mode) and a Gaussian-process surrogate over runs; **Measurements**: experiment vs simulation (bias, RMSE, R²) and optimal-interpolation data assimilation (corrected field + uncertainty, written as fields) |
+| Analyse | **Python Console** (the open case as numpy: `data.fields()`, `data.residuals()`, plots inline, journalled `do(...)`); **Diff** (two files, vs another case, or before a journalled change); **Analysis**: POD/DMD modes of saved fields (growth rates of a diverging mode), a Gaussian-process surrogate over runs, and **PINNs** (PyTorch on the GPU, out of process: reconstruct a field from sparse data with advection-diffusion or Navier-Stokes physics; validated on Kovasznay flow to 0.06-0.4 %); **Measurements**: experiment vs simulation (bias, RMSE, R²) and optimal-interpolation data assimilation (corrected field + uncertainty, written as fields) |
 | Assist | **Copilot** (Claude): reads the case, logs and mesh, runs checks and pre-calculations, proposes edits/runs for approval, and drives the app in front of you (opens panels, adds visualization stages, points at things) |
 | Record | Command Journal (who, what, why, diff — revertable) |
 
 Ctrl+Alt+1…5 switch perspectives (Setup, Meshing, Run Monitor, Post-processing, Code).
+
+**PINN environment:** PINNs train in a separate PyTorch environment, so the app stays small. Create it once:
+`uv venv .ml-env --python 3.12` then `uv pip install --python .ml-env/Scripts/python.exe torch numpy --index-url https://download.pytorch.org/whl/cu126` (or point the `ml_python` setting at any python with torch).
 
 ## Panels, monitors, layouts
 

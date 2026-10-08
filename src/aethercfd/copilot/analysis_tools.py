@@ -189,3 +189,75 @@ ANALYSIS_TOOLS = [
     Tool("cad_import", "Convert a CAD file in the case (STEP/IGES/BREP/FCStd) with FreeCAD into a meshing STL in "
          "constant/triSurface (named parts become patches). Needs approval.", CadParams, cad_import, mutates=True),
 ]
+
+
+class PinnParams(Justified):
+    physics: str = Field("ad", description="ad (scalar carried by the CFD velocity) | ns (incompressible U, p) | data")
+    field: str = Field("T", description="scalar to reconstruct for ad/data (ns uses U and p)")
+    coefficient: float = Field(1e-5, gt=0, description="ad: diffusivity D [m2/s]; ns: kinematic viscosity [m2/s]")
+    n_data: int = Field(40, ge=3, description="random CFD cells used as data (ignored with csv)")
+    csv: str = Field("", description="measurements CSV in the case to use as data instead")
+    region: list[float] = Field(default_factory=list, description="xmin ymin zmin xmax ymax zmax [m] (empty: all)")
+    epochs: int = Field(3000, ge=100, le=100000)
+    lbfgs: int = Field(400, ge=0, le=20000)
+    wait_min: float = Field(20, gt=0, le=240)
+    write: bool = Field(False, description="write <field>Pinn and <field>PinnErr fields (approval)")
+
+
+def pinn_train(ctx: ToolContext, p: PinnParams) -> dict:
+    from aethercfd.ml.pinn import build_job, start, wait
+
+    pts = vals = None
+    if p.csv:
+        from aethercfd.assim.measurements import load_measurements
+
+        m = load_measurements(ctx.path(p.csv))
+        if p.field not in m.values:
+            raise ToolError(f"{p.csv} has no column {p.field!r}")
+        pts, vals = m.points, m.values[p.field]
+    region = (p.region[:3], p.region[3:6]) if len(p.region) == 6 else None
+    params = {"epochs_adam": p.epochs, "lbfgs_steps": p.lbfgs, ("diffusivity" if p.physics == "ad" else "nu"):
+              p.coefficient}
+    try:
+        job = build_job(ctx.root, physics=p.physics, field=p.field, region=region, n_data=p.n_data,
+                        data_points=pts, data_values=vals, **params)
+        jd = start(job, ml_python=getattr(ctx.session.settings, "ml_python", None),
+                   job_dir=ctx.root / ".aethercfd" / "local" / "pinn" / "copilot")
+    except (ValueError, RuntimeError) as exc:
+        raise ToolError(str(exc)) from None
+    try:
+        res = wait(jd, timeout_s=p.wait_min * 60)
+    except TimeoutError as exc:
+        return {"ok": False, "note": str(exc), "job_dir": str(jd)}
+    if not res.get("ok"):
+        return {"ok": False, "error": res.get("error"), "log": res.get("log", "")[-1500:]}
+    out = {k: res.get(k) for k in ("device", "gpu", "seconds", "final_data_loss", "final_pde_loss",
+                                   "rmse_over_std_vs_cfd", "n_data", "n_colloc", "n_eval")} | {"names": res["names"]}
+    if p.write:
+        from aethercfd.results.casedata import CaseData
+        from aethercfd.results.write_fields import field_files
+
+        data, t = CaseData(ctx.root), job.params["time"]
+        name = job.names[0] if job.physics != "ns" else "U"
+        if job.physics == "ns":
+            base = data.fields(t, ["U"])["U"]
+            pred = base.copy()
+            for j, a in enumerate(job.params["axes"]):
+                pred[res["eval_cells"], a] = res["y_eval"][:, j]
+        else:
+            v = data.fields(t, [name])[name]
+            base = v if v.ndim == 1 else np.linalg.norm(v, axis=1)
+            pred = base.copy()
+            pred[res["eval_cells"]] = res["y_eval"][:, 0]
+        tname = next((d for d in (f"{t:g}", str(t)) if (ctx.root / d).is_dir()
+                      or (ctx.root / "processor0" / d).is_dir()), f"{t:g}")
+        files = field_files(ctx.root, tname, {f"{name}Pinn": pred, f"{name}PinnErr": pred - base}, like=name)
+        out["write"] = ctx.execute("files.write", {"root": str(ctx.root), "files": files}, p)
+    return out
+
+
+ANALYSIS_TOOLS.append(Tool(
+    "pinn_train", "Train a physics-informed neural network on the GPU (PyTorch, separate environment): reconstruct a "
+    "scalar from sparse data with advection-diffusion physics using the CFD velocity, an incompressible flow (ns), or a "
+    "data-only fit; reports the error against the CFD field; write=true saves <field>Pinn fields (approval).",
+    PinnParams, pinn_train, mutates=True))

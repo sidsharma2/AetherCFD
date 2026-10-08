@@ -27,6 +27,8 @@ hidden = (collect_submodules("aethercfd", filter=lambda m: ".tests" not in m)
 datas = (collect_data_files("aethercfd", excludes=["**/node_modules/**", "**/__pycache__/**"])
          + collect_data_files("qtawesome") + collect_data_files("pyvista") + collect_data_files("pyqtgraph")
          + collect_data_files("cantera"))  # mechanisms (gri30.yaml, ...)
+# the PINN worker runs as a script in the separate PyTorch environment: ship it as a file, not bytecode
+datas.append((str(ROOT / "src" / "aethercfd" / "ml" / "pinn_worker.py"), "aethercfd/ml"))
 binaries = collect_dynamic_libs("winpty") + [(str(p), "winpty") for p in WINPTY.glob("*.exe")]
 
 # CUDA compute: CuPy + the CUDA runtime / NVRTC DLLs from the nvidia-* wheels, kept at the same relative

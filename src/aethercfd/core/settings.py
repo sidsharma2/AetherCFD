@@ -49,6 +49,8 @@ class Settings(BaseModel):
     gpu: str = "high-performance"  # high-performance (discrete NVIDIA on Optimus laptops) | integrated | system
     gpu_compute: str = "auto"  # auto (CUDA via CuPy when available) | cuda | cpu
     claude_exe: str | None = None  # Claude Code CLI for the copilot (default: found automatically)
+    ml_python: str | None = None  # python.exe of the PyTorch environment for PINNs (default: found automatically)
+    freecad_cmd: str | None = None  # FreeCADCmd.exe for CAD import (default: found automatically)
     recent_cases: list[str] = Field(default_factory=list)
     case_roots: list[str] = Field(default_factory=lambda: [r"D:\OpenFOAM"])
 

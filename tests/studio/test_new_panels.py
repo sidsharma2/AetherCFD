@@ -93,3 +93,23 @@ def test_analysis_panel_modes_and_surrogate(sv, qtbot):
     assert r is not None and r.energy[0] > 0.99  # uniform fields over time: one mode
     gp = p.fit_surrogate()
     assert gp is not None and "Next run" in p.s_out.toPlainText()
+
+
+def test_pinn_tab_trains_and_writes(sv, qtbot):
+    from aethercfd.ml.pinn import find_ml_python
+
+    if find_ml_python() is None:
+        pytest.skip("no PyTorch environment")
+    p = AnalysisPanel(PanelContext(sv, "#main"))
+    qtbot.addWidget(p)
+    qtbot.waitUntil(lambda: "PyTorch" in p.p_status.text(), timeout=120000)
+    p.p_phys.setCurrentIndex(2)  # data fit only (the fixture has no flow)
+    p.p_field.setCurrentText("p")
+    p.p_ndata.setValue(30)
+    p.p_epochs.setValue(300)
+    p.p_lbfgs.setValue(0)
+    p.train_pinn()
+    qtbot.waitUntil(lambda: p.p_result is not None, timeout=600000)
+    assert p.p_result["ok"] and p.p_result["rmse_over_std_vs_cfd"][0] is not None
+    p.write_pinn()
+    assert (Path(sv.session.root) / "0.4" / "pPinn").is_file()
