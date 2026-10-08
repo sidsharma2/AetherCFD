@@ -579,7 +579,9 @@ BASE_TOOLS: list[Tool] = [
 class ToolSet:
     def __init__(self, ctx: ToolContext, extra: list[Tool] | None = None):
         self.ctx = ctx
-        tools = [t for t in BASE_TOOLS if not (t.gui_only and ctx.ui is None)] + list(extra or [])
+        from aethercfd.copilot.mesh_tools import MESH_TOOLS
+
+        tools = [t for t in BASE_TOOLS + MESH_TOOLS if not (t.gui_only and ctx.ui is None)] + list(extra or [])
         self.tools = {t.name: t for t in tools}
 
     def describe(self) -> list[dict]:
