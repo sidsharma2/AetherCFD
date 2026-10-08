@@ -924,6 +924,51 @@ class ViewportPanel(Panel):
         return (f"showing {field} at t = {self.time.currentText()}"
                 + (f", mid-plane slice normal to {slice_axis}" if self.slice_on.isChecked() else ""))
 
+    # ------------------------------------------------------------------ comparisons
+    def set_range(self, lo: float, hi: float) -> None:
+        """Fix the colour range (and lock it), e.g. the same range in side-by-side views."""
+        self.range = (float(lo), float(hi))
+        self.lock.setChecked(True)
+        self._apply_display()
+        self.plotter.render()
+
+    def set_cmap(self, name: str) -> None:
+        if name in CMAPS:
+            self.cmap.setCurrentText(name)
+
+    def link_camera(self, others: list) -> None:
+        """Every camera move here is copied to the other viewports (and theirs to this one)."""
+        self._linked = [o for o in others if o is not self]
+        if getattr(self, "_cam_obs", None) is None:
+            self._syncing = False
+
+            def moved(*_a):
+                if self._syncing:
+                    return
+                cam = self.plotter.camera
+                for o in getattr(self, "_linked", []):
+                    o._syncing = True
+                    try:
+                        oc = o.plotter.camera
+                        oc.SetPosition(cam.GetPosition())
+                        oc.SetFocalPoint(cam.GetFocalPoint())
+                        oc.SetViewUp(cam.GetViewUp())
+                        oc.SetViewAngle(cam.GetViewAngle())
+                        oc.SetParallelScale(cam.GetParallelScale())
+                        o.plotter.renderer.ResetCameraClippingRange()
+                        o.plotter.render()
+                    finally:
+                        o._syncing = False
+            iren = self.plotter.iren.interactor if hasattr(self.plotter.iren, "interactor") else self.plotter.iren
+            # live while dragging (InteractionEvent), at the end, and for wheel zooms
+            self._cam_obs = [iren.AddObserver(e, moved) for e in ("InteractionEvent", "EndInteractionEvent",
+                                                                     "MouseWheelForwardEvent",
+                                                                     "MouseWheelBackwardEvent")]
+            self._cam_moved = moved
+
+    def current_range(self) -> tuple[float, float] | None:
+        return self.range
+
     # ------------------------------------------------------------------ panel API
     def save_state(self) -> dict:
         cam = self.plotter.camera

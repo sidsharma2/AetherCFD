@@ -272,8 +272,13 @@ class AnalysisPanel(Panel):
         self.p_write = QPushButton(icon("msc.save"), "Write fields")
         self.p_write.setEnabled(False)
         self.p_write.clicked.connect(self.write_pinn)
+        self.p_compare = QPushButton(icon("mdi6.view-split-vertical"), "Compare in 3D")
+        self.p_compare.setToolTip("CFD | PINN | difference in linked viewports with one colour range")
+        self.p_compare.setEnabled(False)
+        self.p_compare.clicked.connect(self.compare_pinn)
         r.addWidget(self.p_go)
         r.addWidget(self.p_write)
+        r.addWidget(self.p_compare)
         r.addStretch(1)
         lay.addLayout(r)
         self.p_out = QTextBrowser()
@@ -430,6 +435,16 @@ class AnalysisPanel(Panel):
         r = s.executor.execute("files.write", {"root": str(s.root), "files": files}, USER)
         self.sv.notify(f"Wrote {', '.join(out)} at t = {tname}" if r.ok else f"Not written: {r.message}",
                        "info" if r.ok else "error")
+        if r.ok:
+            self._pinn_written = (list(out), tname, job)
+            self.p_compare.setEnabled(True)
+
+    def compare_pinn(self) -> str:
+        from aethercfd.studio.app.automation import AppAutomation
+
+        names, tname, job = self._pinn_written
+        base = "U" if job.physics == "ns" else job.names[0]
+        return AppAutomation(self.sv).compare_fields(base, names[0], names[1], tname)
 
 
 PANELS =[PanelSpec("aether.analysis", "Analysis", "mdi6.chart-bell-curve", "Results", AnalysisPanel,

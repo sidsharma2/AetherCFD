@@ -66,6 +66,8 @@ class PinnJob:
     x_eval: np.ndarray
     params: dict = field(default_factory=dict)
     u_colloc: np.ndarray | None = None
+    d_colloc: np.ndarray | None = None  # per-point diffusivity (ad)
+    g_colloc: np.ndarray | None = None  # grad(alpha)/rho at the points (ad, variable diffusivity)
     s_colloc: np.ndarray | None = None
     w_data: np.ndarray | None = None
     eval_cells: np.ndarray | None = None  # cell ids of x_eval (to write fields back)
@@ -75,7 +77,8 @@ class PinnJob:
 def build_job(case: str | Path, *, physics: str, field: str, time: float | None = None,
               region: tuple[list[float], list[float]] | None = None, n_data: int = 50, n_colloc: int = 8000,
               data_points: np.ndarray | None = None, data_values: np.ndarray | None = None,
-              max_eval: int = 200_000, seed: int = 0, **params) -> PinnJob:
+              max_eval: int = 200_000, seed: int = 0, diffusivity_field: str | None = None,
+              prandtl: float = 0.71, **params) -> PinnJob:
     """From the open case: the cells inside ``region`` (min, max corners; default all) are evaluated; data
     are ``n_data`` random cells of the CFD ``field`` (or given measurement points/values); collocation
     points are cell centres. ns uses field "U" (+ "p"), ad uses ``field`` with the CFD velocity."""
@@ -123,10 +126,49 @@ def build_job(case: str | Path, *, physics: str, field: str, time: float | None 
         if "U" not in f:
             raise ValueError("ad needs the CFD velocity U")
         job.u_colloc = f["U"][col][:, axes]
+        if diffusivity_field == "turbulent":
+            D, G = effective_diffusivity(data, t, prandtl=prandtl)
+            job.d_colloc, job.g_colloc = D[col], G[col][:, axes]
+            job.params["diffusivity"] = "turbulent (alphat + mu/Pr)/rho per cell"
+            job.params["d_range"] = [float(D[sel].min()), float(D[sel].max())]
     job.params["axes"] = [int(a) for a in axes]
     job.params["time"] = t
     job._truth = Y[ev]  # CFD values at the evaluation cells (for the error report)
     return job
+
+
+def _sutherland(case: Path) -> tuple[float, float]:
+    """(As, Ts) from constant/thermophysicalProperties (air values when absent)."""
+    import re
+
+    f = Path(case) / "constant" / "thermophysicalProperties"
+    t = f.read_text(encoding="utf-8", errors="replace") if f.is_file() else ""
+    a = re.search(r"(?<![A-Za-z])As\s+([0-9.eE+-]+)", t)
+    b = re.search(r"(?<![A-Za-z])Ts\s+([0-9.eE+-]+)", t)
+    return (float(a.group(1)) if a else 1.458e-6), (float(b.group(1)) if b else 110.4)
+
+
+def effective_diffusivity(data, t: float, *, prandtl: float = 0.71) -> tuple[np.ndarray, np.ndarray]:
+    """Per cell D = alpha_eff / rho and G = grad(alpha_eff) / rho, with alpha_eff = alphat + mu(T)/Pr [kg/m/s]
+    (Sutherland mu): the energy equation u.grad T = (1/rho) div(alpha_eff grad T) of a compressible RANS run."""
+    from aethercfd.core.gpu import array_module, to_numpy
+    from aethercfd.results.iso import tetmesh_for, velocity_gradient
+
+    f = data.fields(t, ["alphat", "rho", "T", "p"])
+    if "alphat" not in f or "T" not in f:
+        raise ValueError("a turbulent diffusivity needs the alphat and T fields")
+    T = f["T"]
+    rho = f["rho"] if "rho" in f else f["p"] / (287.05 * T)
+    As, Ts = _sutherland(data.root)
+    mu = As * T ** 1.5 / (T + Ts)
+    alpha = f["alphat"] + mu / prandtl
+    sub = Path("constant") / data.region / "polyMesh" if data.region else Path("constant") / "polyMesh"
+    tm = tetmesh_for(data.root / sub)
+    xp, _name = array_module("auto")
+    A = np.zeros((len(alpha), 3))
+    A[:, 0] = alpha
+    L = to_numpy(velocity_gradient(tm, xp.asarray(A), xp))
+    return alpha / rho, L[:, 0, :] / rho[:, None]
 
 
 def start(job: PinnJob, *, ml_python: str | None = None, job_dir: str | Path | None = None) -> Path:
@@ -137,7 +179,7 @@ def start(job: PinnJob, *, ml_python: str | None = None, job_dir: str | Path | N
     jd = (Path(job_dir) if job_dir else Path(tempfile.mkdtemp(prefix="aether-pinn-"))).resolve()
     jd.mkdir(parents=True, exist_ok=True)
     arrays = {"x_data": job.x_data, "y_data": job.y_data, "x_colloc": job.x_colloc, "x_eval": job.x_eval}
-    for k in ("u_colloc", "s_colloc", "w_data"):
+    for k in ("u_colloc", "s_colloc", "w_data", "d_colloc", "g_colloc"):
         if getattr(job, k) is not None:
             arrays[k] = getattr(job, k)
     np.savez(jd / "inputs.npz", **arrays)

@@ -577,6 +577,14 @@ class PythonParams(BaseModel):
                                   "session, do(...), np, plt, show()")
 
 
+class CompareParams(BaseModel):
+    left: str = Field(description="Field for the left view, e.g. T")
+    right: str = Field(description="Field for the right view, e.g. TPinn")
+    diff: str = Field("", description="Optional third view with a difference field, e.g. TPinnErr")
+    time: str | None = Field(None, description="Result time (default latest)")
+    slice_axis: str | None = Field(None, description="x, y or z for a mid-plane slice")
+
+
 class PerspectiveParams(BaseModel):
     name: str = Field(description="setup | meshing | run | post | code")
 
@@ -653,6 +661,10 @@ def app_show_diff(ctx: ToolContext, p: ShowDiffParams) -> dict:
 
 def app_python(ctx: ToolContext, p: PythonParams) -> dict:
     return {"result": _ui(ctx).python(p.code)}
+
+
+def app_compare_fields(ctx: ToolContext, p: CompareParams) -> dict:
+    return {"result": _ui(ctx).compare_fields(p.left, p.right, p.diff, p.time, p.slice_axis)}
 
 
 def app_perspective(ctx: ToolContext, p: PerspectiveParams) -> dict:
@@ -754,6 +766,9 @@ BASE_TOOLS: list[Tool] = [
          app_show_diff, gui_only=True),
     Tool("app_python", "Put Python code into the user's Python console (shown, not run): teach them how to get "
          "fields, profiles or residuals as numpy themselves.", PythonParams, app_python, gui_only=True),
+    Tool("app_compare_fields", "Show fields side by side in linked 3D viewports with one colour range (e.g. CFD T, "
+         "PINN TPinn and the difference TPinnErr; or T at two times).", CompareParams, app_compare_fields,
+         gui_only=True),
     Tool("app_open_case", "Open another OpenFOAM case in the app when the user asks for one (e.g. a case from the "
          "Start page list or a path they give). Opening it ends this conversation, so say what you are opening "
          "before calling this, and call it last.", OpenCaseParams, app_open_case, gui_only=True),

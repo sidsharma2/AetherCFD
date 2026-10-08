@@ -111,6 +111,70 @@ class AppAutomation:
         """Put code into the Python console for the user to read and run (not run automatically)."""
         return self._panel("aether.python").insert(code)
 
+    def compare_fields(self, left: str, right: str, diff: str = "", time: str | None = None,
+                       slice_axis: str | None = None) -> str:
+        """Side-by-side 3D viewports (e.g. CFD T | PINN TPinn | error TPinnErr): linked cameras, one shared colour
+        range for the first two, a symmetric diverging range for the difference."""
+        from PySide6.QtCore import QTimer
+
+        if self.sv.session is None:
+            return "no case is open"
+        spec = self.sv.panels.get("aether.viewport")
+        host = self.sv.host
+        d1 = host.open_panel(spec, instance="cmpA")
+        docks = [d1, host.open_beside(spec, d1, instance="cmpB")]
+        if diff:
+            docks.append(host.open_beside(spec, docks[-1], instance="cmpC"))
+        views = [host.build_panel(d.objectName()) for d in docks]
+        fields = [left, right] + ([diff] if diff else [])
+        for v in views:
+            v.link_camera(views)
+        state = {"step": "wait-meta", "n": 0}
+
+        def tick():
+            state["n"] += 1
+            if state["n"] > 400:  # ~2 minutes
+                timer.stop()
+                self.sv.notify("Compare: the viewports did not load in time", "warn")
+                return
+            if state["step"] == "wait-meta":
+                if all(v.field.count() > 0 for v in views):
+                    msgs = [v.show_field(f, time, slice_axis) for v, f in zip(views, fields, strict=True)]
+                    bad = [m for m in msgs if not m.startswith("showing")]
+                    if bad:
+                        timer.stop()
+                        self.sv.notify("Compare: " + "; ".join(bad), "warn")
+                        return
+                    state["step"] = "wait-data"
+                return
+            if all(v.range is not None and v.scalar for v in views):
+                lo = min(views[0].range[0], views[1].range[0])
+                hi = max(views[0].range[1], views[1].range[1])
+                views[0].set_range(lo, hi)
+                views[1].set_range(lo, hi)
+                if diff:
+                    m = max(abs(views[2].range[0]), abs(views[2].range[1])) or 1.0
+                    views[2].set_cmap("coolwarm")
+                    views[2].set_range(-m, m)
+                cam = views[0].plotter.camera
+                for v in views[1:]:
+                    vc = v.plotter.camera
+                    vc.SetPosition(cam.GetPosition())
+                    vc.SetFocalPoint(cam.GetFocalPoint())
+                    vc.SetViewUp(cam.GetViewUp())
+                    v.plotter.render()
+                timer.stop()
+                self.sv.notify(f"Comparing {', '.join(fields)}: cameras linked, shared colour range "
+                               f"{lo:.4g}..{hi:.4g}")
+
+        timer = QTimer(self.sv)
+        timer.setInterval(300)
+        timer.timeout.connect(tick)
+        timer.start()
+        self._compare_timer = timer  # keep it alive
+        return (f"opened {len(views)} linked viewports side by side: {', '.join(fields)}"
+                + (f" at t = {time}" if time else "") + (f", slice normal to {slice_axis}" if slice_axis else ""))
+
     def open_case(self, path: str, *, delay_ms: int = 2500) -> str:
         """Open another OpenFOAM case (any folder with system/controlDict). Deferred a little: the copilot
         works per case, and opening a case ends its current conversation, so its reply gets out first."""

@@ -86,7 +86,9 @@ def residuals(job, net, x, extra):
             mom.append((adv + dp[:, i:i + 1] - nu * lap) * (L / U ** 2))
         return [cont, *mom]
     if job["physics"] == "ad":
-        D = float(job.get("diffusivity", 1e-3))
+        # u.grad c = (1/rho) div(alpha grad c) = D lap c + G.grad c, with D = alpha/rho, G = grad(alpha)/rho per point
+        # (variable D from the CFD's turbulence fields), or a constant D
+        D = extra["d"] if "d" in extra else float(job.get("diffusivity", 1e-3))
         c = out[:, 0:1]
         dc = grad(c, x)
         lap = sum(grad(dc[:, j:j + 1], x)[:, j:j + 1] for j in range(d))
@@ -94,6 +96,8 @@ def residuals(job, net, x, extra):
         adv = (uvel * dc).sum(1, keepdim=True)
         src = extra.get("s")
         r = adv - D * lap - (src if src is not None else 0.0)
+        if "g" in extra:
+            r = r - (extra["g"] * dc).sum(1, keepdim=True)
         return [r * (L / (U * job["_C"]))]
     return []
 
@@ -134,6 +138,10 @@ def main(job_dir: str) -> int:
         extra["u"] = f32(data["u_colloc"])
         if "s_colloc" in data:
             extra["s"] = f32(data["s_colloc"]).reshape(-1, 1)
+        if "d_colloc" in data:
+            extra["d"] = f32(data["d_colloc"]).reshape(-1, 1)
+        if "g_colloc" in data:
+            extra["g"] = f32(data["g_colloc"])
     w = {"data": 1.0, "pde": 1.0} | job.get("weights", {})
     batch = int(job.get("batch", 4096))
     hist = (jd / "history.jsonl").open("w", encoding="utf-8")

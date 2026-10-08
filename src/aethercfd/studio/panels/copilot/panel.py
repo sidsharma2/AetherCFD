@@ -193,6 +193,9 @@ class _UiHooks(QObject):
     def python(self, code: str) -> str:
         return self._auto("python", code)
 
+    def compare_fields(self, left: str, right: str, diff: str, time: str | None, slice_axis: str | None) -> str:
+        return self._auto("compare_fields", left, right, diff, time, slice_axis)
+
     def perspective(self, name: str) -> str:
         return self._auto("perspective", name)
 

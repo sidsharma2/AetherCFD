@@ -245,6 +245,24 @@ class DockHost(QObject):
         self.panel_opened.emit(name)
         return d
 
+    def open_beside(self, spec: PanelSpec, beside: ads.CDockWidget, *, instance: str | None = None) -> ads.CDockWidget:
+        """Open a panel split to the right of another one (side-by-side comparisons)."""
+        if instance is None:
+            instance = self.next_instance(spec.type_id) if spec.multi_instance else "main"
+        name = f"{spec.type_id}#{instance}"
+        d = self._docks.get(name)
+        if d is not None and not d.isClosed():
+            return d
+        d = d or self.create_dock(spec, name)
+        area = beside.dockAreaWidget()
+        if area is not None:
+            self.manager.addDockWidget(ads.RightDockWidgetArea, d, area)
+        else:
+            self.place(d, spec.default_area)
+        d.toggleView(True)
+        self.panel_opened.emit(name)
+        return d
+
     def place(self, d: ads.CDockWidget, area: Area, *, tab_group: str | None = None) -> None:
         if area is Area.FLOATING:
             self.manager.addDockWidgetFloating(d)
