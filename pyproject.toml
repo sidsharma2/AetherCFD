@@ -26,6 +26,7 @@ dependencies = [
     "psutil>=6",
     "nvidia-ml-py>=12",
     "matplotlib>=3.9",  # publication plot export (runs in a subprocess with the user's style)
+    "scipy>=1.18.1",
 ]
 
 [project.scripts]
