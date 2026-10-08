@@ -38,6 +38,12 @@ from aethercfd.studio.shell.panel_base import Area
 
 log = logging.getLogger(__name__)
 _DOCK_NAME = re.compile(rb'<Widget Name="([^"]+)"')
+_OPEN_DOCK = re.compile(rb'<Widget Name="([^"]+)" Closed="0"')
+
+
+def _has_panels(blob: bytes) -> bool:
+    """Does a saved dock state show at least one real panel (not just the empty workbench)?"""
+    return any(n != b"aether.workbench#main" for n in _OPEN_DOCK.findall(blob))
 
 
 def _rect(q: QRect) -> Rect:
@@ -125,6 +131,10 @@ class LayoutManager(QObject):
             return
         try:
             snap = self.snapshot()
+            if not _has_panels(base64.b64decode(snap["ads_state"])):
+                # the dock state can be empty while panels look open (e.g. a panel that failed to build)
+                log.info("layout %s not saved: the dock state has no panels", self.current)
+                return
             self.store.save_variant(self.current, fingerprint(self.screens), snap)
         except Exception:
             log.exception("layout autosave failed")
@@ -156,6 +166,8 @@ class LayoutManager(QObject):
             blob = base64.b64decode(v["ads_state"])
         except (KeyError, ValueError):
             return False
+        if not _has_panels(blob):
+            return False  # an empty saved layout: use the recipe instead
         names = [m.decode() for m in _DOCK_NAME.findall(blob)]
         ok = self.host.restore_state(blob, names, self.services.panels.get)
         if not ok:

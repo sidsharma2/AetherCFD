@@ -70,3 +70,17 @@ def test_reader_lists_fields_written_at_one_time_only(win):
     _w, sv = win
     r = FoamResults(sv.session.root)
     assert {"pB", "pD"} <= set(r.refresh().cell_arrays)  # only in 0.1, not in 0
+
+
+def test_empty_saved_layout_falls_back_to_the_recipe(win):
+    import base64
+
+    from aethercfd.studio.layout.layout_manager import _has_panels
+
+    w, _sv = win
+    assert not _has_panels(b'<Widget Name="aether.workbench#main" Closed="0"/>')
+    assert _has_panels(b'<Widget Name="aether.case_tree#main" Closed="0"/>')
+    snap = w.layouts.snapshot()
+    empty = dict(snap, ads_state=base64.b64encode(b'<QtAdvancedDockingSystem><Widget Name="aether.workbench#main" '
+                                                  b'Closed="0"/></QtAdvancedDockingSystem>').decode())
+    assert not w.layouts._apply_variant(empty)  # the restore then applies the perspective's recipe
