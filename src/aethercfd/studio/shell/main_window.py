@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import shutil
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QActionGroup, QKeySequence
 from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox
 
@@ -55,6 +55,10 @@ class MainWindow(QMainWindow):
         from aethercfd.studio.palette.command_palette import install
 
         self.palette = install(self)
+        from aethercfd.studio.shell.command_bar import CommandBar
+
+        self.command_bar = CommandBar(self)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.command_bar)
         services.notification.connect(self._on_notify)
         services.case_changed.connect(self._on_case)
         services.backend_ready.connect(self._on_backend)

@@ -11,7 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import QDialog, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
-from rapidfuzz import fuzz, process
+from rapidfuzz import fuzz
 
 from aethercfd.case.model import is_time_dir
 from aethercfd.studio.theme.style import icon
@@ -25,6 +25,49 @@ class PaletteItem:
     run: Callable[[], None]
     icon: str = "msc.symbol-event"
     detail: str = ""
+    keywords: str = ""  # synonyms people type for this item (searched, not shown)
+
+
+# What people call things (searched alongside labels and descriptions; misspellings are handled by scoring)
+KEYWORDS = {
+    "aether.residuals": "convergence residual plot initial residuals monitor graph",
+    "aether.solver_log": "log output console stdout errors fatal",
+    "aether.run_status": "run start stop solve simulation launch kill pause write now",
+    "aether.mesh_quality": "checkmesh check mesh quality non-orthogonality skewness aspect ratio bad cells",
+    "aether.viewport": "3d view render results field contour plot visualise visualize",
+    "aether.vis_controls": "pipeline slice clip contour isosurface streamlines q criterion vortices schlieren glyphs "
+                           "mirror revolve presentation smoothing",
+    "aether.inspector": "properties inspector details probe cell value info",
+    "aether.checks": "numerics lab pre-run checks schemes relaxation boundedness diagnose problems errors fix",
+    "aether.copilot": "claude ai assistant chat help copilot agent ask",
+    "aether.terminal": "shell bash wsl command line console",
+    "aether.journal": "history undo revert changes log journal",
+    "aether.case_tree": "files explorer tree folders browse",
+    "aether.editor": "edit dictionary text file code",
+    "aether.workflow": "stages steps guide workflow progress",
+    "aether.welcome": "start home recent cases",
+}
+STAGE_ITEMS = [("qcriterion", "Q-criterion vortices (GPU)", "vortex vortices q criterion lambda2 swirl coherent "
+                "structures cuda gpu isosurface", "mdi6.weather-tornado"),
+               ("isosurface", "Isosurface (GPU)", "iso surface contour level flame front cuda gpu", "mdi6.layers-outline"),
+               ("slice", "Slice", "cut plane section", "mdi6.box-cutter"),
+               ("streamlines", "Streamlines", "stream lines path flow lines particle traces", "mdi6.waves"),
+               ("schlieren", "Schlieren", "density gradient shadowgraph shock", "mdi6.blur"),
+               ("quality", "Mesh quality map", "bad cells non-orthogonality skewness aspect ratio", "mdi6.grid"),
+               ("glyphs", "Vector glyphs", "arrows vectors quiver", "mdi6.arrow-top-right"),
+               ("threshold", "Threshold", "filter range cells above below", "mdi6.filter-outline")]
+
+
+def score(query: str, item: PaletteItem) -> float:
+    """Typo-tolerant relevance: best of whole-label, substring-with-typos, word-set and keyword matches."""
+    q = query.lower()
+    lab = item.label.lower()
+    text = f"{lab} {item.detail.lower()} {item.keywords}"
+    s = max(fuzz.WRatio(q, lab), 0.95 * fuzz.partial_ratio(q, lab), 0.9 * fuzz.token_set_ratio(q, text),
+            0.88 * fuzz.partial_ratio(q, text) if len(q) >= 4 else 0.0)
+    if lab.startswith(q) or any(w.startswith(q) for w in lab.split()):
+        s += 8
+    return s
 
 
 class CommandPalette(QDialog):
@@ -67,7 +110,22 @@ class CommandPalette(QDialog):
                 walk(a.menu(), [a.text().replace("&", "")])
         for spec in sv.panels.specs():
             out.append(PaletteItem(f"Open {spec.title}", "panel", lambda s=spec: sv.host.open_panel(s), spec.icon,
-                                   spec.description))
+                                   spec.description, KEYWORDS.get(spec.type_id, "")))
+        from aethercfd.studio.app.automation import AppAutomation
+
+        auto = AppAutomation(sv)
+        for kind, title, kw, ic in STAGE_ITEMS:
+            out.append(PaletteItem(f"Add to 3D view: {title}", "visualization",
+                                   lambda k=kind: (auto.add_stage(k, {}), auto.open_panel("Visualization")), ic,
+                                   "Visualization pipeline", kw))
+        out.append(PaletteItem("Render image (up to 8K)…", "visualization",
+                               lambda: auto._viewport() and auto._viewport().render_dialog(), "mdi6.image-filter-hdr",
+                               "publication / presentation render", "screenshot picture export png 4k 8k render"))
+        from aethercfd.templates.catalog import TEMPLATES
+
+        for t in TEMPLATES:
+            out.append(PaletteItem(f"New case: {t.title}", "template", w.new_case_dialog, "msc.new-folder",
+                                   t.summary, " ".join(sorted(t.tags)) + " template tutorial new case"))
         from aethercfd.studio.layout.recipes import PERSPECTIVES
         from aethercfd.studio.layout.screens import current_screens
 
@@ -148,10 +206,10 @@ class CommandPalette(QDialog):
                 panel.editor.goto_line(line)
 
     # ------------------------------------------------------------------ ui
-    def open(self) -> None:
+    def open(self, text: str = "") -> None:
         self.items = self._collect()
-        self.edit.clear()
-        self._filter("")
+        self.edit.setText(text)
+        self._filter(text)
         g = self.window.geometry()
         self.move(g.x() + (g.width() - self.width()) // 2, g.y() + 80)
         self.show()
@@ -170,15 +228,32 @@ class CommandPalette(QDialog):
         if not text:
             ranked = pool[: self.MAX]
         else:
-            labels = [i.label for i in pool]
-            hits = process.extract(text, labels, scorer=fuzz.WRatio, limit=self.MAX, score_cutoff=45)
-            ranked = [pool[idx] for _label, _score, idx in hits]
+            ranked = self.rank(text, pool)
+            if len(text) >= 4 and pool is self.items:
+                ranked.append(PaletteItem(f"Ask the copilot: “{text}”", "copilot", lambda q=text: self._ask(q),
+                                          "mdi6.robot-outline", "Claude answers with the case in view"))
         for it in ranked:
             li = QListWidgetItem(icon(it.icon), f"{it.label}" + (f"    {it.detail}" if it.detail else ""))
             li.setData(Qt.ItemDataRole.UserRole, it)
             self.list.addItem(li)
         if self.list.count():
             self.list.setCurrentRow(0)
+
+    def rank(self, text: str, pool: list[PaletteItem], cutoff: float = 52.0) -> list[PaletteItem]:
+        scored = sorted(((score(text, it), i, it) for i, it in enumerate(pool)), key=lambda x: (-x[0], x[1]))
+        return [it for s, _i, it in scored[: self.MAX] if s >= cutoff]
+
+    def _ask(self, question: str) -> None:
+        sv = self.window.services
+        spec = sv.panels.get("aether.copilot")
+        if spec is None:
+            return
+        d = sv.host.open_panel(spec)
+        panel = sv.host.build_panel(d.objectName())
+        if panel is not None:
+            panel.input.setPlainText(question)
+            if panel.auth and panel.auth.logged_in and sv.session is not None:
+                panel._send_input()
 
     def _move(self, d: int) -> None:
         self.list.setCurrentRow(max(0, min(self.list.count() - 1, self.list.currentRow() + d)))
