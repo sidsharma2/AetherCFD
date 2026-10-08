@@ -3,6 +3,7 @@
 Quality   - checkMesh-exact metrics from the mesh files, histograms, and WHERE the bad cells are
             (hotspot clusters; double-click shows them in the 3D viewport)
 Grading   - design blockMesh grading that matches neighbouring cell sizes (no size jumps)
+Holes     - O-grid-in-a-box blocking for holes through walls: H-O box per level, end slabs, ellipses
 Wall / y+ - first cell height for a target y+, and the layer plan up to the core cells
 Geometry  - STL intake (watertight?, features, curvature, extruded/axisymmetric?) and the ranked meshing
             strategies with their first settings
@@ -55,6 +56,7 @@ class AetherMeshPanel(Panel):
         lay.addWidget(self.status)
         self._build_quality()
         self._build_grading()
+        self._build_holes()
         self._build_wall()
         self._build_geometry()
 
@@ -210,6 +212,71 @@ class AetherMeshPanel(Panel):
         self.g_plot.clear()
         self.g_plot.plot(d.cells(), pen=pg.mkPen(T.accent, width=2))
 
+    # ------------------------------------------------------------------ holes (O-grid in a box)
+    def _build_holes(self) -> None:
+        from PySide6.QtWidgets import QPlainTextEdit
+
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        f = QFormLayout()
+        self.h_r = dspin(0.25, 1e-9, 1e9, 6)
+        self.h_half = dspin(0.75, 1e-9, 1e9, 6)
+        self.h_sector = dspin(45.0, 1, 360, 3, suffix=" °")
+        self.h_na = QSpinBox(minimum=2, maximum=100, value=6)
+        self.h_nend = QSpinBox(minimum=1, maximum=100, value=4)
+        f.addRow("Hole radius", self.h_r)
+        f.addRow("Half length along the row (½ pitch)", self.h_half)
+        f.addRow("Box angular width on the tube", self.h_sector)
+        f.addRow("Cells per box quarter-side", self.h_na)
+        f.addRow("Cells per end slab", self.h_nend)
+        lay.addLayout(f)
+        lay.addWidget(QLabel("Levels the hole passes through, inside to outside: <i>name radius</i>, add "
+                             "<i>free</i> where the hole is not a real surface (e.g. the annulus' outer wall)"))
+        self.h_levels = QPlainTextEdit("cap 0.6295\nR0 1.0795\nR1 1.5875\nR2 2.667 free\nR3 3.175 free")
+        self.h_levels.setMaximumHeight(110)
+        lay.addWidget(self.h_levels)
+        b = QPushButton("Design hole blocking")
+        lay.addWidget(b)
+        self.h_out = QTextBrowser()
+        lay.addWidget(self.h_out, 1)
+        b.clicked.connect(self.holes)
+        self.tabs.addTab(w, "Holes (O-grid)")
+
+    def holes(self) -> None:
+        from aethercfd.mesh.blocking import design_hole_box, tube_levels
+
+        radii, physical = {}, {}
+        for ln in self.h_levels.toPlainText().splitlines():
+            parts = ln.split()
+            if len(parts) < 2:
+                continue
+            try:
+                radii[parts[0]] = float(parts[1])
+            except ValueError:
+                self.h_out.setHtml(f"<span style='color:{T.warn}'>cannot read the level line: {ln}</span>")
+                return
+            physical[parts[0]] = not (len(parts) > 2 and parts[2].lower() == "free")
+        try:
+            d = design_hole_box(self.h_r.value(), self.h_half.value(),
+                                tube_levels(radii, self.h_sector.value(), physical),
+                                n_a=self.h_na.value(), n_end=self.h_nend.value())
+        except ValueError as exc:
+            self.h_out.setHtml(f"<span style='color:{T.warn}'>{exc}</span>")
+            return
+        rows = "".join(
+            f"<tr><td>{r['level']}</td><td>{r['half_width']:.4g}</td><td><b>{r['box_half_length']:.4g}</b></td>"
+            f"<td>{r['layout']}</td><td>{r['misalignment_full_band_deg']:.1f}°</td>"
+            f"<td><b>{r['misalignment_deg']:.1f}°</b></td><td>{r['end_slab']['expansion']:.3g}</td>"
+            f"<td>{r['end_slab']['band_plane_cell']:.4g}</td></tr>" for r in d["levels"])
+        self.h_out.setHtml(
+            "<table cellspacing=6><tr><th>level</th><th>box ½-width</th><th>box ½-length</th><th>layout</th>"
+            "<th>corner off (full band)</th><th>corner off (H-O)</th><th>end-slab grading</th>"
+            f"<th>band-plane cell</th></tr>{rows}</table>"
+            + "".join(f"<br><span style='color:{T.warn}'>{n}</span>" for n in d["notes"])
+            + f"<br><span style='color:{T.text_dim}'>{d['rule']}. Box half-lengths are limited to "
+              f"[{d['box_half_length_range'][0]:.4g}, {d['box_half_length_range'][1]:.4g}] by the hole gap and the "
+              "end slab.</span>")
+
     # ------------------------------------------------------------------ wall
     def _build_wall(self) -> None:
         w = QWidget()
@@ -270,9 +337,59 @@ class AetherMeshPanel(Panel):
         lay.addLayout(row)
         self.geo_out = QTextBrowser()
         lay.addWidget(self.geo_out, 1)
+        row2 = QHBoxLayout()
+        self.sn_flow = QComboBox()
+        self.sn_flow.addItems(["external", "internal"])
+        self.sn_dir = QComboBox()
+        self.sn_dir.addItems(["+x", "-x", "+y", "-y", "+z", "-z"])
+        self.sn_cells = QSpinBox(minimum=10_000, maximum=200_000_000, value=2_000_000, singleStep=100_000)
+        self.sn_cells.setSuffix(" cells")
+        write = QPushButton("Write snappyHexMesh setup")
+        write.setToolTip("background box, features, refinement and layers for this STL into the open case "
+                         "(one approval; journalled)")
+        for wdg in (QLabel("Flow"), self.sn_flow, self.sn_dir, self.sn_cells, write):
+            row2.addWidget(wdg)
+        row2.addStretch(1)
+        lay.addLayout(row2)
         browse.clicked.connect(self._browse_stl)
         go.clicked.connect(self.analyse_geometry)
+        write.clicked.connect(self.write_snappy)
         self.tabs.addTab(w, "Geometry & strategy")
+
+    def write_snappy(self) -> None:
+        from aethercfd.commands.base import USER
+
+        s = self.sv.session
+        path = self.stl.text().strip()
+        if s is None or not path or not Path(path).exists():
+            self.status.setText("Open a case and choose its STL first")
+            return
+        if not self.sv.ensure_project():
+            return
+        s = self.sv.session
+        from aethercfd.mesh.geometry import analyse
+        from aethercfd.mesh.snappy import minimal_system, snappy_setup
+        from aethercfd.mesh.strategy import plan
+
+        geo = analyse(path)
+        fam = "foundation" if "foundation" in str(getattr(s.case().fork_guess, "family", "")).lower() else "esi"
+        best = next((m for m in plan(geo, flow=self.sn_flow.currentText(), target_cells=self.sn_cells.value(),
+                                     fork=fam) if m.mesher.startswith("snappyHexMesh")), None)
+        try:
+            st = snappy_setup(path, geo, fork_family=fam, flow=self.sn_flow.currentText(),
+                              flow_dir=self.sn_dir.currentText(), target_cells=self.sn_cells.value(),
+                              strategy_settings=best.settings if best else None)
+        except ValueError as exc:
+            self.status.setText(str(exc))
+            return
+        root = Path(s.root)
+        copies = {} if (root / st.copy_surface[1]).resolve() == Path(path).resolve() else {st.copy_surface[1]: path}
+        res = s.executor.execute("files.write", {"root": str(root), "files": {**minimal_system(fam), **st.files},
+                                                 "copies": copies, "keep_existing": list(minimal_system(fam))}, USER)
+        steps = " → ".join(a + (" " + " ".join(x) if x else "") for a, x in st.steps)
+        self.sv.notify(f"snappyHexMesh setup written ({st.summary['background_cells']:,} background cells, levels "
+                       f"{st.summary['surface_levels']}); run: {steps}" if res.ok else f"Not written: {res.message}",
+                       "info" if res.ok else "error")
 
     def _browse_stl(self) -> None:
         start = str(self.sv.session.root / "constant" / "triSurface") if self.sv.session else ""

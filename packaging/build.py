@@ -49,13 +49,40 @@ def check() -> int:
     if not ok:
         failures.append("--run-module export_plot failed")
 
+    # --run-script (script.run / the copilot's run_python): a case script with a sibling import, numpy, argv
+    (tmp / "helper.py").write_text("VALUE = 7\n", encoding="utf-8")
+    (tmp / "gen.py").write_text("import sys, pathlib, numpy, helper\n"
+                                "pathlib.Path('gen_out.txt').write_text(f'{helper.VALUE} {sys.argv[1]}')\n",
+                                encoding="utf-8")
+    r = subprocess.run([str(gui), "--run-script", str(tmp / "gen.py"), "x1"], cwd=tmp, capture_output=True,
+                       text=True, timeout=180, creationflags=NO_WINDOW)
+    got = (tmp / "gen_out.txt").read_text() if (tmp / "gen_out.txt").is_file() else None
+    print("run-script:", r.returncode, got)
+    if got != "7 x1":
+        failures.append(f"--run-script failed: {r.returncode} {r.stderr[-800:]}")
+
     case = ROOT / "tests" / "fixtures" / "cases" / "esi_cavity"
     out = ROOT / "build" / "smoke_frozen"
+    import os
+
+    env = {**os.environ, "AETHER_SMOKE_WATCHDOG": "500", "AETHER_SMOKE_COMBUSTION": "1",
+           "AETHER_SMOKE_STAGES": '[{"type": "qcriterion", "percentile": 90}, {"type": "slice", "axis": "z"}]'}
     r = subprocess.run([str(gui), str(case), "--smoke", "--smoke-out", str(out)], capture_output=True, text=True,
-                       timeout=600)
+                       timeout=600, env=env)
     print("gui smoke:", r.returncode, f"screenshots in {out}")
     if r.returncode != 0:
         failures.append(f"gui smoke exit {r.returncode} (see {out} and studio.log)")
+    try:
+        rep = json.loads((out / "smoke.json").read_text(encoding="utf-8"))
+        labels = [v.get("label", "") for v in (rep.get("vis") or {}).get("info", {}).values()]
+        print("frozen viewport GPU:", (rep.get("viewport") or {}).get("gpu"), "| stages:", labels,
+              "| Cantera Z_st:", (rep.get("combustion") or {}).get("Z_st"))
+        if not any("(cuda)" in x for x in labels):
+            failures.append(f"Q-criterion did not run on CUDA in the packaged app: {labels}")
+        if not (rep.get("combustion") or {}).get("Z_st"):
+            failures.append("Cantera did not work in the packaged app")
+    except (OSError, ValueError) as exc:
+        failures.append(f"no smoke report: {exc}")
     size = sum(f.stat().st_size for f in DIST.rglob("*") if f.is_file())
     print(f"dist size {size / 2**20:.0f} MB")
     for f in failures:

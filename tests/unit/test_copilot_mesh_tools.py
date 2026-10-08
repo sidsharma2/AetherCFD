@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import shutil
 from pathlib import Path
@@ -41,3 +42,37 @@ def test_grading_and_wall_tools(tmp_path):
                                         "p": 3.7e5, "core_cell": 2e-4})
     w = json.loads(text)
     assert ok and 5e3 < w["reynolds"] < 2e4 and 2e-6 < w["first_cell"] < 3e-5 and w["layers"]["n"] > 5
+
+
+def test_checkmesh_region_mapped_lookup_note():
+    from aethercfd.copilot.tools import log_note
+
+    text = ("Checking geometry...\n    Max aspect ratio = 19.2 OK.\n ***Cells with small determinant (< 0.001) found\n"
+            "    Face volume ratio check OK.\n\n--> FOAM FATAL ERROR: (openfoam-2306 patch=260127)\n\n"
+            "    failed lookup of solid_1_collar (objectRegistry mesh_g2b)\n")
+    note = log_note("log.checkMesh", text)
+    assert note and "solid_1_collar" in note and "1 '***'" in note
+    assert log_note("log.blockMesh", text) is None
+    assert log_note("log.checkMesh", "Checking geometry...\n    Mesh OK.\n") is None
+
+
+def test_snappy_setup_tool_writes_one_plan(tmp_path):
+    from tests.unit.test_mesh_snappy import _sphere
+
+    from aethercfd.commands.executor import Executor
+    from aethercfd.commands.registry import default_registry
+    from aethercfd.copilot.headless import PolicyApprover
+
+    shutil.copytree(FIX, tmp_path / "c")
+    s = Session(tmp_path / "c", create_project=True, with_backend=False)
+    ex = Executor(default_registry(), s.context, PolicyApprover("edits", out=io.StringIO()))
+    ts = ToolSet(ToolContext(s, executor=ex))
+    _sphere(tmp_path / "c" / "ball.stl")
+    ok, text = ts.call("snappy_setup", {"stl": "ball.stl", "target_cells": 100_000, "n_layers": 3,
+                                        "rationale": "mesh the ball", "confidence": 0.8})
+    assert ok, text
+    out = json.loads(text)
+    case = tmp_path / "c"
+    assert (case / "system" / "snappyHexMeshDict").is_file() and (case / "constant" / "triSurface" / "ball.stl").is_file()
+    assert "snappyHexMesh -overwrite" in out["next"] and out["journal_id"]
+    assert (case / "system" / "controlDict").read_text() == (FIX / "system" / "controlDict").read_text()  # kept

@@ -52,6 +52,53 @@ class FileSave(Command):
         return plan
 
 
+class WriteFilesParams(BaseModel):
+    root: str  # every path below is relative to this folder and must stay inside it
+    files: dict[str, str] = {}  # relative path -> text (UTF-8, LF)
+    copies: dict[str, str] = {}  # relative destination -> source file (copied byte for byte, e.g. an STL)
+    keep_existing: list[str] = []  # relative paths that are written only if they do not exist yet
+
+
+class FilesWrite(Command):
+    spec = CommandSpec("files.write", WriteFilesParams, Risk.EDIT,
+                       "Write a set of files (e.g. a generated mesh setup) as one plan")
+
+    def plan(self, ctx: Context, params: WriteFilesParams, actor: Actor) -> CommandPlan:  # type: ignore[override]
+        root = Path(params.root).resolve()
+        n = len(params.files) + len(params.copies)
+        plan = CommandPlan(self.spec.name, params.model_dump(exclude={"files"}) | {"files": sorted(params.files)},
+                           actor, self.spec.risk, f"write {n} file(s) in {root.name}")
+        items = [(rel, text.encode("utf-8"), text) for rel, text in params.files.items()]
+        for rel, src in params.copies.items():
+            sp = Path(src)
+            if not sp.is_file():
+                plan.preconditions.append(CheckResult(False, f"{src} does not exist"))
+                return plan
+            items.append((rel, sp.read_bytes(), None))
+        for rel, data, text in items:
+            path = (root / rel).resolve()
+            try:
+                path.relative_to(root)
+            except ValueError:
+                plan.preconditions.append(CheckResult(False, f"{rel} is outside {root}"))
+                return plan
+            before = path.read_bytes() if path.exists() else None
+            if before is not None and rel in params.keep_existing:
+                plan.consequences.append(f"kept existing {rel}")
+                continue
+            if before == data:
+                continue
+            if text is not None:
+                diff = unified_diff(path, decode_bytes(before)[0] if before is not None else "", text)
+            else:
+                diff = f"copy {len(data):,} bytes -> {rel}\n"
+            plan.file_changes.append(FileChange(path, sha256_bytes(before) if before is not None else None, data,
+                                                diff, before))
+        if not plan.file_changes:
+            plan.consequences.append("no change")
+        return plan
+
+
 class RevertParams(BaseModel):
     journal_id: str
 
@@ -113,4 +160,4 @@ class FileTrash(Command):
         return plan
 
 
-COMMANDS = [FileSave(), FileRevert(), FileTrash()]
+COMMANDS = [FileSave(), FileRevert(), FileTrash(), FilesWrite()]

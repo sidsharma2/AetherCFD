@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 RUN_MODULE_FLAG = "--run-module"
+RUN_SCRIPT_FLAG = "--run-script"
 
 
 def is_frozen() -> bool:
@@ -22,6 +23,13 @@ def module_argv(module: str, *args: str) -> list[str]:
     if is_frozen():
         return [sys.executable, RUN_MODULE_FLAG, module, *args]
     return [sys.executable, "-m", module, *args]
+
+
+def script_argv(path: str, *args: str) -> list[str]:
+    """argv that runs ``python <path> <args>`` with AetherCFD's own Python (numpy, scipy, cantera...)."""
+    if is_frozen():
+        return [sys.executable, RUN_SCRIPT_FLAG, path, *args]
+    return [sys.executable, path, *args]
 
 
 def app_executable() -> Path | None:

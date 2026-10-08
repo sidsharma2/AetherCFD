@@ -306,10 +306,19 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--insert", action="store_true", help="add the keyword if missing")
     st.add_argument("--create-project", action="store_true")
     st.set_defaults(func=cmd_set)
+
+    # listed for --help only; main() hands everything after "copilot" to aethercfd.copilot.headless
+    sub.add_parser("copilot", help="ask the Claude copilot about a case, headless (copilot -h for options)",
+                   add_help=False)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["copilot"]:
+        from aethercfd.copilot.headless import main as copilot_main
+
+        return int(copilot_main(argv[1:]) or 0)
     args = build_parser().parse_args(argv)
     return int(args.func(args) or 0)
 

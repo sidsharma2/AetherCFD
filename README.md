@@ -1,55 +1,67 @@
 # AetherCFD Studio
 
-A desktop workbench that drives OpenFOAM **without hiding it**. Every GUI action maps to real files
-and real commands; dictionaries stay byte-for-byte yours; the case on disk is the source of truth.
+A desktop workbench that drives OpenFOAM **without hiding it**. Every GUI action maps to real files and real
+commands; dictionaries stay byte-for-byte yours; the case on disk is the source of truth. Claude works next
+to you as a copilot that can see, explain and change the case — every change and run is shown as an exact
+plan you approve, and lands in the Command Journal.
 
 ## Launch
 
-- Double-click **`AetherCFD Studio.cmd`** (no console window), or drag a case folder onto it.
-- From a terminal: `uv run aethercfd-studio [case]` (add `--reset-layout` to ignore saved layouts).
-- Headless: `uv run aethercfd doctor --probe`, `aethercfd open <case>`, `aethercfd run <case> --wait`,
-  `aethercfd runs <case>`, `aethercfd control <case> <run> stop_write`, `aethercfd set <case> system/controlDict endTime 500`.
+- **Start menu / Desktop: "AetherCFD Studio"** (the packaged app,
+  `%LOCALAPPDATA%\Programs\AetherCFD\AetherCFD.exe`). Update it with `uv run python packaging/build.py`
+  then `uv run python packaging/install.py`.
+- From the source tree: `uv run aethercfd-studio [case]` (add `--reset-layout` to ignore saved layouts),
+  or double-click `AetherCFD Studio.cmd`.
+- Headless: `aethercfd-cli doctor --probe`, `open`, `run`, `runs`, `control`, `set`, and
+  `aethercfd-cli copilot <case> "<question>" --approve none|edits|all` (packaged; from source:
+  `uv run aethercfd copilot ...`).
 
-## What is in Milestone 1
+**First-time copilot sign-in:** the copilot uses the Claude Code CLI that the Claude desktop app ships.
+Sign in once from the Copilot panel ("Sign in to Claude"), or run `claude.exe auth login`.
 
-| Panel | What it does |
+**GPU:** the app renders on the discrete NVIDIA GPU automatically (setting `gpu = "high-performance"`;
+`integrated` / `system` to change). CUDA compute (CuPy) is used when available; everything falls back to
+the CPU.
+
+## What is in it
+
+| Area | Panels / features |
 |---|---|
-| Start | open / recent / find cases under your case roots, environment status |
-| Case Files | the real case tree; time folders grouped; live refresh; open in VS Code / Explorer; copy WSL path |
-| Editor (Raw / Form / Split) | lossless editing (comments, alignment, macros, CRLF kept), one undo history for form + text, OpenFOAM validation after save, conflict merge when files change on disk |
-| Workflow | the 12 stages as a view of your files, with real issues (e.g. a patch with no boundary condition) |
-| Run | plan-first start (exact commands, placement, consequences), live status/ETA, write-now, stop & write, pause, kill, guards |
-| Residuals / Solver Log | live from any log (finished cases plot immediately); publication export with your `plot_style.py` |
-| 3D Viewport | results on the real finite-volume mesh (cell data, no resampling), time/fields/slices/probe; 2D & wedge views |
-| Mesh Quality | checkMesh with explanations and remedies |
-| Terminal | WSL shell in the case folder with exactly one OpenFOAM version sourced (`[v2306]` / `[of14]`) |
-| Command Journal | every change: who, what, why, diff — and revert |
+| Find your way | command bar (case, perspectives, search, run state); Ctrl+K search that tolerates typos (`chek mesh`, `resdiuals`, `vortx`) and falls back to "Ask the copilot" |
+| Set up | **New Case from Template** (Ctrl+N): physics questions → ranked OpenFOAM tutorials (both forks) → parameters; **Checks**: numerics lab + pre-run checks with one-click journalled fixes; Workflow; Case Files; Editor (raw/form/split, lossless); Properties |
+| Mesh | **AetherMesh**: checkMesh-exact quality maps and hotspot clusters shown in 3D, blockMesh grading designer (no size jumps), **hole blocking** (O-grid in a box through several walls: H-O box per level, end slabs, ellipses, corner-misalignment check), y+ first-cell height and layers, STL intake (watertight, feature angle, extruded/axisymmetric) and ranked meshing strategies, and a one-click **snappyHexMesh setup** from them (background box sized from the cell budget, features, curvature-driven levels, layers, STL solids → patches; both forks, verified live); Mesh Quality (checkMesh log). Case-local mesh generators run as approvable, journalled scripts |
+| Physics | **Combustion** (Cantera): Z_st, T_ad(φ), transport, laminar flame speed and thickness, ignition delay, Peters regime and mesh resolution, model advisor (EDC, PaSR, laminar, flamelets) with exact dictionaries per fork, counterflow flamelets; CRECK and GRI mechanisms; **Physics Code**: your own models/solvers from templates (e.g. k-ε with Pope's round-jet correction), built with wmake in WSL, wired into the case |
+| Run | Run (plan-first; write-now, stop & write, pause, kill; guards), Residuals, Solver Log, Terminal (WSL, one OpenFOAM version sourced) |
+| Visualize | 3D Viewport on the real FV mesh + **Visualization** pipeline: Q-criterion vortices and isosurfaces on the GPU (CUDA marching tetrahedra on any polyhedral mesh), slices, clips, thresholds, contours, streamlines, glyphs, schlieren (exact with OpenFOAM's grad(rho)), mesh-quality maps, mirror/revolve, presentation smoothing; **Render image** up to 8K with 8× MSAA, or **ray-traced** through ParaView (OptiX path tracer on RTX) |
+| Assist | **Copilot** (Claude): reads the case, logs and mesh, runs checks and pre-calculations, proposes edits/runs for approval, and drives the app in front of you (opens panels, adds visualization stages, points at things) |
+| Record | Command Journal (who, what, why, diff — revertable) |
 
-Ctrl+K opens the command palette (`#` files, `@` dictionary keywords). Ctrl+Alt+1…5 switch perspectives
-(Setup, Meshing, Run Monitor, Post-processing, Code).
+Ctrl+Alt+1…5 switch perspectives (Setup, Meshing, Run Monitor, Post-processing, Code).
 
 ## Panels, monitors, layouts
 
 Every panel docks, tabs, splits, auto-hides or floats onto another monitor (View ▸ Add Panel; Window ▸
 Move Focused Panel to Monitor N; Window ▸ Identify Monitors). Layouts are remembered **per perspective
-and per monitor setup** (laptop alone vs. docked with two screens) and restored automatically when
-monitors are plugged/unplugged; windows on a vanished monitor come back. Window ▸ Layout Diagnostics
+and per monitor setup** and restored when monitors are plugged/unplugged. Window ▸ Layout Diagnostics
 shows what was detected.
 
 ## Where things live
 
-- `<case>/.aethercfd/` — project sidecar: `project.toml`, and `local/` (journal, run records,
-  provenance, trash). Added to `.git/info/exclude`; opening a case never writes into it.
-- `%APPDATA%\AetherCFD\` — settings (`settings.toml`) and layouts. `%LOCALAPPDATA%\AetherCFD\Cache\` —
-  OpenFOAM version/capability cache, `studio.log`, crash logs.
+- `<case>/.aethercfd/` — project sidecar: `project.toml`, `local/` (journal, run records, provenance,
+  trash, renders, copilot session, combustion report). Added to `.git/info/exclude`.
+- `<case>/aether-code/` — your own OpenFOAM sources (Physics Code); libraries build into
+  `$FOAM_USER_LIBBIN` inside WSL.
+- `%APPDATA%\AetherCFD\` — settings and layouts. `%LOCALAPPDATA%\AetherCFD\Cache\` — fork/capability
+  cache, converted mechanisms, `studio.log`, crash logs.
 - Runs execute in the `LMAE-OpenFOAM` WSL distro: in place under `/mnt/d/...` when the path is safe,
-  otherwise from a staged copy in `~/aethercfd/stage/` that syncs results back (never `system/`/`constant/`).
+  otherwise from a staged ext4 copy that syncs results back.
 
 ## Safety rails
 
-Only allow-listed distros; `wsl --shutdown/--terminate/--unregister/...` are refused in code; two
-OpenFOAM versions are never sourced in one shell; runaway-log, disk and memory guards (in the GUI and
-inside WSL) stop a run before it can fill the disk; nothing is ever hard-deleted (trash in the sidecar).
+Only allow-listed distros; `wsl --shutdown/--terminate/--unregister/...` are refused in code; two OpenFOAM
+versions are never sourced in one shell; runaway-log, disk and memory guards stop a run before it can fill
+the disk; nothing is ever hard-deleted (trash in the sidecar); the copilot cannot run shell commands or
+edit files directly — only through approvable, journalled commands.
 
 ## Development
 
@@ -59,6 +71,9 @@ uv run pytest tests/unit tests/studio            # fast suites
 uv run pytest tests/wsl -m "wsl or wsl_slow"      # live WSL tests (scratch copies only)
 uv run pytest tests/corpus -m corpus              # lossless round-trip over every file in D:\OpenFOAM
 uv run python -m aethercfd.studio <case> --smoke  # GUI smoke run with screenshots in build/smoke
+uv run python packaging/build.py                  # build + test the packaged app (dist/AetherCFD)
+uv run python packaging/install.py                # install it with Start-menu/Desktop shortcuts
 ```
 
-Design decisions: `docs/adr/`. Plan and roadmap: see ADRs and the project plan.
+Design decisions: `docs/adr/`. Research notes: `docs/research/` (meshing survey; the REV B.1 hole-blocking case
+study that drove the AetherMesh hole tool).

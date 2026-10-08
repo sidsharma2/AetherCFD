@@ -17,8 +17,18 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import pairwise
 
-from aethercfd.foamdict.cst import Atom, DictNode, Directive, Entry, FoamDocument, MacroEntry
+from aethercfd.foamdict.cst import (
+    Atom,
+    DictNode,
+    Directive,
+    Entry,
+    FoamDocument,
+    Key,
+    ListNode,
+    MacroEntry,
+)
 from aethercfd.foamdict.tokens import K
 
 
@@ -75,7 +85,32 @@ class DictView:
                     return e, True
             except re.error:
                 continue
+        if d is self.doc.root:
+            hit = self.stream_entries().get(key)
+            if hit is not None:
+                return hit, False
         return None, False
+
+    def stream_entries(self) -> dict[str, Entry]:
+        """Named dictionaries of a root-level stream list -- ``N ( name { ... } name { ... } )`` as in
+        constant/polyMesh/boundary -- as entries addressable by name (``"inlet/type"``). The returned
+        Entry spans the name and its dictionary, so edits inside it work like in any sub-dictionary."""
+        cached = getattr(self, "_streams", None)
+        if cached is not None:
+            return cached
+        out: dict[str, Entry] = {}
+        for m in self.doc.root.members:
+            if not (isinstance(m, Entry) and m.value is not None and Atom(K.WORD, 0, 0, m.key.name).is_number):
+                continue
+            lists = [i for i in m.value.items if isinstance(i, ListNode)]
+            if len(lists) != 1:
+                continue
+            items = lists[0].items
+            for a, b in pairwise(items):
+                if isinstance(a, Atom) and a.kind is K.WORD and isinstance(b, DictNode):
+                    out[a.text] = Entry(a.start, b.end, Key(K.WORD, a.start, a.end, a.text), dict=b)
+        self._streams = out
+        return out
 
     def lookup(self, path: str | Sequence[str]) -> Lookup | None:
         parts = split_path(path)

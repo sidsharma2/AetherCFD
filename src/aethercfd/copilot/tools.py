@@ -386,10 +386,26 @@ def _step_logs(ctx: ToolContext, rec, *, lines: int) -> dict:
             continue
         for cand in (base / name, Path(rec.run_dir) / name):
             if cand.is_file():
-                tail = _tail_text(cand, 512 * 1024).rstrip("\n").split("\n")[-lines:]
-                out[name] = "\n".join(tail)
+                text = _tail_text(cand, 512 * 1024)
+                out[name] = "\n".join(text.rstrip("\n").split("\n")[-lines:])
+                if note := log_note(name, text):
+                    out[name + " (note)"] = note
                 break
     return out
+
+
+_MAPPED_LOOKUP = re.compile(r"failed lookup of (\w+) \(objectRegistry")
+
+
+def log_note(name: str, text: str) -> str | None:
+    """Known OpenFOAM log endings that look like failures but are not what they seem."""
+    if "checkMesh" in name and "Checking geometry" in text and (m := _MAPPED_LOOKUP.search(text)):
+        failed = sum(1 for ln in text.splitlines() if ln.lstrip().startswith("***"))
+        return (f"checkMesh ran all its checks ({failed} '***' failed-check line(s) above). The closing FATAL "
+                f"'failed lookup of {m.group(1)}' is OpenFOAM v2306 looking up the neighbour region of a mapped "
+                "(multi-region) patch while checking one region of a split mesh: not a mesh defect. Judge the mesh "
+                "by the report; checkMesh on the assembled single-region case does not hit it.")
+    return None
 
 
 def log_tail(ctx: ToolContext, p: LogParams) -> dict:

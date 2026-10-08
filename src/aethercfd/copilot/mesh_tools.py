@@ -247,7 +247,115 @@ def code_build(ctx: ToolContext, p: CodeBuildParams) -> dict:
     return out
 
 
+class RunPythonParams(BaseModel):
+    path: str = Field(description="A .py file inside the case folder (relative to the case), e.g. a mesh generator")
+    args: list[str] = Field(default_factory=list, description="Command-line arguments for the script")
+    timeout_min: float = Field(15.0, gt=0, le=240)
+    rationale: str
+    confidence: float = Field(ge=0, le=1)
+
+
+def run_python(ctx: ToolContext, p: RunPythonParams) -> dict:
+    from aethercfd.copilot.tools import Justified
+
+    path = ctx.path(p.path)
+    out = ctx.execute("script.run", {"path": str(path), "args": list(p.args), "timeout_s": p.timeout_min * 60,
+                                     "case": str(ctx.root)}, Justified(rationale=p.rationale, confidence=p.confidence))
+    data = out.pop("data", None) or {}
+    out["returncode"] = data.get("returncode")
+    out["stdout_tail"] = (data.get("stdout") or "")[-6000:]
+    out["stderr_tail"] = (data.get("stderr") or "")[-3000:]
+    return out
+
+
+class HoleLevel(BaseModel):
+    name: str
+    radius: float | None = Field(None, description="Tube radius of this level (half-width = radius*sin(sector/2))")
+    half_width: float | None = Field(None, description="Box half-width across the hole axis (instead of radius)")
+    physical: bool = Field(True, description="False where the 'hole' is not a real surface (e.g. the far wall of "
+                                             "an annulus): an elliptical layout is then allowed")
+
+
+class HoleBoxParams(BaseModel):
+    hole_r: float = Field(gt=0, description="Hole radius")
+    half_length: float = Field(gt=0, description="Half of the space along the row (e.g. half the hole pitch)")
+    levels: list[HoleLevel] = Field(description="Levels the hole passes through, inside to outside")
+    sector_deg: float = Field(45.0, description="Angular width of the box on a tube (two 22.5-degree sectors = 45)")
+    n_a: int = Field(6, ge=2, description="Cells along a box quarter-side")
+    n_end: int = Field(4, ge=1, description="Cells in each end slab")
+
+
+def hole_box_design(ctx: ToolContext, p: HoleBoxParams) -> dict:
+    import math
+
+    from aethercfd.mesh.blocking import Level, design_hole_box
+
+    levels = []
+    for lv in p.levels:
+        if lv.half_width is None and lv.radius is None:
+            raise ToolError(f"level {lv.name}: give radius or half_width")
+        w = lv.half_width if lv.half_width is not None else lv.radius * math.sin(math.radians(p.sector_deg / 2))
+        levels.append(Level(lv.name, w, lv.radius or 0.0, lv.physical))
+    return design_hole_box(p.hole_r, p.half_length, levels, n_a=p.n_a, n_end=p.n_end)
+
+
+class SnappyParams(BaseModel):
+    stl: str = Field(description="STL/OBJ in the case (e.g. constant/triSurface/body.stl); named ASCII STL solids "
+                                 "become patches (inlet/outlet/... -> patch, others -> wall)")
+    flow: str = Field("external", description="external (wind-tunnel box around the body) | internal (keep inside)")
+    flow_dir: str = Field("+x", description="external flow direction: +x -x +y -y +z -z")
+    target_cells: int = Field(2_000_000, ge=10_000, description="Cell budget (sets the background cell size)")
+    first_layer: float | None = Field(None, description="Absolute first layer thickness (from wall_spacing); "
+                                                        "default: relative layers")
+    n_layers: int = Field(5, ge=0, le=30)
+    surface_levels: list[int] | None = Field(None, description="Override (min, max) surface refinement levels")
+    rationale: str
+    confidence: float = Field(ge=0, le=1)
+
+
+def snappy_setup_tool(ctx: ToolContext, p: SnappyParams) -> dict:
+    from aethercfd.copilot.tools import Justified
+    from aethercfd.mesh.geometry import analyse
+    from aethercfd.mesh.snappy import minimal_system, snappy_setup
+    from aethercfd.mesh.strategy import plan
+
+    stl = ctx.path(p.stl)
+    geo = analyse(stl)
+    fam = "foundation" if "foundation" in str(getattr(ctx.session.case().fork_guess, "family", "")).lower() else "esi"
+    best = next((m for m in plan(geo, flow=p.flow, first_cell=p.first_layer, target_cells=p.target_cells,
+                                 fork=fam) if m.mesher.startswith("snappyHexMesh")), None)
+    try:
+        s = snappy_setup(stl, geo, fork_family=fam, flow=p.flow, flow_dir=p.flow_dir, target_cells=p.target_cells,
+                         first_layer=p.first_layer, n_layers=p.n_layers,
+                         surface_levels=tuple(p.surface_levels) if p.surface_levels else None,
+                         strategy_settings=best.settings if best else None)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from None
+    files = {**minimal_system(fam), **s.files}
+    copies = {} if (ctx.root / s.copy_surface[1]).resolve() == stl.resolve() else {s.copy_surface[1]: str(stl)}
+    out = ctx.execute("files.write", {"root": str(ctx.root), "files": files, "copies": copies,
+                                      "keep_existing": list(minimal_system(fam))},
+                      Justified(rationale=p.rationale, confidence=p.confidence))
+    out["setup"] = s.summary
+    out["notes"] = s.notes + geo.notes
+    out["next"] = ("run_openfoam with steps " + " -> ".join(a + (" " + " ".join(x) if x else "") for a, x in s.steps)
+                   + "; then mesh_hotspots and the snappyHexMesh layer summary (log.snappyHexMesh)")
+    return out
+
+
 MESH_TOOLS = [
+    Tool("snappy_setup", "Write a complete snappyHexMesh setup for an STL in the case (background blockMesh box "
+         "sized from the cell budget, feature extraction, refinement levels from curvature/features, layers, "
+         "quality controls, the kept point; both OpenFOAM forks). One approval for all files; returns the steps "
+         "to run.", SnappyParams, snappy_setup_tool, mutates=True),
+    Tool("hole_box_design", "Blocking design for a round hole (O-grid) inside a structured box through several "
+         "levels (e.g. dilution holes through tube walls): per level the H-O box half-length, graded end slabs, "
+         "elliptical layouts where the hole is not a physical surface, and the corner misalignment that predicts "
+         "O-grid corner non-orthogonality (the REV B.1 recipe: 69.6 -> 64.7 deg).", HoleBoxParams, hole_box_design),
+    Tool("run_python", "Run a Python script that lives in the case folder (e.g. an analytic blockMesh generator "
+         "you edited with write_file) with AetherCFD's Python on Windows (numpy, scipy, cantera available), in the "
+         "script's folder. Returns exit code and output tails. Needs approval; the user sees the script's head.",
+         RunPythonParams, run_python, mutates=True),
     Tool("code_templates", "Templates for writing your own OpenFOAM physics (k-epsilon with Pope's round-jet "
          "correction, coded sources, coded BCs, copy-a-solver).", ChecksParams, code_templates),
     Tool("code_create", "Create OpenFOAM source code from a template in <case>/aether-code/<name> (user approves "

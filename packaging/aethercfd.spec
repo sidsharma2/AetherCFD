@@ -25,8 +25,34 @@ hidden = (collect_submodules("aethercfd", filter=lambda m: ".tests" not in m)
           # savefig() picks its backend by name at runtime: PDF/PNG export of plots
           + [f"matplotlib.backends.backend_{b}" for b in ("agg", "pdf", "svg", "ps", "pgf")])
 datas = (collect_data_files("aethercfd", excludes=["**/node_modules/**", "**/__pycache__/**"])
-         + collect_data_files("qtawesome") + collect_data_files("pyvista") + collect_data_files("pyqtgraph"))
+         + collect_data_files("qtawesome") + collect_data_files("pyvista") + collect_data_files("pyqtgraph")
+         + collect_data_files("cantera"))  # mechanisms (gri30.yaml, ...)
 binaries = collect_dynamic_libs("winpty") + [(str(p), "winpty") for p in WINPTY.glob("*.exe")]
+
+# CUDA compute: CuPy + the CUDA runtime / NVRTC DLLs from the nvidia-* wheels, kept at the same relative
+# paths (nvidia/<lib>/bin) so CuPy's library finder locates them inside the bundle
+import site
+
+for sp in site.getsitepackages():
+    nv = Path(sp) / "nvidia"
+    if nv.is_dir():
+        for dll in nv.glob("*/bin/*.dll"):
+            binaries.append((str(dll), str(dll.parent.relative_to(Path(sp)))))
+hidden += (collect_submodules("cupy", filter=lambda m: ".testing" not in m and "tests" not in m)
+           + collect_submodules("cupy_backends") + collect_submodules("cupyx", filter=lambda m: "tests" not in m)
+           + collect_submodules("cantera") + collect_submodules("cuda.pathfinder")
+           # stdlib imported only from CuPy's compiled Cython modules (invisible to the analysis):
+           # without it "import cupy" fails in the bundle and every GPU feature silently uses the CPU
+           + ["graphlib"]
+           # "import cupy" registers cupy.testing as a lazy module (find_spec must succeed; never executed)
+           + ["cupy.testing"])
+# CUDA headers for NVRTC kernel compilation (found by cuda.pathfinder under nvidia/<lib>/include)
+for sp in site.getsitepackages():
+    for inc in (Path(sp) / "nvidia").glob("*/include"):
+        datas.append((str(inc), str(inc.relative_to(Path(sp)))))
+datas += collect_data_files("cuda.pathfinder")
+datas += collect_data_files("cupy") + collect_data_files("cupyx")
+binaries += collect_dynamic_libs("cupy") + collect_dynamic_libs("cupy_backends") + collect_dynamic_libs("cantera")
 excludes = ["tkinter", "PyQt5", "PyQt6", "IPython", "jupyter_client", "notebook", "pytest", "hypothesis",
             "foamlib", "import_linter", "importlinter", "PySide6.Qt3DCore", "PySide6.Qt3DRender",
             "PySide6.QtQuick3D", "PySide6.QtMultimedia", "PySide6.QtCharts", "PySide6.QtDataVisualization",

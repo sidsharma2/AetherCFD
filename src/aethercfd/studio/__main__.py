@@ -115,9 +115,10 @@ def _setup_logging() -> None:
         root.addHandler(sh)
 
 
-def _run_module(module: str, args: list[str]) -> int:
-    """``AetherCFD.exe --run-module <module> ...``: the packaged app's stand-in for ``python -m``
-    (see aethercfd.core.runtime.module_argv). No Qt is imported on this path."""
+def _run_module(module: str, args: list[str], *, script: bool = False) -> int:
+    """``AetherCFD.exe --run-module <module> ...`` / ``--run-script <file.py> ...``: the packaged app's
+    stand-in for ``python -m`` / ``python file.py`` (see aethercfd.core.runtime). No Qt is imported on
+    this path."""
     import contextlib
     import io
     import runpy
@@ -128,7 +129,11 @@ def _run_module(module: str, args: list[str]) -> int:
             setattr(sys, name, io.StringIO())
     sys.argv = [module, *args]
     try:
-        runpy.run_module(module, run_name="__main__", alter_sys=True)
+        if script:
+            sys.path.insert(0, str(Path(module).resolve().parent))
+            runpy.run_path(module, run_name="__main__")
+        else:
+            runpy.run_module(module, run_name="__main__", alter_sys=True)
     except SystemExit as exc:
         code = exc.code
         if code is None:
@@ -155,10 +160,10 @@ def run() -> None:
     live in WSL independently of this process."""
     import os
 
-    from aethercfd.core.runtime import RUN_MODULE_FLAG
+    from aethercfd.core.runtime import RUN_MODULE_FLAG, RUN_SCRIPT_FLAG
 
-    if len(sys.argv) > 2 and sys.argv[1] == RUN_MODULE_FLAG:
-        os._exit(_run_module(sys.argv[2], sys.argv[3:]))
+    if len(sys.argv) > 2 and sys.argv[1] in (RUN_MODULE_FLAG, RUN_SCRIPT_FLAG):
+        os._exit(_run_module(sys.argv[2], sys.argv[3:], script=sys.argv[1] == RUN_SCRIPT_FLAG))
     code = int(main() or 0)
     logging.getLogger("aethercfd.studio.teardown").info("teardown: main() returned %s, exiting", code)
     logging.shutdown()

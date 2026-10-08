@@ -56,3 +56,24 @@ def test_geometry_tab(panel, qtbot, tmp_path):
     panel.analyse_geometry()
     qtbot.waitUntil(lambda: "snappyHexMesh" in panel.geo_out.toPlainText(), timeout=30000)
     assert "watertight" in panel.geo_out.toPlainText()
+
+
+def test_holes_tab(panel):
+    panel.holes()
+    txt = panel.h_out.toPlainText()
+    assert "ellipse" in txt and "0.36" in txt and "27.2°" in txt
+    panel.h_levels.setPlainText("cap x")
+    panel.holes()
+    assert "cannot read" in panel.h_out.toPlainText()
+
+
+def test_write_snappy_setup_button(panel, tmp_path):
+    from tests.unit.test_mesh_snappy import _sphere
+
+    case = Path(panel.sv.session.root)
+    stl = _sphere(tmp_path / "ball.stl")
+    panel.stl.setText(str(stl))
+    panel.sn_cells.setValue(100_000)
+    panel.write_snappy()
+    assert (case / "system" / "snappyHexMeshDict").is_file()
+    assert (case / "constant" / "triSurface" / "ball.stl").is_file()
