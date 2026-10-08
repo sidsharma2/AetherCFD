@@ -83,27 +83,54 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         pass
 
     if not args.no_backend:
-        failures += _doctor_backend()
+        failures += _doctor_backend(args.probe)
 
     print()
     print("all green" if failures == 0 else f"{failures} problem(s)")
     return 0 if failures == 0 else 1
 
 
-def _doctor_backend() -> int:
-    """Report OpenFOAM/WSL reachability. Never boots a stopped distro unless asked."""
+def _doctor_backend(probe: bool) -> int:
+    """Report OpenFOAM/WSL reachability. Never boots a stopped distro unless ``probe`` is set."""
+    import json
+
+    from aethercfd.backend.wsl.distro import list_distros
+    from aethercfd.backend.wsl.forks import probe_forks
+    from aethercfd.backend.wsl.runner import WslRunner
+    from aethercfd.core.settings import Settings, cache_dir
+
+    settings = Settings.load()
+    allowed = settings.wsl.allowed_distros
+    print(f"\nWSL distros (allowed for AetherCFD: {', '.join(allowed)}):")
     try:
-        from aethercfd.backend.wsl.distro import list_distros
-    except ImportError:
-        return 0  # backend not built yet
-    print("\nWSL distros:")
-    try:
-        for d in list_distros():
-            print(f"  {d.name:<16} {d.state:<10} v{d.version}{'  (default)' if d.default else ''}")
+        distros = list_distros()
     except Exception as exc:
         print(f"  [ERR] {exc}")
         return 1
-    return 0
+    for d in distros:
+        tag = "allowed" if d.name in allowed else "-"
+        print(f"  {d.name:<16} {d.state:<10} WSL{d.version}{'  (default)' if d.default else ''}   [{tag}]")
+    failures = 0
+    for name in allowed:
+        info = next((d for d in distros if d.name == name), None)
+        cache = cache_dir() / "forks" / f"{name}.json"
+        if info is None:
+            print(f"  [ERR] allowed distro {name!r} is not installed")
+            failures += 1
+            continue
+        if not info.running and not probe:
+            note = f" (last probe cached in {cache})" if cache.exists() else ""
+            print(f"  {name}: stopped -- not booting it; `aethercfd doctor --probe` starts and probes it{note}")
+            continue
+        forks = probe_forks(WslRunner(name, allowed=allowed))
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps([f.to_json() for f in forks], indent=2), encoding="utf-8")
+        if not forks:
+            print(f"  [ERR] {name}: no OpenFOAM installation found")
+            failures += 1
+        for f in forks:
+            print(f"  [ok ] {name}: {f.label:<26} {f.bashrc}{'  (runs as root)' if f.mpi_run_as_root else ''}")
+    return failures
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -112,6 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("doctor", help="check the environment and OpenFOAM reachability")
     d.add_argument("--no-backend", action="store_true", help="skip WSL/OpenFOAM checks")
+    d.add_argument("--probe", action="store_true", help="boot allowed distros if needed and probe OpenFOAM forks")
     d.set_defaults(func=cmd_doctor)
     return p
 

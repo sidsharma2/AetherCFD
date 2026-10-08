@@ -1,0 +1,64 @@
+"""User settings (roaming, %APPDATA%\\AetherCFD\\settings.toml) and machine caches
+(%LOCALAPPDATA%\\AetherCFD\\...). Plain TOML so the user can edit it by hand."""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from pathlib import Path
+
+import tomli_w
+from platformdirs import user_cache_dir, user_config_dir
+from pydantic import BaseModel, Field
+
+from aethercfd.core.textio import atomic_write_bytes
+
+APP = "AetherCFD"
+
+
+def config_dir() -> Path:
+    p = Path(os.environ.get("AETHERCFD_CONFIG_DIR") or user_config_dir(APP, appauthor=False, roaming=True))
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def cache_dir() -> Path:
+    p = Path(os.environ.get("AETHERCFD_CACHE_DIR") or user_cache_dir(APP, appauthor=False))
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+class WslSettings(BaseModel):
+    allowed_distros: list[str] = Field(default_factory=lambda: ["LMAE-OpenFOAM"])
+    default_distro: str = "LMAE-OpenFOAM"
+    use_distro_anchor: bool = False  # ADR 0006: not needed on WSL 2.7; opt-in fallback
+
+
+class GuardSettings(BaseModel):
+    log_warn_mb_per_s: float = 2.0
+    log_stop_mb_per_s: float = 20.0
+    log_hard_cap_gb: float = 10.0
+    disk_reserve_gb: float = 20.0
+    disk_reserve_fraction: float = 0.10
+
+
+class Settings(BaseModel):
+    wsl: WslSettings = Field(default_factory=WslSettings)
+    guards: GuardSettings = Field(default_factory=GuardSettings)
+    plot_style: str = r"D:\OpenFOAM\plot_style.py"
+    paraview_exe: str = r"C:\Program Files\ParaView 6.1.0\bin\paraview.exe"
+
+    @classmethod
+    def path(cls) -> Path:
+        return config_dir() / "settings.toml"
+
+    @classmethod
+    def load(cls) -> Settings:
+        p = cls.path()
+        if p.exists():
+            with open(p, "rb") as f:
+                return cls.model_validate(tomllib.load(f))
+        return cls()
+
+    def save(self) -> None:
+        atomic_write_bytes(self.path(), tomli_w.dumps(self.model_dump()).encode("utf-8"))
