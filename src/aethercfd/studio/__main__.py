@@ -16,7 +16,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--perspective", default=None)
     ap.add_argument("--reset-layout", action="store_true", help="ignore saved layouts (use recipes)")
     args = ap.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _setup_logging()
 
     from aethercfd.studio.app.bootstrap import bootstrap
 
@@ -76,6 +76,25 @@ def _teardown(app, win) -> None:
         log.info("teardown: pass %d done", i)
 
 
+def _setup_logging() -> None:
+    """Always log to studio.log in the AetherCFD cache folder (%LOCALAPPDATA%/AetherCFD/Cache); also to the
+    console when there is one (pythonw / the Start-menu launcher has no stderr)."""
+    from logging.handlers import RotatingFileHandler
+
+    from aethercfd.core.settings import cache_dir
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    fh = RotatingFileHandler(cache_dir() / "studio.log", maxBytes=5 * 2**20, backupCount=3, encoding="utf-8")
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+    if sys.stderr is not None:
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
+
+
 def run() -> None:
     """Console/GUI entry point. Ends with os._exit: after the deterministic teardown above, Python's
     interpreter finalization would destroy the remaining Qt/QtWebEngine objects in arbitrary order,
@@ -87,8 +106,9 @@ def run() -> None:
     code = int(main() or 0)
     logging.getLogger("aethercfd.studio.teardown").info("teardown: main() returned %s, exiting", code)
     logging.shutdown()
-    sys.stdout.flush()
-    sys.stderr.flush()
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            stream.flush()
     if sys.platform == "win32":
         # os._exit -> ExitProcess still runs DLL_PROCESS_DETACH, where QtWebEngine's Chromium can
         # deadlock (observed). TerminateProcess skips DLL detach; all state is already on disk.

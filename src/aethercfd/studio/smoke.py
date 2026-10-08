@@ -53,7 +53,11 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
             open_docks = [n for n, d in win.host.docks().items() if not d.isClosed()]
             report["perspectives"][p.id] = {"how": how, "open": open_docks, "shots": shots}
         sv = win.services
-        if sv.session is not None:
+        import os as _os2
+
+        if sv.session is not None and _os2.environ.get("AETHER_SMOKE_RUN"):
+            run_live_scenario(app, win, out, report)
+        elif sv.session is not None:
             _pump(app, 1.0)
             win.layouts.restore("setup")
             tree = sv.panels.get("aether.case_tree")
@@ -131,3 +135,49 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
     win.close()
     _pump(app, 0.5)
     return 0 if report["ok"] else 1
+
+
+def run_live_scenario(app: QApplication, win, out: Path, report: dict, *, seconds: float = 25.0) -> None:
+    """GUI-driven live run (AETHER_SMOKE_RUN=1, scratch cases only): start a solve from the Run panel,
+    watch Residuals/Solver Log update live, stop-and-write from the panel, check the final state."""
+    from aethercfd.commands.base import USER
+
+    sv = win.services
+    s = sv.session
+    assert s is not None and "_aethercfd_scratch" in str(s.root), "live scenario only runs on scratch copies"
+    t0 = time.perf_counter()
+    while (s.runner is None or not s.forks) and time.perf_counter() - t0 < 60:
+        _pump(app, 0.5)
+    sv.ensure_project()
+    win.layouts.restore("run")
+    _pump(app, 1.0)
+    run_panel = next((win.host.panel(n) for n in win.host.docks() if n.startswith("aether.run_status")), None)
+    res_panel = next((win.host.panel(n) for n in win.host.docks() if n.startswith("aether.residuals")), None)
+    log_panel = next((win.host.panel(n) for n in win.host.docks() if n.startswith("aether.solver_log")), None)
+    params = {"case": str(s.root), "preset": "solve", "nprocs": 1, "placement": "auto", "enable_signals": True}
+    plan = s.executor.plan("run.start", params, USER)
+    res = s.executor.execute("run.start", params, USER, plan=plan, approved_hash=plan.plan_hash)
+    live: dict = {"start_ok": res.ok, "message": res.message}
+    if res.ok and run_panel is not None:
+        run_panel.run_id = res.data
+        run_panel._refresh()
+        _pump(app, seconds)
+        live["iterations_plotted"] = len(res_panel.x_iter) if res_panel else None
+        live["curves"] = sorted(res_panel.curves) if res_panel else None
+        live["log_lines"] = log_panel.view.document().blockCount() if log_panel else None
+        live["status_time"] = run_panel.vals["time"].text()
+        win.grab().save(str(out / "live_run.png"))
+        run_panel.control("stop_write")
+        t1 = time.perf_counter()
+        while time.perf_counter() - t1 < 90:
+            rec = s.runs.get(res.data)
+            if rec is not None and rec.state in ("finished", "failed", "killed", "guard_stopped", "lost"):
+                break
+            _pump(app, 0.5)
+        _pump(app, 2.0)
+        rec = s.runs.get(res.data)
+        live["final_state"] = rec.state if rec else None
+        live["exit_code"] = rec.exit_code if rec else None
+        live["history_rows"] = run_panel.history.rowCount()
+        win.grab().save(str(out / "live_run_done.png"))
+    report["live_run"] = live
