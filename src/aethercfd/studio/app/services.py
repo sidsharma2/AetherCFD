@@ -33,7 +33,8 @@ class AppServices(QObject):
     case_changed = Signal(object)  # Session | None
     backend_ready = Signal(object)  # Session (runs/forks available)
     notification = Signal(str, str)  # message, level
-    _job_done = Signal(object)
+    files_changed = Signal(list)  # [str] paths changed on disk (GUI thread)
+    _files_changed_bg = Signal(list)  # emitted from the watcher thread
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -48,6 +49,17 @@ class AppServices(QObject):
         self.host = None
         self.layouts = None
         self.gl_renderer: str | None = None
+        from aethercfd.documents.store import DocumentStore
+
+        self.documents = DocumentStore()  # one buffer per file, shared by every view
+        self._watcher = None
+        self._files_changed_bg.connect(self._on_files_changed)
+
+    def _on_files_changed(self, paths: list) -> None:
+        open_paths = [p for p in paths if self.documents.get(p) is not None]
+        if open_paths:
+            self.documents.check(open_paths)
+        self.files_changed.emit(paths)
 
     # ------------------------------------------------------------------ notifications
     def notify(self, message: str, level: str = "info") -> None:
@@ -72,6 +84,11 @@ class AppServices(QObject):
             self.notify(f"Could not open {path}: {exc}", "error")
             return
         self.session = s
+        if self._watcher is not None:
+            self._watcher.stop()
+        from aethercfd.documents.watcher import CaseWatcher
+
+        self._watcher = CaseWatcher(s.root, lambda ps: self._files_changed_bg.emit([str(x) for x in ps])).start()
         self.case_changed.emit(s)
         self.notify(f"Opened {s.root}")
 

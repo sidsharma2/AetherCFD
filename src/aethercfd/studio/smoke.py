@@ -52,6 +52,24 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
                     shots.append(f"{p.id}_float{i}.png")
             open_docks = [n for n, d in win.host.docks().items() if not d.isClosed()]
             report["perspectives"][p.id] = {"how": how, "open": open_docks, "shots": shots}
+        sv = win.services
+        if sv.session is not None:
+            _pump(app, 1.0)
+            win.layouts.restore("setup")
+            tree = sv.panels.get("aether.case_tree")
+            ed = sv.panels.get("aether.editor")
+            if tree is not None:
+                win.host.open_panel(tree)
+            if ed is not None:
+                d = win.host.open_panel(ed, args={"path": str(sv.session.root / "system" / "controlDict")})
+                _pump(app, 0.5)
+                panel = win.host.panel(d.objectName())
+                if panel is not None:
+                    panel.mode_group.button(2).setChecked(True)
+                    panel._set_mode(2)
+            _pump(app, 3.0)
+            win.grab().save(str(out / "case_editor.png"))
+            report["case"] = {"root": str(sv.session.root), "backend": bool(sv.session.forks)}
     except Exception:
         errors.append(traceback.format_exc())
     bad = [w for w in qt_warnings if any(k in w for k in _BAD)]
