@@ -120,7 +120,11 @@ class CaseTreePanel(Panel):
                 grp.appendRow(self._item(t, is_dir=True))
             self.model.insertRow(0, [grp, QStandardItem("")])
         if procs:
-            grp = QStandardItem(f"Decomposed  ({len(procs)} processor folders)")
+            pt = sorted((q.name for q in procs[0].iterdir() if q.is_dir() and is_time_dir(q.name)), key=float)                 if procs[0].is_dir() else []
+            res = [t for t in pt if float(t) > 0]
+            grp = QStandardItem(f"Decomposed  ({len(procs)} processor folders"
+                                + (f"; results {res[0]} … {res[-1]}, latest {res[-1]}" if len(res) > 1 else
+                                   f"; result {res[0]}" if res else "") + ")")
             grp.setIcon(icon("mdi6.grid"))
             grp.setEditable(False)
             for p in sorted(procs, key=lambda x: x.name):

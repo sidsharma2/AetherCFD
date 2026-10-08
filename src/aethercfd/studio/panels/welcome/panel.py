@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -50,6 +51,36 @@ class WelcomePanel(Panel):
         row.addStretch(1)
         lay.addLayout(row)
 
+        # the open case, so it is obvious that one is loaded and what to do next
+        self.card = QFrame()
+        self.card.setStyleSheet(f"QFrame {{ background: {T.panel}; border: 1px solid {T.accent}; border-radius: 6px; }}"
+                                "QLabel { border: none; }")
+        cl = QVBoxLayout(self.card)
+        cl.setContentsMargins(14, 10, 14, 10)
+        self.card_title = QLabel()
+        self.card_title.setStyleSheet(f"font-size: 12pt; color: {T.text};")
+        self.card_info = QLabel()
+        self.card_info.setWordWrap(True)
+        self.card_info.setStyleSheet(f"color: {T.text_dim};")
+        self.card_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        cl.addWidget(self.card_title)
+        cl.addWidget(self.card_info)
+        btns = QHBoxLayout()
+        for label, ic, fn in (("Show results in 3D", "mdi6.cube-outline", self._show_results),
+                              ("Residuals and log", "mdi6.chart-line", lambda: self._persp("run")),
+                              ("Ask the copilot", "mdi6.robot-outline", self._ask)):
+            b_ = QPushButton(icon(ic), label)
+            b_.clicked.connect(fn)
+            btns.addWidget(b_)
+        btns.addStretch(1)
+        cl.addLayout(btns)
+        self.card.hide()
+        lay.addWidget(_section("Open case"))
+        lay.addWidget(self.card)
+        sv.case_changed.connect(self._on_case)
+        if sv.session is not None:
+            self._on_case(sv.session)
+
         cols = QHBoxLayout()
         left, right = QVBoxLayout(), QVBoxLayout()
         left.addWidget(_section("Recent"))
@@ -72,6 +103,42 @@ class WelcomePanel(Panel):
         sv.backend_ready.connect(self._on_backend)
         self.env.setText("OpenFOAM backend: not started yet (it starts when you open a case).")
 
+    def _on_case(self, session) -> None:
+        self._refresh_recent()
+        if session is None:
+            self.card.hide()
+            return
+        try:
+            c = session.case()
+        except Exception as exc:
+            self.card_title.setText(Path(str(session.root)).name)
+            self.card_info.setText(f"{session.root}<br>could not read the case: {exc}")
+            self.card.show()
+            return
+        cells = sum(r.n_cells or 0 for r in c.regions)
+        res = [t for _, t in (c.times + c.processor_times) if float(t) > 0]
+        where = ("in the processor folders (decomposed run)" if c.processor_times and not c.times[1:] else "")
+        results = (f"results at {', '.join(sorted(set(res), key=float)[-6:])} {where}".strip() if res
+                   else "no results yet (only the initial fields)")
+        self.card_title.setText(f"{c.name}  ·  {c.solver_label}")
+        self.card_info.setText(f"{c.root}<br>{cells:,} cells"
+                               + (f" in {len(c.regions)} regions" if c.multi_region else "")
+                               + f" · {results}")
+        self.card.show()
+
+    def _persp(self, name: str) -> None:
+        from aethercfd.studio.app.automation import AppAutomation
+
+        self.ctx.services.notify(AppAutomation(self.ctx.services).perspective(name))
+
+    def _show_results(self) -> None:
+        self._persp("post")
+
+    def _ask(self) -> None:
+        from aethercfd.studio.app.automation import AppAutomation
+
+        AppAutomation(self.ctx.services).open_panel("Copilot")
+
     def _refresh_recent(self) -> None:
         self.recent.clear()
         for p in self.ctx.services.settings.recent_cases:
@@ -91,11 +158,7 @@ class WelcomePanel(Panel):
     def _open_path(self, path: str | None) -> None:
         if not path:
             return
-        sv = self.ctx.services
-        sv.settings.add_recent(str(Path(path)))
-        sv.settings.save()
-        self._refresh_recent()
-        sv.open_case(path)
+        self.ctx.services.open_case(path)  # records it in Recent
 
     def _scan(self) -> None:
         from aethercfd.case.discovery import discover_cases

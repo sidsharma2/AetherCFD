@@ -69,6 +69,7 @@ class Case:
     collated: bool = False
     generated_by: str | None = None
     on_onedrive: bool = False
+    processor_times: list[tuple[float, str]] = field(default_factory=list)  # results of a decomposed run
 
     @property
     def name(self) -> str:
@@ -85,6 +86,13 @@ class Case:
     @property
     def latest_time(self) -> str | None:
         return self.times[-1][1] if self.times else None
+
+    @property
+    def latest_result_time(self) -> str | None:
+        """Latest time with results, reconstructed or still in processor*/ (a decomposed run's results live
+        there until reconstructPar)."""
+        best = max(self.times[-1:] + self.processor_times[-1:], default=None)
+        return best[1] if best else None
 
     @property
     def solver_label(self) -> str:
@@ -191,6 +199,10 @@ def load_case(root: str | Path) -> Case:
             elif p.name.startswith("processors"):
                 collated = True
     times.sort()
+    ptimes: list[tuple[float, str]] = []
+    if nproc and (root / "processor0").is_dir():
+        ptimes = sorted((float(q.name), q.name) for q in (root / "processor0").iterdir()
+                        if q.is_dir() and is_time_dir(q.name))
     cd = _read_dict(root / "system" / "controlDict")
     app = cd.get_text("application") if cd else None
     solver = cd.get_text("solver") if cd else None
@@ -203,7 +215,7 @@ def load_case(root: str | Path) -> Case:
     return Case(root=root, wsl_path=wsl, path_safety=openfoam_path_safety(wsl), regions=regions, times=times,
                 application=app.strip() if app else None, solver_module=solver.strip() if solver else None,
                 fork_guess=detect_fork(root), n_processors=nproc, collated=collated, generated_by=generated_by,
-                on_onedrive=onedrive_hint(str(root)))
+                on_onedrive=onedrive_hint(str(root)), processor_times=ptimes)
 
 
 def classify_file(case_root: Path, path: Path) -> FileKind:

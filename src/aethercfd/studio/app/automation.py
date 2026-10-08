@@ -87,6 +87,21 @@ class AppAutomation:
         self.sv.host.build_panel(d.objectName())
         return f"opened {spec.title}"
 
+    def open_case(self, path: str, *, delay_ms: int = 2500) -> str:
+        """Open another OpenFOAM case (any folder with system/controlDict). Deferred a little: the copilot
+        works per case, and opening a case ends its current conversation, so its reply gets out first."""
+        from PySide6.QtCore import QTimer
+
+        p = Path(path.strip().strip('"')).expanduser()
+        if not (p / "system" / "controlDict").is_file():
+            return f"{p} is not an OpenFOAM case (no system/controlDict)"
+        s = self.sv.session
+        if s is not None and Path(s.root).resolve() == p.resolve():
+            return f"{p.name} is already the open case"
+        QTimer.singleShot(delay_ms, lambda: self.sv.open_case(str(p)))
+        return (f"opening {p} in {delay_ms / 1000:g} s; this copilot conversation then closes (it belongs to the "
+                "current case) and the user can ask again in the new case")
+
     def perspective(self, name: str) -> str:
         pid = PERSPECTIVE_ALIASES.get(name.lower().strip(), name.lower().strip())
         from aethercfd.studio.layout.recipes import PERSPECTIVES

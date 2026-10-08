@@ -133,6 +133,11 @@ class AppServices(QObject):
             self.notify(f"Could not open {path}: {exc}", "error")
             return
         self.session = s
+        try:  # every way of opening (command line, Start page, File menu, copilot) lands in Recent
+            self.settings.add_recent(str(s.root))
+            self.settings.save()
+        except Exception:
+            log.warning("could not record %s in recent cases", s.root, exc_info=True)
         if self._watcher is not None:
             self._watcher.stop()
         from aethercfd.documents.watcher import CaseWatcher

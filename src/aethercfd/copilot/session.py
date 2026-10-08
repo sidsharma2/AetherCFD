@@ -106,6 +106,7 @@ class CopilotSession:
         env["MCP_TOOL_TIMEOUT"] = str(4 * 3600 * 1000)  # approvals and runs can take a while
         env["MCP_TIMEOUT"] = "60000"
         errlog = cache_dir() / "copilot" / "claude-stderr.log"
+        errlog.parent.mkdir(parents=True, exist_ok=True)  # first session of a fresh install
         self._err = open(errlog, "ab")  # noqa: SIM115 -- closed in _pump
         self.proc = subprocess.Popen(self.argv(), cwd=str(self.case_root), stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=self._err, env=env, creationflags=NO_WINDOW)

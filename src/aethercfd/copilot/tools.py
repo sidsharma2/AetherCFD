@@ -261,6 +261,7 @@ def case_overview(ctx: ToolContext, _p: NoParams) -> dict:
         "path_safety": c.path_safety.value if hasattr(c.path_safety, "value") else str(c.path_safety),
         "times": [t for _, t in c.times][-12:], "n_time_dirs": len(c.times),
         "decomposed_processors": c.n_processors, "generated_by": c.generated_by,
+        "processor_times": [t for _, t in c.processor_times][-12:], "latest_result_time": c.latest_result_time,
         "regions": [{"name": r.name or "(single region)", "cells": r.n_cells, "is_2d": r.is_2d,
                      "axisymmetric": r.is_axisymmetric,
                      "patches": [{"name": p.name, "type": p.type, "faces": p.n_faces} for p in r.patches]}
@@ -557,6 +558,11 @@ class AppPanelParams(BaseModel):
                                    "'3D Viewport', 'Mesh Quality', 'Properties', 'Terminal', 'Command Journal'")
 
 
+class OpenCaseParams(BaseModel):
+    path: str = Field(description="Absolute Windows path of an OpenFOAM case folder (contains system/controlDict), "
+                                  "e.g. D:/OpenFOAM/_aethercfd_scratch/revb1_probe/case_g2h_rs3")
+
+
 class PerspectiveParams(BaseModel):
     name: str = Field(description="setup | meshing | run | post | code")
 
@@ -621,6 +627,10 @@ def app_overview(ctx: ToolContext, _p: NoParams) -> dict:
 
 def app_open_panel(ctx: ToolContext, p: AppPanelParams) -> dict:
     return {"result": _ui(ctx).open_panel(p.panel)}
+
+
+def app_open_case(ctx: ToolContext, p: OpenCaseParams) -> dict:
+    return {"result": _ui(ctx).open_case(p.path)}
 
 
 def app_perspective(ctx: ToolContext, p: PerspectiveParams) -> dict:
@@ -717,6 +727,9 @@ BASE_TOOLS: list[Tool] = [
          gui_only=True),
     Tool("app_perspective", "Switch the window layout: setup, meshing, run, post or code.", PerspectiveParams,
          app_perspective, gui_only=True),
+    Tool("app_open_case", "Open another OpenFOAM case in the app when the user asks for one (e.g. a case from the "
+         "Start page list or a path they give). Opening it ends this conversation, so say what you are opening "
+         "before calling this, and call it last.", OpenCaseParams, app_open_case, gui_only=True),
     Tool("app_select_file", "Select a case file in the Case Files tree; its details show in Properties.",
          SelectFileParams, app_select_file, gui_only=True),
     Tool("add_view_stage", "Add a visualization stage to the 3D viewport the user is looking at (Q-criterion vortices "

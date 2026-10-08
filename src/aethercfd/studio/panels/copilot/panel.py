@@ -184,6 +184,9 @@ class _UiHooks(QObject):
     def open_panel(self, name: str) -> str:
         return self._auto("open_panel", name)
 
+    def open_case(self, path: str) -> str:
+        return self._auto("open_case", path)
+
     def perspective(self, name: str) -> str:
         return self._auto("perspective", name)
 
@@ -378,9 +381,15 @@ class CopilotPanel(Panel):
         if s is None:
             self.sv.notify("Open a case first", "warn")
             return False
+        if self.cli is not None and not (self.auth and self.auth.logged_in):
+            # signed in after the app started? the check at startup is stale: ask again now (about a second)
+            from aethercfd.copilot.claude_cli import auth_status
+
+            self._on_cli(self.cli, auth_status(self.cli))
         if self.cli is None or not (self.auth and self.auth.logged_in):
             self._find_cli()
-            self.sv.notify("Claude Code is not ready (see the copilot panel)", "warn")
+            self._add("note", "Claude Code is not signed in yet: use Sign in above (or run `claude auth login`), "
+                              "then send again. Your message is still in the box.")
             return False
         if not self.sv.ensure_project():
             return False
@@ -426,19 +435,27 @@ class CopilotPanel(Panel):
     # ------------------------------------------------------------------ talking
     def _send_input(self) -> None:
         text = self.input.toPlainText().strip()
-        if text:
-            self.input.clear()
-            self.send(text)
+        if text and self.send(text):
+            self.input.clear()  # only once Claude has it: a failed start keeps your message in the box
 
-    def send(self, text: str) -> None:
+    def send(self, text: str) -> bool:
         if self._busy:
             self.sv.notify("Claude is still answering; wait or press Stop", "warn")
-            return
-        if not self._ensure_session():
-            return
+            return False
+        try:
+            ready = self._ensure_session()
+        except Exception as exc:
+            log.exception("copilot session failed to start")
+            self.copilot = None
+            self._add("note", f"Claude could not start ({type(exc).__name__}: {exc}). Your message is still in the "
+                              "box; details are in studio.log.")
+            return False
+        if not ready:
+            return False
         self._add("user", text)
         self.copilot.send(text)
         self._set_busy(True)
+        return True
 
     def _interrupt(self) -> None:
         if self.copilot is not None and self.copilot.alive:

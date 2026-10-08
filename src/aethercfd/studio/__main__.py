@@ -45,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
 
     style.apply(app)
     services = AppServices()
+    _install_excepthook(services)
     register_builtin_panels(services.panels)
     win = MainWindow(services)
     win.show()
@@ -61,6 +62,25 @@ def main(argv: list[str] | None = None) -> int:
         code = app.exec()
     _teardown(app, win)
     return code
+
+
+def _install_excepthook(services) -> None:
+    """Exceptions raised in Qt slots reach sys.excepthook. The packaged (windowed) app has no console, so the
+    default hook printed them nowhere: log the traceback and tell the user, instead of failing silently."""
+    import contextlib
+    import traceback
+
+    log = logging.getLogger("aethercfd.studio.error")
+    previous = sys.excepthook
+
+    def hook(t, v, tb):
+        log.error("unhandled exception\n%s", "".join(traceback.format_exception(t, v, tb)))
+        with contextlib.suppress(Exception):
+            services.notify(f"Something went wrong: {t.__name__}: {v} (details in studio.log)", "error")
+        if sys.stderr is not None:  # source runs with a console still print it
+            previous(t, v, tb)
+
+    sys.excepthook = hook
 
 
 def _isolate_config(out: Path) -> None:
