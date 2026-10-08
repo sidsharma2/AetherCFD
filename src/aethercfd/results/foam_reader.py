@@ -62,9 +62,33 @@ class FoamResults:
         times = [tv.GetValue(i) for i in range(tv.GetNumberOfTuples())] if tv else []
         patches = [r.GetPatchArrayName(i) for i in range(r.GetNumberOfPatchArrays())]
         regions = sorted({p.split("/")[0] for p in patches if p.count("/") >= 1 and p.endswith("internalMesh")})
-        self.meta = ResultsMeta(times, patches, [r.GetCellArrayName(i) for i in range(r.GetNumberOfCellArrays())],
+        cells = [r.GetCellArrayName(i) for i in range(r.GetNumberOfCellArrays())]
+        # the reader lists only the fields of ONE time folder; a field written at other times (a derived field
+        # such as TPinn, or one switched on mid-run) would be invisible: add every volume field on disk
+        cells += [n for n in self._fields_on_disk() if n not in cells]
+        self.meta = ResultsMeta(times, patches, cells,
                                 [r.GetPointArrayName(i) for i in range(r.GetNumberOfPointArrays())], regions)
         return self.meta
+
+    def _fields_on_disk(self) -> list[str]:
+        from aethercfd.case.model import is_time_dir
+
+        base = self.case_root / "processor0" if self.reader.GetCaseType() == 0 else self.case_root
+        names: dict[str, None] = {}
+        try:
+            dirs = [d for d in base.iterdir() if d.is_dir() and is_time_dir(d.name)]
+        except OSError:
+            return []
+        for d in dirs:
+            for f in d.iterdir():
+                if f.is_file() and f.name not in names and not f.name.startswith("."):
+                    try:
+                        head = f.read_bytes()[:600]
+                    except OSError:
+                        continue
+                    if b"class" in head and b"vol" in head.split(b"class", 1)[1][:40]:
+                        names[f.name] = None
+        return list(names)
 
     def read(self, time: float | None, *, fields: list[str] | None = None, patches: list[str] | None = None,
              cell_to_point: bool = False) -> vtk.vtkMultiBlockDataSet:
@@ -73,6 +97,12 @@ class FoamResults:
         if not self.meta.patches:
             self.refresh()
         want_fields = set(fields) if fields is not None else None
+        if time is None and self.meta.times:
+            time = self.meta.times[-1]
+        listed = {r.GetCellArrayName(i) for i in range(r.GetNumberOfCellArrays())}
+        if want_fields and time is not None and not want_fields <= listed:
+            r.UpdateTimeStep(time)  # list the fields of THIS time folder (the reader lists one folder's fields)
+            r.UpdateInformation()
         for i in range(r.GetNumberOfCellArrays()):
             n = r.GetCellArrayName(i)
             r.SetCellArrayStatus(n, 1 if want_fields is None or n in want_fields else 0)

@@ -119,6 +119,18 @@ class AppAutomation:
 
         if self.sv.session is None:
             return "no case is open"
+        root = Path(self.sv.session.root)
+        missing = []
+        for f in [left, right] + ([diff] if diff else []):
+            if time is not None:
+                t = f"{float(time):g}" if time.replace(".", "", 1).isdigit() else time
+                hits = [root / t / f, root / "processor0" / t / f]
+            else:
+                hits = list(root.glob(f"*/{f}")) + list(root.glob(f"processor0/*/{f}"))
+            if not any(h.is_file() for h in hits):
+                missing.append(f)
+        if missing:  # say so now (the viewports load asynchronously, after this returns)
+            return (f"not written{' at t = ' + time if time else ''}: {', '.join(missing)}; nothing opened")
         spec = self.sv.panels.get("aether.viewport")
         host = self.sv.host
         d1 = host.open_panel(spec, instance="cmpA")

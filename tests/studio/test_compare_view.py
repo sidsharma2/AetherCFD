@@ -12,11 +12,11 @@ import pytest
 pytest.importorskip("PySide6")
 pytest.importorskip("vtk")
 
-from aethercfd.results.write_fields import field_files  # noqa: E402
-from aethercfd.studio.app.automation import AppAutomation  # noqa: E402
-from aethercfd.studio.app.services import AppServices  # noqa: E402
-from aethercfd.studio.panels import register_builtin_panels  # noqa: E402
-from aethercfd.studio.shell.main_window import MainWindow  # noqa: E402
+from aethercfd.results.write_fields import field_files
+from aethercfd.studio.app.automation import AppAutomation
+from aethercfd.studio.app.services import AppServices
+from aethercfd.studio.panels import register_builtin_panels
+from aethercfd.studio.shell.main_window import MainWindow
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "cases" / "esi_cavity"
 
@@ -44,7 +44,7 @@ def win(qtbot, tmp_path, monkeypatch):
 
 
 def test_compare_fields(win, qtbot):
-    w, sv = win
+    _w, sv = win
     msg = AppAutomation(sv).compare_fields("p", "pB", "pD", "0.1")
     assert msg.startswith("opened 3 linked viewports")
     a, b, c = (sv.host.build_panel(f"aether.viewport#cmp{x}") for x in "ABC")
@@ -57,3 +57,16 @@ def test_compare_fields(win, qtbot):
     a._cam_moved()
     assert np.allclose(b.plotter.camera.GetPosition(), cam.GetPosition())
     assert np.allclose(c.plotter.camera.GetPosition(), cam.GetPosition())
+
+
+def test_compare_reports_missing_fields(win):
+    _w, sv = win
+    assert AppAutomation(sv).compare_fields("p", "nope", "", "0.1").startswith("not written at t = 0.1: nope")
+
+
+def test_reader_lists_fields_written_at_one_time_only(win):
+    from aethercfd.results.foam_reader import FoamResults
+
+    _w, sv = win
+    r = FoamResults(sv.session.root)
+    assert {"pB", "pD"} <= set(r.refresh().cell_arrays)  # only in 0.1, not in 0
