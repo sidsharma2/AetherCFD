@@ -46,7 +46,13 @@ class Settings(BaseModel):
     wsl: WslSettings = Field(default_factory=WslSettings)
     guards: GuardSettings = Field(default_factory=GuardSettings)
     plot_style: str = r"D:\OpenFOAM\plot_style.py"
+    recent_cases: list[str] = Field(default_factory=list)
+    case_roots: list[str] = Field(default_factory=lambda: [r"D:\OpenFOAM"])
+
     paraview_exe: str = r"C:\Program Files\ParaView 6.1.0\bin\paraview.exe"
+
+    def add_recent(self, path: str, keep: int = 12) -> None:
+        self.recent_cases = [path, *[p for p in self.recent_cases if p.lower() != path.lower()][:keep - 1]]
 
     @classmethod
     def path(cls) -> Path:
