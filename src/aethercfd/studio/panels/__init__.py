@@ -28,7 +28,9 @@ def _register_optional(reg: PanelRegistry) -> None:
                 "aethercfd.studio.panels.copilot.panel", "aethercfd.studio.panels.vis.panel",
                 "aethercfd.studio.panels.inspector.panel", "aethercfd.studio.panels.checks.panel",
                 "aethercfd.studio.panels.combustion.panel",
-                "aethercfd.studio.panels.code.panel", "aethercfd.studio.panels.aethermesh.panel"):
+                "aethercfd.studio.panels.code.panel", "aethercfd.studio.panels.aethermesh.panel",
+                "aethercfd.studio.panels.diff.panel", "aethercfd.studio.panels.python_console.panel",
+                "aethercfd.studio.panels.measurements.panel", "aethercfd.studio.panels.analysis.panel"):
         try:
             m = importlib.import_module(mod)
         except ModuleNotFoundError as exc:

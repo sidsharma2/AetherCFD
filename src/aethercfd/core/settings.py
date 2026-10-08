@@ -70,4 +70,5 @@ class Settings(BaseModel):
         return cls()
 
     def save(self) -> None:
-        atomic_write_bytes(self.path(), tomli_w.dumps(self.model_dump()).encode("utf-8"))
+        # TOML has no null: unset optional settings (e.g. no claude_exe) are left out
+        atomic_write_bytes(self.path(), tomli_w.dumps(self.model_dump(exclude_none=True)).encode("utf-8"))

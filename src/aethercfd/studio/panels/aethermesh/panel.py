@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
+from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
 from aethercfd.studio.widgets.spin import dspin
 
@@ -347,7 +348,10 @@ class AetherMeshPanel(Panel):
         write = QPushButton("Write snappyHexMesh setup")
         write.setToolTip("background box, features, refinement and layers for this STL into the open case "
                          "(one approval; journalled)")
-        for wdg in (QLabel("Flow"), self.sn_flow, self.sn_dir, self.sn_cells, write):
+        cad = QPushButton(icon("mdi6.cube-scan"), "Import CAD…")
+        cad.setToolTip("STEP / IGES / BREP / FCStd through FreeCAD: one patch per named part, mm -> m")
+        cad.clicked.connect(self.import_cad)
+        for wdg in (cad, QLabel("Flow"), self.sn_flow, self.sn_dir, self.sn_cells, write):
             row2.addWidget(wdg)
         row2.addStretch(1)
         lay.addLayout(row2)
@@ -355,6 +359,46 @@ class AetherMeshPanel(Panel):
         go.clicked.connect(self.analyse_geometry)
         write.clicked.connect(self.write_snappy)
         self.tabs.addTab(w, "Geometry & strategy")
+
+    def import_cad(self, path: str | None = None) -> None:
+        """CAD -> STL in the case's surface folder (journalled), then analyse it."""
+        import tempfile
+
+        from aethercfd.commands.base import USER
+        from aethercfd.mesh.cad import CAD_SUFFIXES, cad_to_stl
+
+        s = self.sv.session
+        if s is None:
+            self.status.setText("Open a case first")
+            return
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "CAD file", str(s.root),
+                                                  "CAD (" + " ".join("*" + x for x in CAD_SUFFIXES) + ")")
+        if not path or not self.sv.ensure_project():
+            return
+        fam = "foundation" if "foundation" in str(getattr(s.case().fork_guess, "family", "")).lower() else "esi"
+        rel = f"{'constant/triSurface' if fam == 'esi' else 'constant/geometry'}/{Path(path).stem}.stl"
+        self.status.setText("Converting with FreeCAD…")
+
+        def work():
+            td = tempfile.mkdtemp(prefix="aether-cad-")
+            return cad_to_stl(path, Path(td) / "out.stl")
+
+        def done(res):
+            r, err = res
+            if err is not None or not r.ok:
+                self.status.setText(f"CAD import failed: {err or '; '.join(r.notes)}")
+                return
+            w = s.executor.execute("files.write", {"root": str(s.root), "copies": {rel: str(r.stl)}}, USER)
+            if not w.ok:
+                self.status.setText(f"Not written: {w.message}")
+                return
+            self.stl.setText(str(Path(s.root) / rel))
+            self.status.setText(f"{rel}: {len(r.regions)} region(s) " + ", ".join(g["name"] for g in r.regions[:6])
+                                + ("; " + "; ".join(r.notes) if r.notes else ""))
+            self.analyse_geometry()
+
+        self.sv.run_bg(work, done)
 
     def write_snappy(self) -> None:
         from aethercfd.commands.base import USER

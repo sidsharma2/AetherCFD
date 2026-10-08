@@ -187,6 +187,12 @@ class _UiHooks(QObject):
     def open_case(self, path: str) -> str:
         return self._auto("open_case", path)
 
+    def show_diff(self, left: str, right: str, other_case: str, before_last_change: bool) -> str:
+        return self._auto("show_diff", left, right, other_case, before_last_change)
+
+    def python(self, code: str) -> str:
+        return self._auto("python", code)
+
     def perspective(self, name: str) -> str:
         return self._auto("perspective", name)
 

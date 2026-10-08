@@ -87,6 +87,30 @@ class AppAutomation:
         self.sv.host.build_panel(d.objectName())
         return f"opened {spec.title}"
 
+    def _panel(self, type_id: str):
+        d = self.sv.host.open_panel(self.sv.panels.get(type_id))
+        return self.sv.host.build_panel(d.objectName())
+
+    def show_diff(self, left: str, right: str = "", other_case: str = "", before_last_change: bool = False) -> str:
+        """Open the Diff panel on two case files, a file vs the same file in another case, or a file vs its
+        content before its last journalled change."""
+        s = self.sv.session
+        if s is None:
+            return "no case is open"
+        root = Path(s.root)
+        lp = (root / left) if not Path(left).is_absolute() else Path(left)
+        p = self._panel("aether.diff")
+        if before_last_change:
+            return p.before_last_change(lp)
+        if other_case:
+            return p.compare_with_other_case(lp, other_case)
+        rp = (root / right) if right and not Path(right).is_absolute() else Path(right)
+        return p.compare_paths(lp, rp)
+
+    def python(self, code: str) -> str:
+        """Put code into the Python console for the user to read and run (not run automatically)."""
+        return self._panel("aether.python").insert(code)
+
     def open_case(self, path: str, *, delay_ms: int = 2500) -> str:
         """Open another OpenFOAM case (any folder with system/controlDict). Deferred a little: the copilot
         works per case, and opening a case ends its current conversation, so its reply gets out first."""

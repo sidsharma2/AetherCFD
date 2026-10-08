@@ -563,6 +563,20 @@ class OpenCaseParams(BaseModel):
                                   "e.g. D:/OpenFOAM/_aethercfd_scratch/revb1_probe/case_g2h_rs3")
 
 
+class ShowDiffParams(BaseModel):
+    left: str = Field(description="File relative to the case")
+    right: str = Field("", description="Second file relative to the case (or leave empty with other_case / "
+                                       "before_last_change)")
+    other_case: str = Field("", description="Absolute path of another case: compare the same relative file")
+    before_last_change: bool = Field(False, description="Compare the file with its content before its last "
+                                                        "journalled change")
+
+
+class PythonParams(BaseModel):
+    code: str = Field(description="Python for the console; names: case, data (fields/centres/residuals as numpy), "
+                                  "session, do(...), np, plt, show()")
+
+
 class PerspectiveParams(BaseModel):
     name: str = Field(description="setup | meshing | run | post | code")
 
@@ -631,6 +645,14 @@ def app_open_panel(ctx: ToolContext, p: AppPanelParams) -> dict:
 
 def app_open_case(ctx: ToolContext, p: OpenCaseParams) -> dict:
     return {"result": _ui(ctx).open_case(p.path)}
+
+
+def app_show_diff(ctx: ToolContext, p: ShowDiffParams) -> dict:
+    return {"result": _ui(ctx).show_diff(p.left, p.right, p.other_case, p.before_last_change)}
+
+
+def app_python(ctx: ToolContext, p: PythonParams) -> dict:
+    return {"result": _ui(ctx).python(p.code)}
 
 
 def app_perspective(ctx: ToolContext, p: PerspectiveParams) -> dict:
@@ -727,6 +749,11 @@ BASE_TOOLS: list[Tool] = [
          gui_only=True),
     Tool("app_perspective", "Switch the window layout: setup, meshing, run, post or code.", PerspectiveParams,
          app_perspective, gui_only=True),
+    Tool("app_show_diff", "Show the user a side-by-side diff in the Diff panel: two case files, a file vs the same "
+         "file in another case, or a file vs its content before its last journalled change.", ShowDiffParams,
+         app_show_diff, gui_only=True),
+    Tool("app_python", "Put Python code into the user's Python console (shown, not run): teach them how to get "
+         "fields, profiles or residuals as numpy themselves.", PythonParams, app_python, gui_only=True),
     Tool("app_open_case", "Open another OpenFOAM case in the app when the user asks for one (e.g. a case from the "
          "Start page list or a path they give). Opening it ends this conversation, so say what you are opening "
          "before calling this, and call it last.", OpenCaseParams, app_open_case, gui_only=True),
@@ -754,9 +781,10 @@ BASE_TOOLS: list[Tool] = [
 class ToolSet:
     def __init__(self, ctx: ToolContext, extra: list[Tool] | None = None):
         self.ctx = ctx
+        from aethercfd.copilot.analysis_tools import ANALYSIS_TOOLS
         from aethercfd.copilot.mesh_tools import MESH_TOOLS
 
-        tools = [t for t in BASE_TOOLS + MESH_TOOLS if not (t.gui_only and ctx.ui is None)] + list(extra or [])
+        tools = [t for t in BASE_TOOLS + MESH_TOOLS + ANALYSIS_TOOLS if not (t.gui_only and ctx.ui is None)]             + list(extra or [])
         self.tools = {t.name: t for t in tools}
 
     def describe(self) -> list[dict]:
