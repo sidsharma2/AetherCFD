@@ -64,10 +64,13 @@ def needs_approval(actor: Actor, risk: Risk) -> bool:
 class Context:
     """What commands may touch: the project (journal, objects, trash) and helpers to change files."""
 
-    def __init__(self, project: Project | None, *, backend: Any = None, settings: Any = None):
+    def __init__(self, project: Project | None, *, backend: Any = None, settings: Any = None,
+                 run_manager: Any = None, forks: list | None = None):
         self.project = project
         self.backend = backend
         self.settings = settings
+        self.run_manager = run_manager  # aethercfd.runs.manager.RunManager (needs WSL)
+        self.forks = forks or []  # installed ForkProfiles
         self._listeners: list[Callable[[str, dict], None]] = []
 
     def on_event(self, fn: Callable[[str, dict], None]) -> None:

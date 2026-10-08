@@ -35,10 +35,10 @@ class Registry:
 
 
 def default_registry() -> Registry:
-    from aethercfd.commands.builtin import dict_cmds, file_cmds
+    from aethercfd.commands.builtin import dict_cmds, file_cmds, run_cmds
 
     reg = Registry()
-    for mod in (file_cmds, dict_cmds):
+    for mod in (file_cmds, dict_cmds, run_cmds):
         for cmd in mod.COMMANDS:
             reg.register(cmd)
     return reg
