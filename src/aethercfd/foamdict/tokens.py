@@ -265,12 +265,10 @@ def _try_skip_list(src: str, i: int, n: int, count: int, fmt: FileFormat, list_t
             j = i + count * eb
             if j < n and src[j] == ")":
                 return j
-        # unknown element type: we cannot skip reliably. Fall through to an ASCII-style scan only
-        # when the list is small; a wrong skip never breaks losslessness, only structure.
-        if count == 0:
-            return None
-        rp = src.find(")\n", i)
-        return rp if rp > 0 else None
+        # Unknown element type: never guess. Binary-format files also contain lists that are always
+        # written structurally (e.g. the patch list in polyMesh/boundary, class polyBoundaryMesh),
+        # and guessing an end would swallow them as one opaque blob.
+        return None
     if count < BLOB_THRESHOLD:
         return None
     rp = _skip_ascii_list(src, i, n)
