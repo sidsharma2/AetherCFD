@@ -86,6 +86,10 @@ def check() -> int:
         failures.append(f"no smoke report: {exc}")
     size = sum(f.stat().st_size for f in DIST.rglob("*") if f.is_file())
     print(f"dist size {size / 2**20:.0f} MB")
+    worker = DIST / "_internal" / "aethercfd" / "ml" / "pinn_worker.py"
+    print("pinn worker shipped:", worker.is_file())
+    if not worker.is_file():
+        failures.append("pinn_worker.py is missing from the bundle (PINN training would not start)")
     for f in failures:
         print("FAIL:", f, file=sys.stderr)
     return 1 if failures else 0
