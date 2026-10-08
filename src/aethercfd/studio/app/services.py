@@ -34,6 +34,7 @@ class AppServices(QObject):
     backend_ready = Signal(object)  # Session (runs/forks available)
     notification = Signal(str, str)  # message, level
     files_changed = Signal(list)  # [str] paths changed on disk (GUI thread)
+    current_log_changed = Signal(str)  # the solver log the Residuals/Log panels follow
     _files_changed_bg = Signal(list)  # emitted from the watcher thread
 
     def __init__(self, parent: QObject | None = None):
@@ -54,6 +55,27 @@ class AppServices(QObject):
         self.documents = DocumentStore()  # one buffer per file, shared by every view
         self._watcher = None
         self._files_changed_bg.connect(self._on_files_changed)
+        self.current_log: str = ""
+        from aethercfd.studio.bridge.log_follow import LogFollower
+
+        self.follower = LogFollower(self, self)
+
+    def set_current_log(self, path: str | Path | None) -> None:
+        p = str(path) if path else ""
+        if p == self.current_log:
+            return
+        self.current_log = p
+        self.follower.follow(p or None)
+        self.current_log_changed.emit(p)
+
+    @staticmethod
+    def newest_log(root: Path) -> Path | None:
+        logs = [p for p in Path(root).glob("log.*") if p.is_file()]
+        logs += [p for p in (Path(root) / "logs").glob("log.*") if p.is_file()] if (Path(root) / "logs").is_dir() else []
+        solver_logs = [p for p in logs if not p.name.startswith(("log.blockMesh", "log.checkMesh", "log.decompose",
+                                                                  "log.reconstruct", "log.foamDictionary"))]
+        pool = solver_logs or logs
+        return max(pool, key=lambda p: p.stat().st_mtime) if pool else None
 
     def _on_files_changed(self, paths: list) -> None:
         open_paths = [p for p in paths if self.documents.get(p) is not None]
@@ -90,6 +112,7 @@ class AppServices(QObject):
 
         self._watcher = CaseWatcher(s.root, lambda ps: self._files_changed_bg.emit([str(x) for x in ps])).start()
         self.case_changed.emit(s)
+        self.set_current_log(self.newest_log(s.root))
         self.notify(f"Opened {s.root}")
 
         def init_backend():

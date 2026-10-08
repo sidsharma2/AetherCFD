@@ -69,6 +69,9 @@ def run_smoke(app: QApplication, win, out: Path, qt_warnings: list[str]) -> int:
                     panel._set_mode(2)
             _pump(app, 3.0)
             win.grab().save(str(out / "case_editor.png"))
+            win.layouts.restore("run")
+            _pump(app, 4.0)
+            win.grab().save(str(out / "case_run.png"))
             report["case"] = {"root": str(sv.session.root), "backend": bool(sv.session.forks)}
     except Exception:
         errors.append(traceback.format_exc())
