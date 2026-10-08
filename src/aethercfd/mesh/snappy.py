@@ -122,6 +122,8 @@ def snappy_setup(stl: str | Path, geo: GeometryReport, *, fork_family: str = "es
         raise ValueError("fork_family: esi | foundation")
     stl = Path(stl)
     name = name or re.sub(r"\W", "_", stl.stem) or "body"
+    ext = stl.suffix.lower() if stl.suffix.lower() in (".stl", ".obj") else ".stl"
+    fname = f"{name}{ext}"
     st = strategy_settings or {}
     b = list(geo.bounds)
     size = [b[1] - b[0], b[3] - b[2], b[5] - b[4]]
@@ -219,13 +221,13 @@ def snappy_setup(stl: str | Path, geo: GeometryReport, *, fork_family: str = "es
     if esi:
         feat_file, feat_util = "system/surfaceFeatureExtractDict", "surfaceFeatureExtract"
         feat_txt = _HEADER.format(loc="system", obj="surfaceFeatureExtractDict") + (
-            f"{name}.stl\n{{\n    extractionMethod    extractFromSurface;\n    includedAngle       {included};\n"
+            f"{fname}\n{{\n    extractionMethod    extractFromSurface;\n    includedAngle       {included};\n"
             "    subsetFeatures\n    {\n        nonManifoldEdges yes;\n        openEdges yes;\n    }\n"
             "    writeObj            no;\n}\n")
     else:
         feat_file, feat_util = "system/surfaceFeaturesDict", "surfaceFeatures"
         feat_txt = _HEADER.format(loc="system", obj="surfaceFeaturesDict") + (
-            f"surfaces (\"{name}.stl\");\n\nincludedAngle   {included};\n")
+            f"surfaces (\"{fname}\");\n\nincludedAngle   {included};\n")
 
     # surface regions -> patches
     solids = stl_solids(stl)
@@ -236,7 +238,7 @@ def snappy_setup(stl: str | Path, geo: GeometryReport, *, fork_family: str = "es
             f"                    patchInfo {{ type {'patch' if _PATCH_WORDS.search(s) else 'wall'}; }}\n"
             "                }\n" for s in solids) + "            }\n"
     surf_kw = (f"        type triSurfaceMesh;\n        name {name};\n" if esi
-               else f"        type triSurface;\n        file \"{name}.stl\";\n")
+               else f"        type triSurface;\n        file \"{fname}\";\n")
 
     # layers
     lay = dict(layers or st.get("layers") or {})
@@ -257,7 +259,7 @@ addLayers       {'true' if add_layers else 'false'};
 
 geometry
 {{
-    {name}{'.stl' if esi else ''}
+    {fname if esi else name}
     {{
 {surf_kw}    }}
 }};
@@ -369,8 +371,8 @@ mergeTolerance 1e-6;
                "domain_min": lo, "domain_max": hi, "surface_levels": list(lv), "feature_level": fl,
                "included_angle": included, keep_kw: keep, "layers": add_layers and {"n": n_layers, **lay},
                "patches_from_stl_solids": solids, "rough_cell_estimate": int(est),
-               "surface_file": f"{surf_dir}/{name}.stl"}
-    return SnappySetup(files, (str(stl), f"{surf_dir}/{name}.stl"), steps, summary, notes)
+               "surface_file": f"{surf_dir}/{fname}"}
+    return SnappySetup(files, (str(stl), f"{surf_dir}/{fname}"), steps, summary, notes)
 
 
 MINIMAL_SYSTEM = {

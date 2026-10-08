@@ -65,7 +65,8 @@ def check() -> int:
     out = ROOT / "build" / "smoke_frozen"
     import os
 
-    env = {**os.environ, "AETHER_SMOKE_WATCHDOG": "500", "AETHER_SMOKE_COMBUSTION": "1",
+    # STAGE_WAIT: the first CUDA stage of a fresh build compiles its kernels (a minute or more on a busy laptop)
+    env = {**os.environ, "AETHER_SMOKE_WATCHDOG": "700", "AETHER_SMOKE_STAGE_WAIT": "300", "AETHER_SMOKE_COMBUSTION": "1",
            "AETHER_SMOKE_STAGES": '[{"type": "qcriterion", "percentile": 90}, {"type": "slice", "axis": "z"}]'}
     r = subprocess.run([str(gui), str(case), "--smoke", "--smoke-out", str(out)], capture_output=True, text=True,
                        timeout=600, env=env)

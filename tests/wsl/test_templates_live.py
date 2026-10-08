@@ -63,3 +63,30 @@ def test_unsafe_destination_is_refused(forks):
     runner, fk = forks
     with pytest.raises(ValueError, match="space"):
         copy_tutorial(runner, fk[Family.ESI], template("pitzDaily"), SCRATCH / "with space" / "x")
+
+
+def test_every_template_source_and_param_file_exists(forks):
+    runner, fk = forks
+    checks = []
+    for t in TEMPLATES:
+        for fam, rel in t.sources.items():
+            f = fk[Family.ESI if fam == "esi" else Family.FOUNDATION]
+            root = f"{f.project_dir}/tutorials/{rel}"
+            checks.append(f'test -d "{root}" || echo "MISSING {t.id} {fam} {root}"')
+            for p in t.params:
+                file = p.where[fam][0]
+                orig = file.replace("0/", "0.orig/", 1) if file.startswith("0/") else f"{file}.orig"
+                checks.append(f'test -f "{root}/{file}" || test -f "{root}/{orig}" || '
+                              f'echo "NOFILE {t.id} {fam} {file}"')
+    r = runner.run_script("\n".join(checks) + "\n", [], timeout_s=120)
+    assert r.ok and not r.stdout.strip(), r.stdout
+
+
+def test_esi_zero_orig_is_restored(forks):
+    runner, fk = forks
+    dest = SCRATCH / "parcelInBox_esi"
+    if dest.exists():
+        shutil.rmtree(dest)  # this test's own scratch copy
+    copy_tutorial(runner, fk[Family.ESI], template("parcelInBox"), dest)
+    assert (dest / "0.orig").is_dir() and (dest / "0" / "U").is_file()
+    assert "endTime" in current_values(dest, template("parcelInBox"), "esi")

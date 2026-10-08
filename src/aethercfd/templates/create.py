@@ -21,7 +21,11 @@ if [ ! -d "$src" ]; then echo "AETHERCFD: no tutorial $1 in $WM_PROJECT_DIR" >&2
 if [ -e "$2" ]; then echo "AETHERCFD: $2 already exists" >&2; exit 4; fi
 mkdir -p "$(dirname "$2")"
 cp -r "$src" "$2"
-cd "$2" && ls
+cd "$2" || exit 5
+# what the tutorial's Allrun does first (restore0Dir): 0.orig -> 0, and system/*.orig where missing
+if [ -d 0.orig ] && [ ! -e 0 ]; then cp -r 0.orig 0; fi
+for f in system/*.orig; do [ -e "$f" ] && [ ! -e "${f%.orig}" ] && cp "$f" "${f%.orig}"; done
+ls
 """
 
 

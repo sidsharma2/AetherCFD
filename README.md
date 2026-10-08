@@ -20,7 +20,7 @@ plan you approve, and lands in the Command Journal.
 Sign in once from the Copilot panel ("Sign in to Claude"), or run `claude.exe auth login`.
 
 **GPU:** the app renders on the discrete NVIDIA GPU automatically (setting `gpu = "high-performance"`;
-`integrated` / `system` to change). CUDA compute (CuPy) is used when available; everything falls back to
+`integrated` / `system` to change). CUDA compute (CuPy) is used when available (the very first GPU stage after an install compiles its kernels, about a minute; they are cached); everything falls back to
 the CPU.
 
 ## What is in it

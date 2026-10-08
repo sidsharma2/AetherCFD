@@ -44,3 +44,13 @@ def test_value_text_edits_keep_form():
         == 2e-5
     assert new_value_text("vector_x", "uniform (10 0 0)", 12) == "uniform (12.0 0 0)"
     assert display_value("vector_x", "uniform (10 0 0)") == 10.0
+
+
+def test_spray_particles_soot_rank_first():
+    spray = [t.id for t, _s, _w in rank({"regime": "compressible", "time": "transient", "physics": "spray",
+                                          "geometry": "internal"})[:2]]
+    assert set(spray) == {"aachenBomb", "parcelInBox"}
+    assert rank({"regime": "compressible", "time": "transient", "physics": "soot",
+                 "geometry": "external"})[0][0].id == "smallPoolFire2D"
+    assert rank({"regime": "compressible", "time": "steady", "physics": "reacting",
+                 "geometry": "internal"}, family="esi")[0][0].id == "SandiaD_LTS"

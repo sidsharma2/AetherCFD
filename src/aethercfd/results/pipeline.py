@@ -20,6 +20,7 @@ View options (applied to every block): {"mirror": "y"} and {"revolve": {"axis": 
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -613,6 +614,7 @@ def stage_gpu_iso(spec, internal, field_name, comp, *, mesh_dirs: list[Path], de
         return StageOutput(vtk.vtkPolyData(), notes=["loaded cells do not match the mesh cell order; not drawing "
                                                      "a wrong surface"], label=kind)
     xp, backend = array_module(spec.get("backend", "auto"))
+    t_gpu = time.perf_counter()
     notes = []
     color_name = spec.get("color_by") or ("U" if kind == "qcriterion" else None)
     color = _cell_numpy(ds, color_name) if color_name else None
@@ -641,6 +643,9 @@ def stage_gpu_iso(spec, internal, field_name, comp, *, mesh_dirs: list[Path], de
         scalar, label = xp.asarray(_to_global(vals, perm)), f"isosurface {name}"
     s = iso.isosurface(tm, scalar, float(level), color_cells=color, backend=backend)
     notes.append(f"{len(s.triangles):,} triangles in {s.seconds * 1000:.0f} ms on the {s.backend.upper()}")
+    if backend == "cuda" and time.perf_counter() - t_gpu > 8.0:
+        notes.append(f"{time.perf_counter() - t_gpu:.0f} s in total, mostly compiling the CUDA kernels once; they are "
+                     "cached, so the next GPU stage starts in milliseconds")
     poly = surface_to_poly(s)
     sm, sub = int(spec.get("smooth", 0) or 0), int(spec.get("subdivide", 0) or 0)
     if sm or sub:

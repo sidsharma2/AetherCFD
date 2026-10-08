@@ -85,3 +85,17 @@ def test_internal_pipe_regions(tmp_path):
     assert '"pipe_wall"' in txt  # layers only on the wall region
     x, y, z = s.summary["locationInMesh"]
     assert (x * x + y * y) ** 0.5 < 0.01 and 0 < z < 0.1
+
+
+def test_obj_surface_keeps_its_extension(tmp_path):
+    w = vtk.vtkOBJWriter()
+    sph = vtk.vtkSphereSource()
+    sph.SetRadius(0.05)
+    w.SetInputConnection(sph.GetOutputPort())
+    w.SetFileName(str(tmp_path / "ball.obj"))
+    w.Write()
+    geo = analyse(tmp_path / "ball.obj")
+    s = snappy_setup(tmp_path / "ball.obj", geo, target_cells=100_000)
+    assert s.copy_surface[1] == "constant/triSurface/ball.obj"
+    assert "ball.obj" in s.files["system/snappyHexMeshDict"] and "ball.stl" not in s.files["system/snappyHexMeshDict"]
+    assert s.files["system/surfaceFeatureExtractDict"].count("ball.obj") == 1

@@ -72,7 +72,7 @@ TEMPLATES: list[Template] = [
     Template("motorBike", "Motorbike (3D external, snappyHexMesh)",
              "External aerodynamics of a complex STL body: blockMesh background + snappyHexMesh with layers.",
              frozenset({"incompressible", "steady", "turbulent", "external", "3d", "snappy", "aero", "stl"}),
-             {"esi": "incompressible/simpleFoam/motorBike", "foundation": "incompressibleFluid/motorBike"},
+             {"esi": "incompressible/simpleFoam/motorBike", "foundation": "incompressibleFluid/motorBike/motorBike"},
              (END("SIMPLE iterations"),), "hours", allrun=True,
              notes="Geometry comes from the tutorial resources; run Allrun first (meshes in parallel)."),
     Template("squareBend", "Square bend (3D, compressible, steady)",
@@ -115,6 +115,42 @@ TEMPLATES: list[Template] = [
              frozenset({"reacting", "combustion", "transient", "laminar", "2d", "heat", "compressible"}),
              {"esi": "combustion/reactingFoam/laminar/counterFlowFlame2D",
               "foundation": "multicomponentFluid/counterFlowFlame2D"}, (END("physical end time"),), "minutes"),
+    Template("SandiaD_LTS", "Sandia Flame D (piloted CH4/air jet flame, RANS, LTS)",
+             "The TNF piloted methane/air jet flame (Re 22,400): RANS k-epsilon, EDC with a reduced mechanism, "
+             "local time stepping to a steady state; reactingFoam. Validation data: TNF workshop.",
+             frozenset({"reacting", "combustion", "steady", "ras", "axisymmetric", "compressible", "heat",
+                        "internal", "jet"}),
+             {"esi": "combustion/reactingFoam/RAS/SandiaD_LTS"}, (END("pseudo-time iterations"),), "hours",
+             allrun=True, notes="Allrun converts the CHEMKIN mechanism (chemkinToFoam) and sets the initial fields."),
+    Template("aachenBomb", "Diesel spray combustion (Aachen bomb, Lagrangian spray)",
+             "n-heptane liquid spray injected into hot air: Lagrangian parcels with breakup, evaporation and "
+             "combustion in a closed 3D vessel; sprayFoam / multicomponentFluid with clouds.",
+             frozenset({"spray", "particles", "lagrangian", "reacting", "combustion", "transient", "3d",
+                        "compressible", "heat", "internal"}),
+             {"esi": "lagrangian/sprayFoam/aachenBomb", "foundation": "multicomponentFluid/aachenBomb"},
+             (END("physical end time"),), "hours",
+             allrun=True, notes="Allrun builds the mesh (and converts the mechanism on Foundation)."),
+    Template("parcelInBox", "Evaporating parcels in a box (Lagrangian particles)",
+             "Water parcels injected into hot air in a small box: the minimal Lagrangian case for injection, "
+             "drag, heat transfer and evaporation settings; reactingParcelFoam / multicomponentFluid.",
+             frozenset({"spray", "particles", "lagrangian", "transient", "3d", "compressible", "heat", "internal"}),
+             {"esi": "lagrangian/reactingParcelFoam/parcelInBox", "foundation": "multicomponentFluid/parcelInBox"},
+             (END("physical end time"),), "minutes"),
+    Template("cyclone", "Cyclone separator (dense particles, MP-PIC)",
+             "Gas-solid cyclone with a dense particle phase (multiphase particle-in-cell): particle loading, "
+             "collisions and separation efficiency; MPPICFoam / incompressibleDenseParticleFluid.",
+             frozenset({"particles", "lagrangian", "transient", "3d", "incompressible", "internal", "snappy"}),
+             {"esi": "lagrangian/MPPICFoam/cyclone", "foundation": "incompressibleDenseParticleFluid/cyclone"},
+             (END("physical end time"),), "hours",
+             allrun=True, notes="Allrun meshes the cyclone STL with snappyHexMesh and runs in parallel."),
+    Template("smallPoolFire2D", "Pool fire with soot and radiation (2D LES)",
+             "Buoyant methane pool fire: LES, eddy-dissipation combustion, fvDOM radiation with a soot model "
+             "(mixture-fraction soot); fireFoam / multicomponentFluid.",
+             frozenset({"soot", "fire", "radiation", "reacting", "combustion", "buoyancy", "transient", "les",
+                        "2d", "compressible", "heat", "external"}),
+             {"esi": "combustion/fireFoam/LES/smallPoolFire2D", "foundation": "multicomponentFluid/smallPoolFire2D"},
+             (END("physical end time"),), "hours",
+             allrun=True, notes="Allrun creates the burner patch (topoSet/createPatch)."),
     Template("damBreak", "Dam break (2D laminar VoF)",
              "Free-surface water column collapsing around an obstacle; interFoam / incompressibleVoF.",
              frozenset({"multiphase", "vof", "transient", "laminar", "2d", "incompressible", "free-surface"}),
@@ -135,7 +171,8 @@ QUESTIONS = [
     ("time", "Time", [("steady", "Steady state"), ("transient", "Transient")]),
     ("physics", "Extra physics", [("none", "None"), ("heat", "Heat transfer"), ("buoyancy", "Buoyancy"),
                                   ("cht", "Conjugate heat transfer (solid + fluid)"), ("multiphase", "Free surface"),
-                                  ("reacting", "Combustion / chemistry")]),
+                                  ("reacting", "Combustion / chemistry"), ("spray", "Sprays / particles (Lagrangian)"),
+                                  ("soot", "Fire / soot and radiation")]),
     ("geometry", "Geometry", [("internal", "Internal flow (duct, pipe, channel)"),
                               ("external", "External flow around a body"),
                               ("stl", "My own STL/CAD geometry"), ("any", "Not sure")]),
@@ -169,7 +206,7 @@ def rank(answers: dict[str, str], family: str | None = None) -> list[tuple[Templ
                 why.append(ph)
             else:
                 score -= 3
-        elif ph == "none" and ({"cht", "multiphase", "reacting", "buoyancy"} & t.tags):
+        elif ph == "none" and ({"cht", "multiphase", "reacting", "buoyancy", "spray", "particles", "soot"} & t.tags):
             score -= 2
         geo = answers.get("geometry")
         if geo and geo != "any":
