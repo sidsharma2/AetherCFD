@@ -136,7 +136,25 @@ def wall_spacing(ctx: ToolContext, p: WallParams) -> dict:
     return out
 
 
+class ChecksParams(BaseModel):
+    pass
+
+
+def case_checks(ctx: ToolContext, p: ChecksParams) -> dict:
+    from aethercfd.case.checks import run_checks
+
+    facts, found = run_checks(ctx.session.case())
+    return {"facts": facts.__dict__,
+            "findings": [{"id": f.id, "severity": f.severity, "title": f.title, "why": f.why, "evidence": f.evidence,
+                          "fix": f.fix_label, "edits": [e.__dict__ for e in f.edits]} for f in found],
+            "how_to_fix": "apply an edit with dict_set (file, key, value, insert_if_missing) and a rationale"}
+
+
 MESH_TOOLS = [
+    Tool("case_checks", "Numerics lab and pre-run checks: steady/compressible/turbulence facts and findings "
+         "(scheme boundedness, non-orthogonal correction vs the mesh, relaxation, turbulence fields, pressure "
+         "dimensions, thermo range, BC consistency, disk projection) with the exact dict edits that fix them.",
+         ChecksParams, case_checks),
     Tool("mesh_hotspots", "Mesh quality computed directly from constant/polyMesh with checkMesh's definitions, "
          "plus WHERE the bad cells are: face-connected clusters per metric (non-orthogonality, skewness, aspect "
          "ratio, size jumps) with cell counts, worst values, centroids and bounding boxes, and histograms. "

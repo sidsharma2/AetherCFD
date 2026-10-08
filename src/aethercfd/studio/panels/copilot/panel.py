@@ -533,4 +533,5 @@ def _tool_summary(name: str, args: dict) -> str:
 
 
 PANELS = [PanelSpec("aether.copilot", "Copilot", "mdi6.robot-outline", "Assist", CopilotPanel,
-                    default_area=Area.RIGHT, description="Claude, working on the open case with your approval")]
+                    default_area=Area.RIGHT, tab_group="assist",
+                    description="Claude, working on the open case with your approval")]

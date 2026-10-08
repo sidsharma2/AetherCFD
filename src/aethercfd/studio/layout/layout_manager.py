@@ -215,6 +215,9 @@ class LayoutManager(QObject):
             else:
                 area = place.area if place.area is not Area.FLOATING else spec.default_area
                 self.host.open_panel(spec, area=area, focus=False)
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(0, self.host.balance)  # once QtAds has laid the areas out
 
     def reset(self) -> None:
         self._suspend_autosave += 1

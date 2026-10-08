@@ -150,6 +150,31 @@ class DockHost(QObject):
         host = d.widget() if d else None
         return host.panel if isinstance(host, LazyPanelHost) else None
 
+    def balance(self, side: float = 0.21, right: float = 0.29) -> None:
+        """Give the left/centre/right columns sensible widths after a recipe: QtAds splits evenly, which
+        squeezes the centre on a 1080p screen."""
+        area = self._central.dockAreaWidget()
+        if area is None:
+            return
+        sp = area.parentSplitter()
+        if sp is None or sp.orientation() != Qt.Orientation.Horizontal:
+            return
+        n = sp.count()
+        total = sum(sp.sizes()) or self.manager.width()
+        idx = sp.indexOf(area) if sp.indexOf(area) >= 0 else next(
+            (i for i in range(n) if sp.widget(i).isAncestorOf(area)), -1)
+        if n < 2 or idx < 0:
+            return
+        sizes = [0] * n
+        left = [i for i in range(n) if i < idx]
+        rights = [i for i in range(n) if i > idx]
+        for i in left:
+            sizes[i] = int(total * side / len(left))
+        for i in rights:
+            sizes[i] = int(total * right / len(rights))
+        sizes[idx] = max(100, total - sum(sizes))
+        sp.setSizes(sizes)
+
     def build_panel(self, name: str) -> Panel | None:
         """The panel behind a dock, built now if it has not been shown yet."""
         d = self._docks.get(name)
