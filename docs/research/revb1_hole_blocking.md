@@ -58,3 +58,26 @@ g2h is better than G1 on every metric:
 - `log_note`: the closing FATAL of `checkMesh -region <r>` on a split mesh (v2306 mapped-patch lookup) is now explained to the copilot as benign.
 - AetherMesh **Holes (O-grid)** tab and copilot tool `hole_box_design`.
 - Packaging: CuPy needs the stdlib `graphlib`, which is imported only from Cython. Without it the packaged app silently ran every GPU feature on the CPU.
+
+## Solver behaviour on the new mesh (2026-10-08, sandbox runs)
+
+| Run | Mesh | Numerics | Outcome |
+|---|---|---|---|
+| RS1a (user, 2026-10-04) | G1 | p relaxation 0.5 | Continuity jumps from 0.63 to 45 at it 330–350 and stays ~90. pMin clipping from it 450. Explodes at 558 |
+| case_g2h | g2h | p relaxation 0.5 (RS1) | The same jump, earlier (continuity 0.5 → 5 at it 286–294). Stopped at 307 |
+| RS3 → RS3r (user) | G1 | p 0.2 for it 0–400, then 0.1 | CONVERGED in every window from 801 on. Dilution ratio 6.81, sample draw 1.576e-4 kg/s |
+| case_g2h_rs3 | g2h | the same recipe | It 0–760 is better than G1 at every checkpoint: local continuity error 20–45 % lower, U residuals 10–20 % lower. From ~770 a mode grows in the downstream bore (segment E, x 80–99 mm on the axis): the p residual doubles about every 30 iterations, continuity passes 5 at 857, and pMin clips from 943. Window 601–800 is PROVISIONAL (sample-inlet drift 7.9 %, dilution ratio 6.68); window 801–1000 is diverged |
+
+Reading:
+
+1. **RS1a was not caused by the mesh.** Its p-relaxation 0.5 instability appears on the repaired mesh too.
+2. **The repaired mesh is not converged-steady with the RS3r recipe.** The growth sits in segment E, the one place where the new mesh is much finer than G1 (0.30 mm cells, previously up to 1.12 mm). Two explanations fit:
+   - G1's coarse, high-aspect E cells damped the mode numerically;
+   - the mixed jets in the bore are physically unsteady, and steady SIMPLE cannot hold them on a finer mesh.
+
+   The obvious discriminating experiments:
+   - **g2i:** g2h holes and caps with G1's E grading;
+   - **pseudo-transient:** the same g2h case with a pseudo-transient or LTS solver (rhoPimpleFoam LTS).
+
+   These are not yet run.
+3. **Mesh sensitivity of the answer:** in the quasi-steady stretch (it ~700–770, window 601–800 provisional) the dilution ratio is 6.68 against 6.81 on G1, a 2 % difference.
