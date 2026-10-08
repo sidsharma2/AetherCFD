@@ -65,6 +65,8 @@ class MainWindow(QMainWindow):
         f = mb.addMenu("&File")
         a = f.addAction(icon("msc.folder-opened"), "Open Case…", self.open_case_dialog)
         a.setShortcut(QKeySequence("Ctrl+O"))
+        n = f.addAction(icon("msc.new-folder"), "New Case from Template…", self.new_case_dialog)
+        n.setShortcut(QKeySequence("Ctrl+N"))
         f.addSeparator()
         f.addAction("Exit", self.close)
 
@@ -202,6 +204,11 @@ class MainWindow(QMainWindow):
                          "the NVIDIA GPU." if intel else "OpenGL renderer")
 
     # ------------------------------------------------------------------ actions
+    def new_case_dialog(self) -> None:
+        from aethercfd.studio.dialogs.new_case import NewCaseWizard
+
+        NewCaseWizard(self.services, self).exec()
+
     def open_case_dialog(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Open OpenFOAM case (folder with system/controlDict)",
                                              r"D:\OpenFOAM")
