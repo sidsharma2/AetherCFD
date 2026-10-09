@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -113,7 +114,7 @@ class WelcomePanel(Panel):
             c = session.case()
         except Exception as exc:
             self.card_title.setText(Path(str(session.root)).name)
-            self.card_info.setText(f"{session.root}<br>could not read the case: {exc}")
+            self.card_info.setText(f"{session.root}<br>could not read the case: {html.escape(str(exc))}")
             self.card.show()
             return
         cells = sum(r.n_cells or 0 for r in c.regions)

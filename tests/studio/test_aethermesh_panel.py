@@ -67,8 +67,12 @@ def test_holes_tab(panel):
     assert "cannot read" in panel.h_out.toPlainText()
 
 
-def test_write_snappy_setup_button(panel, tmp_path):
+def test_write_snappy_setup_button(panel, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
     from tests.unit.test_mesh_snappy import _sphere
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
 
     case = Path(panel.sv.session.root)
     stl = _sphere(tmp_path / "ball.stl")
@@ -77,3 +81,34 @@ def test_write_snappy_setup_button(panel, tmp_path):
     panel.write_snappy()
     assert (case / "system" / "snappyHexMeshDict").is_file()
     assert (case / "constant" / "triSurface" / "ball.stl").is_file()
+
+
+def test_write_snappy_asks_before_replacing(panel, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from tests.unit.test_mesh_snappy import _sphere
+
+    case = Path(panel.sv.session.root)
+    bm = case / "system" / "blockMeshDict"
+    before = bm.read_bytes()
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: asked.append(a[2]) or QMessageBox.StandardButton.Cancel)
+    panel.stl.setText(str(_sphere(tmp_path / "ball.stl")))
+    panel.sn_cells.setValue(100_000)
+    panel.write_snappy()
+    assert asked and "blockMeshDict" in asked[0]
+    assert bm.read_bytes() == before and not (case / "system" / "snappyHexMeshDict").exists()
+
+
+def test_bad_inputs_give_messages(panel):
+    panel.g_first.setValue(0)
+    panel.g_last.setValue(0)
+    panel.g_max.setValue(0)
+    panel.design()  # used to raise ValueError out of the slot
+    assert "give n" in panel.g_out.toPlainText()
+    panel.h_levels.setPlainText("cap 0.6295\nR0 1.0795")
+    panel.h_r.setValue(5.0)
+    panel.h_half.setValue(1.0)
+    panel.holes()
+    assert "<" in panel.h_out.toPlainText()  # the message keeps its "<" (HTML-escaped)

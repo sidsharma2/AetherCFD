@@ -544,13 +544,14 @@ def surface_to_poly(s) -> vtk.vtkPolyData:
 _PERM_CACHE: dict[tuple, np.ndarray] = {}
 
 
-def global_cell_order(case: Path, n_cells: int) -> np.ndarray | None:
+def global_cell_order(case: Path, n_cells: int, region: str = "") -> np.ndarray | None:
     """For a case read DECOMPOSED (processor meshes appended in processor order): the global OpenFOAM cell id
     of every loaded cell, from processorN/constant/polyMesh/cellProcAddressing."""
     from aethercfd.mesh.polymesh import _read_list
 
     procs = sorted((p for p in case.glob("processor*") if p.name[9:].isdigit()), key=lambda p: int(p.name[9:]))
-    files = [p / "constant" / "polyMesh" / "cellProcAddressing" for p in procs]
+    files = [p / "constant" / region / "polyMesh" / "cellProcAddressing" if region else
+             p / "constant" / "polyMesh" / "cellProcAddressing" for p in procs]
     if not files or not all(f.exists() for f in files):
         return None
     key = (str(case), tuple(f.stat().st_mtime for f in files))

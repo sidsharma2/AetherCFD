@@ -144,9 +144,25 @@ class AppAutomation:
         state = {"step": "wait-meta", "n": 0}
 
         def tick():
+            if any(getattr(v, "_disposed", False) for v in views):
+                stop()  # a compare view was closed while loading
+                return
+            try:
+                step()
+            except Exception as exc:  # never an error toast every 300 ms
+                stop()
+                self.sv.notify(f"Compare: {type(exc).__name__}: {exc}", "warn")
+
+        def stop():
+            timer.stop()
+            timer.deleteLater()
+            if getattr(self.sv, "_compare_timer", None) is timer:
+                self.sv._compare_timer = None
+
+        def step():
             state["n"] += 1
             if state["n"] > 400:  # ~2 minutes
-                timer.stop()
+                stop()
                 self.sv.notify("Compare: the viewports did not load in time", "warn")
                 return
             if state["step"] == "wait-meta":
@@ -154,7 +170,7 @@ class AppAutomation:
                     msgs = [v.show_field(f, time, slice_axis) for v, f in zip(views, fields, strict=True)]
                     bad = [m for m in msgs if not m.startswith("showing")]
                     if bad:
-                        timer.stop()
+                        stop()
                         self.sv.notify("Compare: " + "; ".join(bad), "warn")
                         return
                     state["step"] = "wait-data"
@@ -175,15 +191,19 @@ class AppAutomation:
                     vc.SetFocalPoint(cam.GetFocalPoint())
                     vc.SetViewUp(cam.GetViewUp())
                     v.plotter.render()
-                timer.stop()
+                stop()
                 self.sv.notify(f"Comparing {', '.join(fields)}: cameras linked, shared colour range "
                                f"{lo:.4g}..{hi:.4g}")
 
+        old = getattr(self.sv, "_compare_timer", None)
+        if old is not None:  # a newer compare request replaces one still loading
+            old.stop()
+            old.deleteLater()
         timer = QTimer(self.sv)
         timer.setInterval(300)
         timer.timeout.connect(tick)
         timer.start()
-        self._compare_timer = timer  # keep it alive
+        self.sv._compare_timer = timer  # keep it alive
         return (f"opened {len(views)} linked viewports side by side: {', '.join(fields)}"
                 + (f" at t = {time}" if time else "") + (f", slice normal to {slice_axis}" if slice_axis else ""))
 

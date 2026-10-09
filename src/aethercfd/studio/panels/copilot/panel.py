@@ -394,7 +394,7 @@ class CopilotPanel(Panel):
             # signed in after the app started? the check at startup is stale: ask again now (about a second)
             from aethercfd.copilot.claude_cli import auth_status
 
-            self._on_cli(self.cli, auth_status(self.cli))
+            self._on_cli(self.cli, auth_status(self.cli, timeout=8))  # on the GUI thread: keep it short
         if self.cli is None or not (self.auth and self.auth.logged_in):
             self._find_cli()
             self._add("note", "Claude Code is not signed in yet: use Sign in above (or run `claude auth login`), "

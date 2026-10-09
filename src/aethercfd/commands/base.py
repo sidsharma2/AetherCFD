@@ -159,6 +159,14 @@ class Command(ABC):
         return CommandResult(True, plan, "applied")
 
 
+DIFF_MAX_LINES = 5000  # difflib is quadratic in the worst case (field files: mostly identical numbers)
+DIFF_MAX_BYTES = 1_000_000
+
+
 def unified_diff(path: Path, before: str, after: str) -> str:
+    nb, na = before.count("\n"), after.count("\n")
+    if max(nb, na) > DIFF_MAX_LINES or max(len(before), len(after)) > DIFF_MAX_BYTES:
+        return (f"--- a/{path.name}\n+++ b/{path.name}\n@@ large file: {nb:,} -> {na:,} lines, {len(before):,} -> "
+                f"{len(after):,} characters; line-by-line diff skipped (the journal keeps both versions) @@\n")
     return "".join(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True),
                                         fromfile=f"a/{path.name}", tofile=f"b/{path.name}", n=2))

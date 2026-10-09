@@ -12,11 +12,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="aethercfd-studio")
     ap.add_argument("case", nargs="?", help="OpenFOAM case folder to open")
     ap.add_argument("--smoke", action="store_true", help="open, cycle perspectives, screenshot, quit")
+    ap.add_argument("--sweep", action="store_true", help="open every panel, drive its main actions, report, quit")
     ap.add_argument("--smoke-out", default="build/smoke")
     ap.add_argument("--perspective", default=None)
     ap.add_argument("--reset-layout", action="store_true", help="ignore saved layouts (use recipes)")
     args = ap.parse_args(argv)
-    if args.smoke:
+    if args.smoke or args.sweep:
         _isolate_config(Path(args.smoke_out))
     _setup_logging()
 
@@ -58,6 +59,10 @@ def main(argv: list[str] | None = None) -> int:
         from aethercfd.studio.smoke import run_smoke
 
         code = run_smoke(app, win, Path(args.smoke_out), qt_warnings)
+    elif args.sweep:
+        from aethercfd.studio.sweep import run_sweep
+
+        code = run_sweep(app, win, Path(args.smoke_out))
     else:
         code = app.exec()
     _teardown(app, win)

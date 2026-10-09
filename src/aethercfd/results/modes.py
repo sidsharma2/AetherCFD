@@ -26,8 +26,10 @@ class PodResult:
     notes: list[str] = field(default_factory=list)
 
     def modes_for(self, fraction: float = 0.99) -> int:
-        """How many modes hold ``fraction`` of the energy."""
-        return int(np.searchsorted(np.cumsum(self.energy), fraction) + 1)
+        """How many modes hold ``fraction`` of the energy (0 when there is no fluctuation at all)."""
+        if not len(self.energy) or self.energy.sum() <= 0:
+            return 0
+        return int(min(np.searchsorted(np.cumsum(self.energy), fraction) + 1, len(self.energy)))
 
 
 @dataclass
@@ -97,6 +99,9 @@ def pod(snapshots, *, weights: np.ndarray | None = None, n_modes: int | None = N
     energy = to_numpy(lam_k) / total if total > 0 else np.zeros(k)
     res = PodResult(energy, to_numpy(sig), to_numpy(modes.T).reshape((k, *shape)), to_numpy(coeffs),
                     to_numpy(mean).reshape(shape), name)
+    if total <= 0:
+        res.notes.append("the snapshots are identical (no fluctuation about the mean): there are no modes to "
+                         "find, e.g. a converged steady run")
     if not subtract_mean:
         res.notes.append("mean not subtracted: mode 1 is (mostly) the mean field")
     return res

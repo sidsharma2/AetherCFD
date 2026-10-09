@@ -43,12 +43,21 @@ class CaseData:
     def field_names(self) -> list[str]:
         return list(self._results().meta.cell_arrays)
 
+    def regions(self) -> list[str]:
+        """Region names of a multi-region (e.g. CHT) case; [] for a single-region case."""
+        return list(self._results().meta.regions)
+
     def _internal(self, time, names):
         from aethercfd.results.foam_reader import iter_leaves
 
         r = self._results()
         meshes = [m for m in r.meta.internal_meshes if (m.split("/")[0] == self.region if self.region else
                                                         m.count("/") == 0 or m == "internalMesh")]
+        if not meshes and r.meta.regions and not self.region:
+            # never append the regions' meshes: fields differ per region and cell ids would mix
+            raise ValueError(f"multi-region case (regions: {', '.join(r.meta.regions)}): choose a region")
+        if self.region and not meshes:
+            raise ValueError(f"no region {self.region!r} (regions: {', '.join(r.meta.regions) or 'none'})")
         ds = r.read(time, fields=names, patches=meshes or None)
         leaves = [d for _p, d in iter_leaves(ds)]
         if not leaves:
@@ -68,7 +77,8 @@ class CaseData:
             return None
         from aethercfd.results.pipeline import global_cell_order
 
-        return global_cell_order(self.root, n)
+        # None (e.g. collated processorsN/): processor order, still consistent between fields, times, centres
+        return global_cell_order(self.root, n, self.region)
 
     def fields(self, time: float | None = None, names: list[str] | None = None) -> dict[str, np.ndarray]:
         """Cell values of the internal mesh at ``time`` (default: latest), in OpenFOAM cell order."""
@@ -109,8 +119,15 @@ class CaseData:
     def snapshots(self, name: str, times: list[float] | None = None) -> tuple[list[float], np.ndarray]:
         """(times, array (n_times, n_cells[, n_comp])) of one field over time -- the input of modal analysis."""
         ts = times if times is not None else [t for t in self.times() if t > 0]
-        arr = [self.fields(t, [name])[name] for t in ts]
-        return ts, np.stack(arr)
+        kept, arr = [], []
+        for t in ts:  # a derived field (TPinn, a mode) may exist at some saved times only: use those
+            f = self.fields(t, [name])
+            if name in f:
+                kept.append(t)
+                arr.append(f[name])
+        if not arr:
+            raise ValueError(f"no saved time has the field {name!r}" + ("" if ts else " (the case has no results)"))
+        return kept, np.stack(arr)
 
     # ------------------------------------------------------------------ other views
     def mesh(self):

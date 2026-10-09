@@ -73,9 +73,9 @@ def find_claude(configured: str | None = None) -> ClaudeCli | None:
     return None
 
 
-def auth_status(cli: ClaudeCli) -> AuthStatus:
+def auth_status(cli: ClaudeCli, timeout: float = 30) -> AuthStatus:
     try:
-        r = subprocess.run([str(cli.exe), "auth", "status", "--json"], capture_output=True, text=True, timeout=30,
+        r = subprocess.run([str(cli.exe), "auth", "status", "--json"], capture_output=True, text=True, timeout=timeout,
                            creationflags=NO_WINDOW)
         d = json.loads(r.stdout or "{}")
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:

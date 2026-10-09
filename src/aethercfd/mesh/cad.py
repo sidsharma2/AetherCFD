@@ -57,7 +57,7 @@ else:
     seen = {}
     for label, s in shapes:
         for k, solid in enumerate(s.Solids):
-            base = "".join(c if c.isalnum() or c == "_" else "_" for c in label) or "body"
+            base = "".join(c if (c.isascii() and c.isalnum()) or c == "_" else "_" for c in label) or "body"
             name = base if len(s.Solids) == 1 else "%s_%d" % (base, k)
             n = seen.get(name, 0); seen[name] = n + 1
             regions.append((name if n == 0 else "%s_%d" % (name, n), solid))
@@ -130,6 +130,8 @@ def cad_to_stl(source: str | Path, out_stl: str | Path, *, regions: str = "solid
     if src.suffix.lower() not in CAD_SUFFIXES:
         return CadResult(False, None, notes=[f"{src.suffix} is not a CAD format FreeCAD imports here "
                                              f"({', '.join(CAD_SUFFIXES)})"])
+    if not src.is_file():
+        return CadResult(False, None, notes=[f"no such file: {src}"])
     exe = Path(freecad) if freecad else find_freecad()
     if exe is None:
         return CadResult(False, None, notes=["FreeCAD (FreeCADCmd.exe) was not found; install FreeCAD or set its "

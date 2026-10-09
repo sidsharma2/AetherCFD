@@ -946,7 +946,10 @@ class ViewportPanel(Panel):
                 if self._syncing:
                     return
                 cam = self.plotter.camera
-                for o in getattr(self, "_linked", []):
+                for o in list(getattr(self, "_linked", [])):
+                    if getattr(o, "_disposed", False):
+                        self._linked.remove(o)
+                        continue
                     o._syncing = True
                     try:
                         oc = o.plotter.camera
@@ -957,6 +960,9 @@ class ViewportPanel(Panel):
                         oc.SetParallelScale(cam.GetParallelScale())
                         o.plotter.renderer.ResetCameraClippingRange()
                         o.plotter.render()
+                    except (RuntimeError, AttributeError):  # its window is gone: stop syncing to it
+                        if o in self._linked:
+                            self._linked.remove(o)
                     finally:
                         o._syncing = False
             iren = self.plotter.iren.interactor if hasattr(self.plotter.iren, "interactor") else self.plotter.iren
@@ -989,6 +995,12 @@ class ViewportPanel(Panel):
         self.view_opts = dict(state.get("view") or {})
 
     def dispose(self) -> None:
+        self._disposed = True
+        for o in getattr(self, "_linked", []):  # unlink from compare-view peers before the plotter goes
+            peers = getattr(o, "_linked", None)
+            if peers is not None and self in peers:
+                peers.remove(self)
+        self._linked = []
         if getattr(self.ctx.services, "active_viewport", None) is self:
             self.ctx.services.set_active_viewport(None)
         try:

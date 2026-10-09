@@ -127,6 +127,13 @@ class Console:
                     print("(exit() is ignored in the console)")
                 except BaseException:
                     self.interp.showtraceback()
-            else:
-                self.interp.runsource(source, "<console>", "single")
+            elif self.interp.runsource(source, "<console>", "single") and force:
+                # a one-line compound statement ("for i in x: print(i)") needs a blank line to end it at the
+                # interactive prompt; an explicit run executes it instead of silently waiting for more input
+                try:
+                    exec(compile(source, "<console>", "exec"), self.ns)
+                except SystemExit:
+                    print("(exit() is ignored in the console)")
+                except BaseException:
+                    self.interp.showtraceback()
         return RunResult(buf.getvalue(), list(self._images))

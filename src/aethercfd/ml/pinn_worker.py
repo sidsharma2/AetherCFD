@@ -205,13 +205,20 @@ def main(job_dir: str) -> int:
     ok = np.isfinite(yd)
     rel = [float(np.sqrt(np.mean((yfit[ok[:, j], j] - yd[ok[:, j], j]) ** 2)) / (y_sd[j] or 1.0)) if ok[:, j].any()
            else None for j in range(k)]
-    (jd / "result.json").write_text(json.dumps({
+    _write_result(jd, {
         "ok": True, "device": str(dev), "gpu": torch.cuda.get_device_name(0) if dev.type == "cuda" else None,
         "seconds": round(time.time() - t0, 1), "final_data_loss": float(ld), "final_pde_loss": float(lp),
         "fit_rmse_over_std": rel, "n_data": len(xd), "n_colloc": int(m), "n_eval": len(xe),
-        "torch": torch.__version__}, indent=1), encoding="utf-8")
+        "torch": torch.__version__})
     hist.close()
     return 0
+
+
+def _write_result(jd: Path, res: dict) -> None:
+    """Atomic: the app polls for result.json and must never read it half-written."""
+    tmp = Path(jd, "result.json.tmp")
+    tmp.write_text(json.dumps(res, indent=1), encoding="utf-8")
+    tmp.replace(Path(jd, "result.json"))
 
 
 if __name__ == "__main__":
@@ -220,7 +227,6 @@ if __name__ == "__main__":
     except Exception as exc:  # report to the app instead of dying silently
         import traceback
 
-        Path(sys.argv[1], "result.json").write_text(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}",
-                                                                "traceback": traceback.format_exc()[-4000:]}),
-                                                    encoding="utf-8")
+        _write_result(Path(sys.argv[1]), {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                                          "traceback": traceback.format_exc()[-4000:]})
         sys.exit(1)

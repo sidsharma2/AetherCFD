@@ -87,7 +87,10 @@ def _fill(view: QPlainTextEdit, plan: CommandPlan) -> None:
         put(f"{'ok     ' if c.ok else 'BLOCKED'}  {c.message}", None if c.ok else T.error)
     for fc in plan.file_changes:
         put(f"\n{fc.kind.upper()}  {fc.path}", T.accent)
-        for ln in (fc.diff or "").splitlines():
+        lines = (fc.diff or "").splitlines()
+        if len(lines) > 3000:
+            lines = [*lines[:3000], f"@@ … {len(lines) - 3000:,} more diff lines not shown @@"]
+        for ln in lines:
             put(ln, T.ok if ln.startswith("+") and not ln.startswith("+++") else
                 T.error if ln.startswith("-") and not ln.startswith("---") else
                 T.info if ln.startswith("@@") else None)

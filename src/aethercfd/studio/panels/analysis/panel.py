@@ -10,6 +10,7 @@ PINN    - physics-informed neural network (PyTorch, out of process, on the GPU):
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +39,7 @@ class AnalysisPanel(Panel):
         super().__init__(ctx)
         self.sv = ctx.services
         self.last = None
+        self.m_busy = False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
         self.tabs = QTabWidget()
@@ -45,7 +47,20 @@ class AnalysisPanel(Panel):
         self._build_modes()
         self._build_surrogate()
         self._build_pinn()
-        self.sv.case_changed.connect(lambda _s: (self._fields(), self._pinn_fields()))
+        self.sv.case_changed.connect(lambda _s: self._on_case())
+        self._fields()
+        self._pinn_fields()
+
+    def _on_case(self) -> None:
+        """Results computed on the previous case's mesh must never be written into this one."""
+        self.last = None
+        self.m_write.setEnabled(False)
+        self.p_timer.stop()
+        self.p_job = self.p_result = None
+        self._pinn_written = None
+        self.p_write.setEnabled(False)
+        self.p_compare.setEnabled(False)
+        self.p_go.setEnabled(not self.p_status.text().startswith("PyTorch environment not found"))
         self._fields()
         self._pinn_fields()
 
@@ -97,56 +112,79 @@ class AnalysisPanel(Panel):
         except Exception as exc:
             self.m_out.setText(f"could not read the fields: {exc}")
 
-    def _snapshots(self):
+    @staticmethod
+    def _snapshots(root, name: str, comp: str):
         from aethercfd.results.casedata import CaseData
 
-        data = CaseData(self.sv.session.root)
-        ts, X = data.snapshots(self.m_field.currentText())
+        data = CaseData(root)
+        ts, X = data.snapshots(name)
         if X.ndim == 3:
-            comp = self.m_comp.currentText()
             X = np.linalg.norm(X, axis=2) if comp == "magnitude" else X[:, :, "xyz".index(comp)]
         return data, ts, X
 
-    def analyse(self):
+    def analyse(self) -> bool:
+        """Reads every saved time and decomposes in the background (large cases take a while); the result
+        appears in the panel. False when nothing was started."""
         from aethercfd.results.modes import dmd, pod
 
-        if self.sv.session is None:
-            return None
-        try:
-            data, ts, X = self._snapshots()
-        except Exception as exc:
-            self.m_out.setText(f"<span style='color:{T.error}'>{exc}</span>")
-            return None
-        self.m_plot.clear()
-        if self.m_method.currentText() == "POD":
-            try:
-                vol = data.quality().cell_volume
-            except Exception:
-                vol = None
-            r = pod(X, weights=vol, n_modes=self.m_n.value())
-            self.last = ("POD", ts, r)
-            self.m_plot.addItem(pg.BarGraphItem(x=np.arange(1, len(r.energy) + 1), height=100 * r.energy, width=0.6,
-                                                brush=T.accent))
-            self.m_plot.setLabel("left", "energy [%]")
-            self.m_plot.setLabel("bottom", "mode")
-            self.m_out.setHtml(f"POD of <b>{self.m_field.currentText()}</b> over {len(ts)} saved times ({r.backend}): "
-                               f"{r.modes_for(0.9)} mode(s) hold 90 %, {r.modes_for(0.99)} hold 99 % of the fluctuation "
-                               "energy." + "".join(f"<br>{n}" for n in r.notes))
-        else:
-            dt = float(np.median(np.diff(ts))) if len(ts) > 1 else 1.0
-            r = dmd(X, dt=dt, rank=self.m_n.value(), delays=self.m_delays.value())
-            self.last = ("DMD", ts, r)
-            self.m_plot.plot(r.frequency, r.growth_rate, pen=None, symbol="o", symbolSize=8, symbolBrush=T.accent)
-            self.m_plot.setLabel("left", "growth rate [1/time]")
-            self.m_plot.setLabel("bottom", "frequency [1/time]")
-            o = np.argsort(-r.growth_rate)
-            rows = "".join(f"<tr><td>{i + 1}</td><td>{r.growth_rate[k]:.4g}</td><td>{abs(r.frequency[k]):.4g}</td>"
-                           f"<td>{r.amplitudes[k]:.3g}</td></tr>" for i, k in enumerate(o[:8]))
-            self.m_out.setHtml(f"DMD over {len(ts)} snapshots (Δt {dt:g}, {r.backend}). Growth > 0 grows."
-                               f"<table cellspacing=6><tr><th>#</th><th>growth</th><th>frequency</th><th>amplitude</th>"
-                               f"</tr>{rows}</table>" + "".join(f"<br>{n}" for n in r.notes))
-        self.m_write.setEnabled(True)
-        return r
+        if self.sv.session is None or self.m_busy or not self.m_field.currentText():
+            if not self.m_field.currentText():
+                self.m_out.setText("No field to analyse (the case has no saved results?)")
+            return False
+        method, n, delays = self.m_method.currentText(), self.m_n.value(), self.m_delays.value()
+        name, root, comp = self.m_field.currentText(), self.sv.session.root, self.m_comp.currentText()
+
+        def work():
+            data, ts, X = self._snapshots(root, name, comp)
+            need = 2 if method == "POD" else 3
+            if len(ts) < need:
+                raise ValueError(f"{method} needs at least {need} saved times with {name}; this case has {len(ts)}")
+            if method == "POD":
+                try:
+                    vol = data.quality().cell_volume
+                except Exception:
+                    vol = None
+                return ts, pod(X, weights=vol, n_modes=n)
+            dt = float(np.median(np.diff(ts)))
+            return ts, dmd(X, dt=dt, rank=n, delays=delays)
+
+        def done(res):
+            self.m_busy = False
+            value, err = res
+            if self.sv.session is None or self.sv.session.root != root:
+                return  # the case changed meanwhile
+            if err is not None:
+                self.m_out.setText(f"<span style='color:{T.error}'>{html.escape(str(err))}</span>")
+                return
+            ts, r = value
+            self.m_plot.clear()
+            self.last = (method, ts, r, name, root)
+            if method == "POD":
+                self.m_plot.addItem(pg.BarGraphItem(x=np.arange(1, len(r.energy) + 1), height=100 * r.energy,
+                                                    width=0.6, brush=T.accent))
+                self.m_plot.setLabel("left", "energy [%]")
+                self.m_plot.setLabel("bottom", "mode")
+                self.m_out.setHtml(f"POD of <b>{html.escape(name)}</b> over {len(ts)} saved times ({r.backend}): "
+                                   f"{r.modes_for(0.9)} mode(s) hold 90 %, {r.modes_for(0.99)} hold 99 % of the "
+                                   "fluctuation energy." + "".join(f"<br>{html.escape(x)}" for x in r.notes))
+            else:
+                dt = float(np.median(np.diff(ts)))
+                self.m_plot.plot(r.frequency, r.growth_rate, pen=None, symbol="o", symbolSize=8, symbolBrush=T.accent)
+                self.m_plot.setLabel("left", "growth rate [1/time]")
+                self.m_plot.setLabel("bottom", "frequency [1/time]")
+                o = np.argsort(-r.growth_rate)
+                rows = "".join(f"<tr><td>{i + 1}</td><td>{r.growth_rate[k]:.4g}</td><td>{abs(r.frequency[k]):.4g}"
+                               f"</td><td>{r.amplitudes[k]:.3g}</td></tr>" for i, k in enumerate(o[:8]))
+                self.m_out.setHtml(f"DMD of <b>{html.escape(name)}</b> over {len(ts)} snapshots (Δt {dt:g}, "
+                                   f"{r.backend}). Growth > 0 grows.<table cellspacing=6><tr><th>#</th><th>growth</th>"
+                                   f"<th>frequency</th><th>amplitude</th></tr>{rows}</table>"
+                                   + "".join(f"<br>{html.escape(x)}" for x in r.notes))
+            self.m_write.setEnabled(True)
+
+        self.m_busy = True
+        self.m_out.setText(f"reading every saved time of {name} and computing {method}…")
+        self.sv.run_bg(work, done)
+        return True
 
     def write_modes(self) -> None:
         from aethercfd.commands.base import USER
@@ -154,9 +192,11 @@ class AnalysisPanel(Panel):
 
         if self.last is None or not self.sv.ensure_project():
             return
-        kind, ts, r = self.last
+        kind, ts, r, name, root = self.last
         s = self.sv.session
-        name = self.m_field.currentText()
+        if s is None or s.root != root:
+            self.sv.notify("The modes belong to another case: analyse this one first", "warn")
+            return
         modes = r.modes if kind == "POD" else np.real(r.modes)
         k = min(len(modes), 4)
         t = f"{ts[-1]:g}"
@@ -206,6 +246,12 @@ class AnalysisPanel(Panel):
             self.s_out.setText("Need at least two rows with the same number of columns (inputs…, output)")
             return None
         A = np.array(rows)
+        bad = ~np.isfinite(A).all(axis=1)
+        if bad.any():
+            A = A[~bad]
+            if len(A) < 2:
+                self.s_out.setText("Need at least two rows of finite numbers (NaN/inf rows are skipped)")
+                return None
         X, y = A[:, :-1], A[:, -1]
         gp = GPSurrogate().fit(X, y)
         lo, hi = X.min(0), X.max(0)
@@ -228,7 +274,9 @@ class AnalysisPanel(Panel):
                            f"that input). Next run to reduce the uncertainty most: <b>"
                            + ", ".join(f"{n} = {v:.4g}" for n, v in zip(names, nxt, strict=True)) + "</b>."
                            "<br>Outside the sampled range the GP reverts to its prior: do not trust extrapolation."
-                           + "".join(f"<br>{n}" for n in gp.notes))
+                           + "".join(f"<br>{n}" for n in gp.notes)
+                           + (f"<br><span style='color:{T.warn}'>{int(bad.sum())} row(s) with NaN/inf skipped</span>"
+                              if bad.any() else ""))
         return gp
 
     # ------------------------------------------------------------------ PINN
@@ -261,7 +309,13 @@ class AnalysisPanel(Panel):
         f.addRow("Field", self.p_field)
         f.addRow("D or ν", self.p_coef)
         f.addRow("Data points (random CFD cells)", self.p_ndata)
-        f.addRow("Measurements", self.p_csv)
+        self.p_unit = QComboBox()
+        self.p_unit.addItems(["m", "mm", "cm", "um", "in"])
+        self.p_unit.setToolTip("length unit of the CSV coordinates")
+        csv_row = QHBoxLayout()
+        csv_row.addWidget(self.p_csv, 1)
+        csv_row.addWidget(self.p_unit)
+        f.addRow("Measurements", csv_row)
         f.addRow("Region", self.p_region)
         f.addRow("Adam steps", self.p_epochs)
         f.addRow("L-BFGS steps", self.p_lbfgs)
@@ -317,25 +371,22 @@ class AnalysisPanel(Panel):
         self.p_field.addItems([self.m_field.itemText(i) for i in range(self.m_field.count())])
 
     def train_pinn(self) -> None:
-        from aethercfd.ml.pinn import build_job, start
+        from aethercfd.ml.pinn import build_job, parse_region, start
 
         s = self.sv.session
         if s is None:
             return
         phys = self.p_phys.currentData()
         field = self.p_field.currentText()
-        region = None
-        if self.p_region.text().strip():
-            try:
-                v = [float(x) for x in self.p_region.text().replace(",", " ").split()]
-                region = (v[:3], v[3:6])
-            except (ValueError, IndexError):
-                self.p_out.setText("region: six numbers, xmin ymin zmin xmax ymax zmax")
-                return
+        try:
+            region = parse_region(self.p_region.text())
+        except ValueError as exc:
+            self.p_out.setText(str(exc))
+            return
         coef = self.p_coef.value()
         params = {"epochs_adam": self.p_epochs.value(), "lbfgs_steps": self.p_lbfgs.value()}
         params["diffusivity" if phys == "ad" else "nu"] = coef
-        csv_path = self.p_csv.text().strip()
+        csv_path, csv_unit = self.p_csv.text().strip(), self.p_unit.currentText()
         self.p_go.setEnabled(False)
         self.p_write.setEnabled(False)
         self.p_out.setText("preparing the job (reading the case)…")
@@ -346,7 +397,7 @@ class AnalysisPanel(Panel):
             if csv_path:
                 from aethercfd.assim.measurements import load_measurements
 
-                m = load_measurements(csv_path)
+                m = load_measurements(csv_path, length_unit=csv_unit)
                 if field not in m.values:
                     raise ValueError(f"{Path(csv_path).name} has no column {field!r}")
                 pts, vals = m.points, m.values[field]
@@ -360,8 +411,11 @@ class AnalysisPanel(Panel):
             value, err = res
             if err is not None:
                 self.p_go.setEnabled(True)
-                self.p_out.setText(f"<span style='color:{T.error}'>{err}</span>")
+                self.p_out.setText(f"<span style='color:{T.error}'>{html.escape(str(err))}</span>")
                 return
+            if self.sv.session is None or self.sv.session.root != s.root:
+                self.p_go.setEnabled(True)
+                return  # the case changed while the job was being prepared
             self.p_job = value
             self.p_out.setText(f"training on {len(value[0].x_data)} data points, {len(value[0].x_colloc)} physics "
                                f"points, {len(value[0].x_eval)} cells…")
@@ -370,6 +424,15 @@ class AnalysisPanel(Panel):
         self.sv.run_bg(work, done)
 
     def _pinn_poll(self) -> None:
+        try:
+            self._pinn_poll_once()
+        except Exception as exc:  # never a toast every 1.5 s: stop and say why
+            self.p_timer.stop()
+            self.p_go.setEnabled(True)
+            self.p_out.setText(f"<span style='color:{T.error}'>following the PINN failed: "
+                               f"{html.escape(f'{type(exc).__name__}: {exc}')}</span>")
+
+    def _pinn_poll_once(self) -> None:
         from aethercfd.ml.pinn import load, progress
 
         if self.p_job is None:
@@ -393,8 +456,8 @@ class AnalysisPanel(Panel):
             res = load(jd)
             self.p_result = res
             if not res.get("ok"):
-                self.p_out.setText(f"<span style='color:{T.error}'>{res.get('error')}</span><pre>"
-                                   f"{res.get('traceback', '')[-800:]}</pre>")
+                self.p_out.setText(f"<span style='color:{T.error}'>{html.escape(str(res.get('error')))}</span><pre>"
+                                   f"{html.escape(res.get('traceback', '')[-800:])}</pre>")
                 return
             errs = res.get("rmse_over_std_vs_cfd") or []
             self.p_out.setHtml(f"done on {res['device']} ({res.get('gpu') or 'CPU'}) in {res['seconds']:.0f} s. "

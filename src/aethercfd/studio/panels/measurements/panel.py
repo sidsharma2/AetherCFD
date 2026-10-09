@@ -8,6 +8,7 @@ the data constrained it (posterior std). "Write fields" saves <field>Assim / <fi
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
 import numpy as np
@@ -81,7 +82,13 @@ class MeasurementsPanel(Panel):
         self.plot.setLabel("bottom", "measured")
         self.plot.setLabel("left", "simulated")
         lay.addWidget(self.plot, 1)
-        self.sv.case_changed.connect(lambda _s: self._times())
+        self.sv.case_changed.connect(lambda _s: self._on_case())
+        self._times()
+
+    def _on_case(self) -> None:
+        # an assimilated field belongs to the mesh it was computed on: never write it into another case
+        self.last = None
+        self.write.setEnabled(False)
         self._times()
 
     def _data(self):
@@ -114,12 +121,13 @@ class MeasurementsPanel(Panel):
         try:
             self.meas = load_measurements(self.csv.text().strip(), length_unit=self.unit.currentText())
         except Exception as exc:
-            self.out.setText(f"<span style='color:{T.error}'>{exc}</span>")
+            self.out.setText(f"<span style='color:{T.error}'>{html.escape(str(exc))}</span>")
             return
         self.field.clear()
         self.field.addItems(list(self.meas.values))
         self.out.setText(f"{len(self.meas.points)} points; fields: {', '.join(self.meas.values)}"
-                         + (f"; uncertainties for {', '.join(self.meas.sigma)}" if self.meas.sigma else ""))
+                         + (f"; uncertainties for {', '.join(self.meas.sigma)}" if self.meas.sigma else "")
+                         + "".join(f"<br><span style='color:{T.warn}'>{html.escape(n)}</span>" for n in self.meas.notes))
 
     def _sim(self):
         d = self._data()
@@ -139,21 +147,33 @@ class MeasurementsPanel(Panel):
         try:
             t, name, c, v = self._sim()
         except Exception as exc:
-            self.out.setText(f"<span style='color:{T.error}'>{exc}</span>")
+            self.out.setText(f"<span style='color:{T.error}'>{html.escape(str(exc))}</span>")
             return None
-        rep = compare(self.meas, {name: v}, c)
+        try:
+            rep = compare(self.meas, {name: v}, c)
+        except Exception as exc:
+            self.out.setText(f"<span style='color:{T.error}'>{html.escape(f'{type(exc).__name__}: {exc}')}</span>")
+            return None
         st = rep["fields"][name]
+        notes = "".join(f"<br><span style='color:{T.warn}'>{html.escape(n)}</span>" for n in rep.get("notes", []))
+        if not st.get("n"):
+            self.out.setHtml(f"<b>{name}</b> at t = {t:g}: no point has both a measured value and a simulated one"
+                             + notes)
+            self.plot.clear()
+            return rep
         self.out.setHtml(f"<b>{name}</b> at t = {t:g}: {st['n']} points, bias <b>{st['bias']:.4g}</b>, RMSE "
                          f"<b>{st['rmse']:.4g}</b> ({100 * st['relative_rmse']:.1f} %), max |error| "
                          f"{st['max_abs_error']:.4g}, R² {st['r2'] if st['r2'] is None else round(st['r2'], 3)}"
                          f"<br><span style='color:{T.text_dim}'>simulated = value of the cell containing each point "
-                         f"(farthest point–cell-centre distance {rep['max_point_to_cell_distance']:.3g} m)</span>")
+                         f"(farthest point–cell-centre distance {rep['max_point_to_cell_distance']:.3g} m)</span>"
+                         + notes)
         self.plot.clear()
         meas = self.meas.values[name]
-        sim = np.array(st["simulated"]) if st.get("simulated") is not None else None
-        if sim is not None:
+        sim = np.array(st["simulated"], dtype=float) if st.get("simulated") is not None else None
+        both = np.concatenate([meas, sim]) if sim is not None else np.zeros(0)
+        if sim is not None and np.isfinite(both).any():
             self.plot.plot(meas, sim, pen=None, symbol="o", symbolSize=6, symbolBrush=T.accent)
-            lo, hi = float(np.nanmin([meas.min(), sim.min()])), float(np.nanmax([meas.max(), sim.max()]))
+            lo, hi = float(np.nanmin(both)), float(np.nanmax(both))
             self.plot.plot([lo, hi], [lo, hi], pen=pg.mkPen(T.text_faint, style=Qt.PenStyle.DashLine))
         return rep
 
@@ -166,20 +186,25 @@ class MeasurementsPanel(Panel):
         try:
             t, name, c, v = self._sim()
         except Exception as exc:
-            self.out.setText(f"<span style='color:{T.error}'>{exc}</span>")
+            self.out.setText(f"<span style='color:{T.error}'>{html.escape(str(exc))}</span>")
             return None
         obs = self.meas.values[name]
         so = self.meas.sigma.get(name)
         if so is None:
             so = self.sigma_o.value() or np.maximum(0.01 * np.abs(obs), 1e-12)
-        a = assimilate(c, v, self.meas.points, obs, so, sigma_b=self.sigma_b.value(), length=self.length.value())
+        try:
+            a = assimilate(c, v, self.meas.points, obs, so, sigma_b=self.sigma_b.value(), length=self.length.value())
+        except Exception as exc:
+            self.out.setText(f"<span style='color:{T.error}'>{html.escape(f'{type(exc).__name__}: {exc}')}</span>")
+            return None
         self.last = (t, name, a)
         self.write.setEnabled(True)
         self.out.setHtml(f"<b>Assimilated {name}</b> at t = {t:g}: innovation RMS "
                          f"{np.sqrt(np.mean(a.innovation ** 2)):.4g} → residual RMS "
                          f"{np.sqrt(np.mean(a.residual ** 2)):.4g}; {a.touched_cells:,} cells corrected (max |Δ| "
                          f"{np.abs(a.correction).max():.4g}); posterior std {a.posterior_std.min():.3g}…"
-                         f"{a.posterior_std.max():.3g}" + "".join(f"<br>{n}" for n in a.notes))
+                         f"{a.posterior_std.max():.3g}"
+                         + "".join(f"<br><span style='color:{T.warn}'>{html.escape(n)}</span>" for n in a.notes))
         return a
 
     def write_fields(self) -> None:

@@ -155,6 +155,9 @@ class EditorPanel(Panel):
 
     # ------------------------------------------------------------------ open
     def open(self, path: Path) -> None:
+        if not Path(path).is_file():
+            self.ctx.services.notify(f"{Path(path).name}: no such file ({path})", "warn")
+            return
         self.path = Path(path)
         self.crumb.setText(str(self.path))
         self.title_changed.emit(self.path.name)

@@ -31,6 +31,16 @@ _COLORS = {"delete": "#5a2a2e", "insert": "#24452f", "replace": "#4d4122"}
 _FILLER = "#2a2b30"
 
 
+MAX_DIFF_LINES = 60_000  # difflib is quadratic in the worst case: beyond this the GUI would freeze
+
+
+def _binary(p: Path) -> bool:
+    """NUL bytes near the start and no OpenFOAM header (binary-format field files keep a text header)."""
+    with open(p, "rb") as f:
+        head = f.read(8192)
+    return b"\0" in head and b"FoamFile" not in head
+
+
 def _read(p: Path) -> str:
     from aethercfd.core.textio import decode_bytes
 
@@ -102,11 +112,20 @@ class DiffPanel(Panel):
             if not p.is_file():
                 self.summary.setText(f"{p} is not a file")
                 return f"{p} is not a file"
+            if _binary(p):
+                self.summary.setText(f"{p.name} is a binary file: not compared")
+                return f"{p.name} is a binary file: not compared"
         self.left_path.setText(str(a))
         self.right_path.setText(str(b))
         return self.compare_texts(_read(a), _read(b), self._label(a), self._label(b))
 
     def compare_texts(self, a: str, b: str, a_label: str = "left", b_label: str = "right") -> str:
+        n = max(a.count("\n"), b.count("\n"))
+        if n > MAX_DIFF_LINES:
+            msg = (f"{n:,} lines: too large to compare here (field data?). Use the Python console, e.g. "
+                   "np.abs(a - b).max() on data.fields(...)")
+            self.summary.setText(msg)
+            return msg
         d = side_by_side(a, b)
         self.left_head.setText(a_label)
         self.right_head.setText(b_label)

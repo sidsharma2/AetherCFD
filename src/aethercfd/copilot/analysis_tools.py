@@ -21,7 +21,14 @@ def diff_files(ctx: ToolContext, p: DiffParams) -> dict:
     from aethercfd.documents.diff import side_by_side, unified
 
     fa, fb = ctx.path(p.a), ctx.path(p.b)
+    for f in (fa, fb):
+        if not f.is_file():
+            raise ToolError(f"{f} is not a file")
     ta, tb = decode_bytes(fa.read_bytes())[0], decode_bytes(fb.read_bytes())[0]
+    n = max(ta.count("\n"), tb.count("\n"))
+    if n > 60_000:  # difflib is quadratic in the worst case: field data would hang the tool
+        raise ToolError(f"{n:,} lines: too large to diff line by line (field data?); compare the arrays with "
+                        "app_python / numpy instead")
     return {"summary": side_by_side(ta, tb).summary(), "diff": _clip(unified(ta, tb, p.a, p.b, p.context), 12000)}
 
 
@@ -42,7 +49,10 @@ def modal_analysis(ctx: ToolContext, p: ModesParams) -> dict:
     times = [t for t in data.times() if t > 0 and (p.first_time is None or t >= p.first_time)]
     if len(times) < 3:
         raise ToolError(f"only {len(times)} saved time(s) after 0: modal analysis needs at least 3 (write more often)")
-    ts, X = data.snapshots(p.field, times)
+    try:
+        ts, X = data.snapshots(p.field, times)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from None
     if X.ndim == 3:
         X = np.linalg.norm(X, axis=2) if p.component == "magnitude" else X[:, :, "xyz".index(p.component)]
     if p.method == "pod":
@@ -74,11 +84,17 @@ def _meas_sim(ctx: ToolContext, p: MeasParams):
     from aethercfd.assim.measurements import load_measurements
     from aethercfd.results.casedata import CaseData
 
-    m = load_measurements(ctx.path(p.csv), length_unit=p.length_unit)
+    try:
+        m = load_measurements(ctx.path(p.csv), length_unit=p.length_unit)
+    except (OSError, ValueError) as exc:
+        raise ToolError(str(exc)) from None
     if p.field not in m.values:
         raise ToolError(f"{p.csv} has no column {p.field!r} (has {sorted(m.values)})")
     data = CaseData(ctx.root)
-    t = p.time if p.time is not None else data.times()[-1]
+    times = data.times()
+    if p.time is None and not times:
+        raise ToolError("the case has no saved results")
+    t = p.time if p.time is not None else times[-1]
     f = data.fields(t, [p.field])
     if p.field not in f:
         raise ToolError(f"the simulation has no field {p.field!r} at t = {t:g}")
@@ -111,7 +127,10 @@ def assimilate_measurements(ctx: ToolContext, p: AssimParams) -> dict:
     so = m.sigma.get(p.field)
     if so is None:
         so = p.sigma_obs if p.sigma_obs is not None else np.maximum(0.01 * np.abs(obs), 1e-12)
-    a = assimilate(c, v, m.points, obs, so, sigma_b=p.sigma_b, length=p.length)
+    try:
+        a = assimilate(c, v, m.points, obs, so, sigma_b=p.sigma_b, length=p.length)
+    except (ValueError, np.linalg.LinAlgError) as exc:
+        raise ToolError(str(exc)) from None
     out = {"time": t, "innovation_rms": float(np.sqrt(np.mean(a.innovation ** 2))),
            "residual_rms": float(np.sqrt(np.mean(a.residual ** 2))), "cells_corrected": a.touched_cells,
            "max_abs_correction": float(np.abs(a.correction).max()),
@@ -164,7 +183,8 @@ def cad_import(ctx: ToolContext, p: CadParams) -> dict:
     fam = "foundation" if "foundation" in str(getattr(ctx.session.case().fork_guess, "family", "")).lower() else "esi"
     rel = f"{'constant/triSurface' if fam == 'esi' else 'constant/geometry'}/{p.name or src.stem}.stl"
     with tempfile.TemporaryDirectory(prefix="aether-cad-") as td:
-        r = cad_to_stl(src, Path(td) / "out.stl", regions=p.regions, scale=p.scale)
+        r = cad_to_stl(src, Path(td) / "out.stl", regions=p.regions, scale=p.scale,
+                       freecad=getattr(ctx.session.settings, "freecad_cmd", None))
         if not r.ok:
             return {"ok": False, "notes": r.notes, "log": r.log[-3000:]}
         out = ctx.execute("files.write", {"root": str(ctx.root), "copies": {rel: str(r.stl)}}, p)
@@ -197,6 +217,7 @@ class PinnParams(Justified):
     coefficient: float = Field(1e-5, gt=0, description="ad: diffusivity D [m2/s]; ns: kinematic viscosity [m2/s]")
     n_data: int = Field(40, ge=3, description="random CFD cells used as data (ignored with csv)")
     csv: str = Field("", description="measurements CSV in the case to use as data instead")
+    csv_unit: str = Field("m", description="length unit of the CSV coordinates: m | mm | cm | in")
     region: list[float] = Field(default_factory=list, description="xmin ymin zmin xmax ymax zmax [m] (empty: all)")
     epochs: int = Field(3000, ge=100, le=100000)
     lbfgs: int = Field(400, ge=0, le=20000)
@@ -205,17 +226,23 @@ class PinnParams(Justified):
 
 
 def pinn_train(ctx: ToolContext, p: PinnParams) -> dict:
-    from aethercfd.ml.pinn import build_job, start, wait
+    from aethercfd.ml.pinn import build_job, parse_region, start, wait
 
     pts = vals = None
     if p.csv:
         from aethercfd.assim.measurements import load_measurements
 
-        m = load_measurements(ctx.path(p.csv))
+        try:
+            m = load_measurements(ctx.path(p.csv), length_unit=p.csv_unit)
+        except (OSError, ValueError) as exc:
+            raise ToolError(str(exc)) from None
         if p.field not in m.values:
             raise ToolError(f"{p.csv} has no column {p.field!r}")
         pts, vals = m.points, m.values[p.field]
-    region = (p.region[:3], p.region[3:6]) if len(p.region) == 6 else None
+    try:
+        region = parse_region(p.region)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from None
     params = {"epochs_adam": p.epochs, "lbfgs_steps": p.lbfgs, ("diffusivity" if p.physics == "ad" else "nu"):
               p.coefficient}
     try:
@@ -223,8 +250,8 @@ def pinn_train(ctx: ToolContext, p: PinnParams) -> dict:
                         data_points=pts, data_values=vals, **params)
         jd = start(job, ml_python=getattr(ctx.session.settings, "ml_python", None),
                    job_dir=ctx.root / ".aethercfd" / "local" / "pinn" / "copilot")
-    except (ValueError, RuntimeError) as exc:
-        raise ToolError(str(exc)) from None
+    except (ValueError, RuntimeError, OSError, KeyError, IndexError) as exc:
+        raise ToolError(f"{type(exc).__name__}: {exc}" if isinstance(exc, (KeyError, IndexError)) else str(exc)) from None
     try:
         res = wait(jd, timeout_s=p.wait_min * 60)
     except TimeoutError as exc:

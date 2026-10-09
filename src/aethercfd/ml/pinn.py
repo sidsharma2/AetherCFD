@@ -16,6 +16,7 @@ problem can never take the GUI down. Typical uses:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -86,7 +87,11 @@ def build_job(case: str | Path, *, physics: str, field: str, time: float | None 
 
     rng = np.random.default_rng(seed)
     data = CaseData(case)
-    t = time if time is not None else data.times()[-1]
+    if time is None:
+        saved = [x for x in data.times() if x > 0]
+        if not saved:  # only the initial conditions: nothing a network could learn the flow from
+            raise ValueError("the case has no saved results (only the initial conditions at t = 0): run it first")
+    t = time if time is not None else saved[-1]
     names = ["U", "p"] if physics == "ns" else [field] + (["U"] if physics == "ad" else [])
     f = data.fields(t, names)
     c = data.centres(t)
@@ -114,8 +119,17 @@ def build_job(case: str | Path, *, physics: str, field: str, time: float | None 
         Y = (v if v.ndim == 1 else np.linalg.norm(v, axis=1))[:, None]
         out_names = [field]
     if data_points is not None:
-        xd = np.asarray(data_points, float)[:, axes]
-        yd = np.asarray(data_values, float).reshape(len(xd), -1)
+        from aethercfd.assim.measurements import nearest_cells, outside_mesh
+
+        P = np.asarray(data_points, float)
+        idx, dist = nearest_cells(c, P)
+        out = outside_mesh(c, P, idx, dist)
+        if out.all():
+            raise ValueError("none of the measurement points lies inside the mesh: check the CSV length unit")
+        xd = P[~out][:, axes]
+        yd = np.asarray(data_values, float).reshape(len(P), -1)[~out]
+        if out.any():
+            params = dict(params, data_points_outside_mesh=int(out.sum()))
     else:
         pick = rng.choice(sel, min(n_data, len(sel)), replace=False)
         xd, yd = c[pick][:, axes], Y[pick]
@@ -135,6 +149,24 @@ def build_job(case: str | Path, *, physics: str, field: str, time: float | None 
     job.params["time"] = t
     job._truth = Y[ev]  # CFD values at the evaluation cells (for the error report)
     return job
+
+
+def parse_region(v) -> tuple[list[float], list[float]] | None:
+    """"xmin ymin zmin xmax ymax zmax" (text or numbers) -> (lo, hi); empty -> None."""
+    if isinstance(v, str):
+        v = v.replace(",", " ").split()
+    if not v:
+        return None
+    try:
+        nums = [float(x) for x in v]
+    except (TypeError, ValueError):
+        raise ValueError("region: six numbers, xmin ymin zmin xmax ymax zmax") from None
+    if len(nums) != 6:
+        raise ValueError(f"region: six numbers, xmin ymin zmin xmax ymax zmax (got {len(nums)})")
+    lo, hi = nums[:3], nums[3:]
+    if not all(a < b for a, b in zip(lo, hi, strict=True)):
+        raise ValueError("region: each min must be smaller than its max")
+    return lo, hi
 
 
 def _sutherland(case: Path) -> tuple[float, float]:
@@ -178,6 +210,8 @@ def start(job: PinnJob, *, ml_python: str | None = None, job_dir: str | Path | N
     # absolute: the worker runs with the job folder as its working directory
     jd = (Path(job_dir) if job_dir else Path(tempfile.mkdtemp(prefix="aether-pinn-"))).resolve()
     jd.mkdir(parents=True, exist_ok=True)
+    if _worker_alive(jd):
+        raise RuntimeError(f"a PINN is still training in {jd} (pid {_pid(jd)}): wait for it or stop that process")
     arrays = {"x_data": job.x_data, "y_data": job.y_data, "x_colloc": job.x_colloc, "x_eval": job.x_eval}
     for k in ("u_colloc", "s_colloc", "w_data", "d_colloc", "g_colloc"):
         if getattr(job, k) is not None:
@@ -191,25 +225,71 @@ def start(job: PinnJob, *, ml_python: str | None = None, job_dir: str | Path | N
                                             default=float, indent=1), encoding="utf-8")
     for f in ("result.json", "outputs.npz", "history.jsonl"):
         (jd / f).unlink(missing_ok=True)
-    log = open(jd / "worker.log", "w", encoding="utf-8")  # noqa: SIM115 -- the child owns it
-    proc = subprocess.Popen([str(py), str(WORKER), str(jd)], cwd=str(jd), stdout=log, stderr=subprocess.STDOUT,
-                            creationflags=0x08000000)
-    (jd / "worker.pid").write_text(str(proc.pid))
+    with open(jd / "worker.log", "w", encoding="utf-8") as log:  # the child keeps its own inherited handle
+        proc = subprocess.Popen([str(py), str(WORKER), str(jd)], cwd=str(jd), stdout=log, stderr=subprocess.STDOUT,
+                                creationflags=0x08000000)
+    (jd / "worker.pid").write_text(f"{proc.pid} {_create_time(proc.pid)}")
     return jd
 
 
+def _pid(jd: Path) -> int | None:
+    try:
+        return int((Path(jd) / "worker.pid").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _create_time(pid: int) -> float:
+    try:
+        import psutil
+
+        return psutil.Process(pid).create_time()
+    except Exception:
+        return 0.0
+
+
+def _worker_alive(jd: Path) -> bool:
+    """The worker recorded in worker.pid still runs (same pid AND start time: pids are reused on Windows)."""
+    try:
+        parts = (Path(jd) / "worker.pid").read_text().split()
+        pid, started = int(parts[0]), float(parts[1]) if len(parts) > 1 else 0.0
+    except (OSError, ValueError, IndexError):
+        return False
+    try:
+        import psutil
+    except ImportError:
+        return not (Path(jd) / "result.json").is_file()  # cannot tell: assume it runs until it reports
+    try:
+        p = psutil.Process(pid)
+        return p.is_running() and p.status() != psutil.STATUS_ZOMBIE and (
+            not started or abs(p.create_time() - started) < 1.0)
+    except Exception:
+        return False
+
+
+def _log_tail(jd: Path, n: int = 2000) -> str:
+    f = Path(jd) / "worker.log"
+    return f.read_text(encoding="utf-8", errors="replace")[-n:] if f.is_file() else ""
+
+
 def progress(jd: str | Path) -> dict:
+    """``done`` also when the worker died without a result (killed, out of memory, no torch): ``load`` then
+    returns ok False with the end of worker.log, instead of the caller polling forever."""
     jd = Path(jd)
     h = jd / "history.jsonl"
-    rows = [json.loads(x) for x in h.read_text(encoding="utf-8").splitlines() if x.strip()] if h.is_file() else []
-    done = (jd / "result.json").is_file()
+    rows = []
+    if h.is_file():
+        for x in h.read_text(encoding="utf-8", errors="replace").splitlines():
+            with contextlib.suppress(ValueError):  # the line being written right now
+                rows.append(json.loads(x))
+    done = (jd / "result.json").is_file() or not _worker_alive(jd)
     return {"done": done, "last": rows[-1] if rows else None, "history": rows}
 
 
 def wait(jd: str | Path, timeout_s: float = 3600) -> dict:
     t0 = time.time()
     while time.time() - t0 < timeout_s:
-        if (Path(jd) / "result.json").is_file():
+        if progress(jd)["done"]:
             return load(jd)
         time.sleep(1.0)
     raise TimeoutError(f"PINN still training after {timeout_s:.0f} s ({jd})")
@@ -217,10 +297,16 @@ def wait(jd: str | Path, timeout_s: float = 3600) -> dict:
 
 def load(jd: str | Path) -> dict:
     jd = Path(jd)
-    res = json.loads((jd / "result.json").read_text(encoding="utf-8"))
+    try:
+        res = json.loads((jd / "result.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        tail = _log_tail(jd)
+        last = next((ln for ln in reversed(tail.splitlines()) if ln.strip()), "")
+        return {"ok": False, "error": "the PINN worker stopped without a result" + (f": {last}" if last else
+                                                                                   " (killed or out of memory?)"),
+                "traceback": tail, "log": tail}
     if not res.get("ok"):
-        log = (jd / "worker.log").read_text(encoding="utf-8", errors="replace")[-2000:] if (jd / "worker.log").is_file() else ""
-        return res | {"log": log}
+        return res | {"log": _log_tail(jd)}
     out = np.load(jd / "outputs.npz")
     res["y_eval"] = out["y_eval"]
     res["eval_cells"] = np.load(jd / "eval_cells.npy") if (jd / "eval_cells.npy").is_file() else None

@@ -7,6 +7,7 @@ Thread use: one FoamResults per worker thread; hand results to other threads as 
 
 from __future__ import annotations
 
+import gzip
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -52,6 +53,7 @@ class FoamResults:
             r.SetDecomposePolyhedra(0)
         self.reader = r
         self.meta = ResultsMeta()
+        self._disk_cache: dict[tuple[str, int], list[str]] = {}  # (time folder, mtime) -> volume fields in it
 
     def refresh(self) -> ResultsMeta:
         """(Re)read time steps and available arrays (call after new time dirs appear)."""
@@ -80,14 +82,28 @@ class FoamResults:
         except OSError:
             return []
         for d in dirs:
-            for f in d.iterdir():
-                if f.is_file() and f.name not in names and not f.name.startswith("."):
+            try:
+                stamp = d.stat().st_mtime_ns
+            except OSError:
+                continue
+            key = (str(d), stamp)
+            found = self._disk_cache.get(key)
+            if found is None:
+                found = []
+                for f in d.iterdir():
+                    if not f.is_file() or f.name.startswith(".") or f.suffix in (".orig", ".bak"):
+                        continue
+                    gz = f.suffix == ".gz"
                     try:
-                        head = f.read_bytes()[:600]
-                    except OSError:
+                        with (gzip.open(f, "rb") if gz else open(f, "rb")) as fh:  # header only: fields can be GBs
+                            head = fh.read(600)
+                    except (OSError, EOFError):
                         continue
                     if b"class" in head and b"vol" in head.split(b"class", 1)[1][:40]:
-                        names[f.name] = None
+                        found.append(f.name[:-3] if gz else f.name)
+                self._disk_cache[key] = found
+            for n in found:
+                names[n] = None
         return list(names)
 
     def read(self, time: float | None, *, fields: list[str] | None = None, patches: list[str] | None = None,

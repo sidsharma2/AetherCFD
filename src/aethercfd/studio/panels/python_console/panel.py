@@ -6,8 +6,9 @@ history when the cursor is on the first/last line. Code runs on a worker thread,
 
 from __future__ import annotations
 
+import ctypes
 import html
-from concurrent.futures import ThreadPoolExecutor
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
@@ -26,6 +27,8 @@ from PySide6.QtWidgets import (
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
+
+MAX_SHOWN = 200_000  # characters of one cell's output kept in the window
 
 
 class _Relay(QObject):
@@ -68,7 +71,8 @@ class PythonConsolePanel(Panel):
         self.console = None
         self.history: list[str] = []
         self._hpos = 0
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aether-console")
+        self._thread: threading.Thread | None = None
+        self._gen = 0  # results of an abandoned (restarted) cell are ignored
         self._relay = _Relay()
         self._relay.done.connect(self._on_done)
         self._busy = False
@@ -87,9 +91,13 @@ class PythonConsolePanel(Panel):
         restart = QPushButton(icon("msc.debug-restart"), "Restart")
         restart.setToolTip("Fresh namespace for the open case")
         restart.clicked.connect(self.restart)
+        self.stop = QPushButton(icon("msc.debug-stop"), "Stop")
+        self.stop.setToolTip("Interrupt the running cell (KeyboardInterrupt; a long numpy/VTK call finishes first)")
+        self.stop.setEnabled(False)
+        self.stop.clicked.connect(self.interrupt)
         self.state = QLabel()
         self.state.setStyleSheet(f"color: {T.text_faint};")
-        for w in (self.examples, clear, restart):
+        for w in (self.examples, clear, self.stop, restart):
             bar.addWidget(w)
         bar.addStretch(1)
         bar.addWidget(self.state)
@@ -112,6 +120,12 @@ class PythonConsolePanel(Panel):
     # ------------------------------------------------------------------ namespace
     def restart(self) -> None:
         from aethercfd.scripting.console import Console
+
+        if self._busy:  # abandon the running cell: interrupt it and ignore whatever it returns
+            self.interrupt()
+            self._gen += 1
+            self._busy = False
+            self.stop.setEnabled(False)
 
         s = self.sv.session
         figs = (Path(s.root) / ".aethercfd" / "local" / "figures") if s is not None and s.project else None
@@ -151,12 +165,27 @@ class PythonConsolePanel(Panel):
         self._busy = True
         self.state.setText("running…")
         console = self.console
-        fut = self._pool.submit(console.run, src, force=True)
-        fut.add_done_callback(lambda f: self._relay.done.emit(src, f.exception() or f.result()))
+        self._gen += 1
+        gen = self._gen
+
+        def work():
+            try:
+                res = console.run(src, force=True)
+            except BaseException as exc:
+                res = exc
+            self._relay.done.emit((gen, src), res)
+
+        # a daemon thread: a cell that never ends must not keep the app process alive after the window closes
+        self._thread = threading.Thread(target=work, name="aether-console", daemon=True)
+        self._thread.start()
+        self.stop.setEnabled(True)
         return True
 
     @Slot(object, object)
-    def _on_done(self, _src, res) -> None:
+    def _on_done(self, key, res) -> None:
+        if key[0] != self._gen:
+            return  # a cell abandoned by Restart
+        self.stop.setEnabled(False)
         self._busy = False
         s = self.sv.session
         self.state.setText(f"Python · {Path(s.root).name if s else 'no case'}")
@@ -164,6 +193,10 @@ class PythonConsolePanel(Panel):
             self._print(f"{type(res).__name__}: {res}", T.error)
             return
         out = res.output.rstrip("\n")
+        if len(out) > MAX_SHOWN:  # a huge print would freeze the window: keep the start and the end
+            cut = out.count("\n", 20_000, len(out) - MAX_SHOWN + 20_000)
+            out = (out[:20_000] + f"\n… {cut:,} lines not shown (write big output to a file) …\n"
+                   + out[len(out) - MAX_SHOWN + 20_000:])
         if out.strip():
             last = out.splitlines()[-1].split(":")[0]
             err = "Traceback (most recent call last)" in out or last.endswith(("Error", "Exception"))
@@ -197,8 +230,13 @@ class PythonConsolePanel(Panel):
         self.input.moveCursor(QTextCursor.MoveOperation.End)
         return "code placed in the Python console (Enter runs it)"
 
+    def interrupt(self) -> None:
+        t = self._thread
+        if self._busy and t is not None and t.is_alive() and t.ident is not None:
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(t.ident), ctypes.py_object(KeyboardInterrupt))
+
     def dispose(self) -> None:
-        self._pool.shutdown(wait=False, cancel_futures=True)
+        self.interrupt()
 
 
 PANELS = [PanelSpec("aether.python", "Python Console", "mdi6.language-python", "Tools", PythonConsolePanel,

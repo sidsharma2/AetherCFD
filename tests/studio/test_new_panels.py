@@ -62,6 +62,20 @@ def test_python_console_panel(sv, qtbot):
     qtbot.waitUntil(lambda: "max p 5.0" in p.out.toPlainText(), timeout=30000)
     assert not p.run_code("for i in range(3):", force=False)  # incomplete: Enter adds a line
     assert "placed" in p.insert("x = 1")
+    # a cell that never ends: Stop interrupts it, and the console is usable again
+    p.run_code("while True: pass")
+    qtbot.waitUntil(lambda: p.stop.isEnabled(), timeout=5000)
+    p.interrupt()
+    qtbot.waitUntil(lambda: not p._busy, timeout=10000)
+    assert "KeyboardInterrupt" in p.out.toPlainText()
+    # Restart while a cell runs: abandoned, no stuck "busy" state
+    p.run_code("import time\nwhile True: time.sleep(0.01)")
+    qtbot.waitUntil(lambda: p._busy, timeout=5000)
+    p.restart()
+    assert not p._busy
+    p.run_code("print('after', 6 * 7)")
+    qtbot.waitUntil(lambda: "after 42" in p.out.toPlainText(), timeout=10000)
+    assert p._thread.daemon  # never keeps the app process alive
 
 
 def test_measurements_panel(sv, qtbot, tmp_path):
@@ -89,10 +103,17 @@ def test_analysis_panel_modes_and_surrogate(sv, qtbot):
     p = AnalysisPanel(PanelContext(sv, "#main"))
     qtbot.addWidget(p)
     p.m_field.setCurrentText("p")
-    r = p.analyse()
-    assert r is not None and r.energy[0] > 0.99  # uniform fields over time: one mode
+    assert p.analyse()  # runs in the background
+    qtbot.waitUntil(lambda: not p.m_busy, timeout=60000)
+    kind, _ts, r, name, _root = p.last
+    assert kind == "POD" and name == "p" and r.energy[0] > 0.99  # uniform fields over time: one mode
+    assert p.m_write.isEnabled()
     gp = p.fit_surrogate()
     assert gp is not None and "Next run" in p.s_out.toPlainText()
+    p.s_table.setPlainText("1, nan\n2, 3\n3, 4")  # NaN rows are skipped, not fed to the GP
+    assert p.fit_surrogate() is not None and "skipped" in p.s_out.toPlainText()
+    p._on_case()  # another case opened: results of this mesh can no longer be written
+    assert p.last is None and not p.m_write.isEnabled()
 
 
 def test_pinn_tab_trains_and_writes(sv, qtbot):
@@ -113,3 +134,17 @@ def test_pinn_tab_trains_and_writes(sv, qtbot):
     assert p.p_result["ok"] and p.p_result["rmse_over_std_vs_cfd"][0] is not None
     p.write_pinn()
     assert (Path(sv.session.root) / "0.4" / "pPinn").is_file()
+
+
+def test_analysis_on_a_case_without_results(tmp_path, qtbot, monkeypatch):
+    monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path / "cfg"))
+    case = tmp_path / "c"
+    shutil.copytree(FIX, case)
+    s = AppServices()
+    s.open_case(case, create_project=True)
+    p = AnalysisPanel(PanelContext(s, "#main"))
+    qtbot.addWidget(p)
+    if p.m_field.count():
+        assert p.analyse()
+        qtbot.waitUntil(lambda: not p.m_busy, timeout=30000)
+    assert "no saved time" in p.m_out.toPlainText() or "No field" in p.m_out.toPlainText()

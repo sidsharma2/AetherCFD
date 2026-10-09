@@ -11,6 +11,7 @@ Geometry  - STL intake (watertight?, features, curvature, extruded/axisymmetric?
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
 import numpy as np
@@ -203,9 +204,13 @@ class AetherMeshPanel(Panel):
     def design(self) -> None:
         from aethercfd.mesh.grading import design
 
-        d = design(self.g_L.value(), first=self.g_first.value() or None, last=self.g_last.value() or None,
-                   n=self.g_n.value() or None, max_size=self.g_max.value() or None, max_ratio=self.g_ratio.value())
-        s = d.summary()
+        try:
+            d = design(self.g_L.value(), first=self.g_first.value() or None, last=self.g_last.value() or None,
+                       n=self.g_n.value() or None, max_size=self.g_max.value() or None, max_ratio=self.g_ratio.value())
+            s = d.summary()
+        except (ValueError, ZeroDivisionError, OverflowError) as exc:
+            self.g_out.setHtml(f"<span style='color:{T.warn}'>{html.escape(str(exc))}</span>")
+            return
         self.g_out.setHtml(f"<b>{s['cells']} cells</b>, first {s['first']:.4g}, last {s['last']:.4g}, largest "
                            f"{s['max']:.4g}, max cell-to-cell ratio <b>{s['max_cell_to_cell_ratio']}</b><br>"
                            f"blockMesh grading: <code>{s['blockMesh_grading']}</code>"
@@ -254,7 +259,7 @@ class AetherMeshPanel(Panel):
             try:
                 radii[parts[0]] = float(parts[1])
             except ValueError:
-                self.h_out.setHtml(f"<span style='color:{T.warn}'>cannot read the level line: {ln}</span>")
+                self.h_out.setHtml(f"<span style='color:{T.warn}'>cannot read the level line: {html.escape(ln)}</span>")
                 return
             physical[parts[0]] = not (len(parts) > 2 and parts[2].lower() == "free")
         try:
@@ -262,7 +267,7 @@ class AetherMeshPanel(Panel):
                                 tube_levels(radii, self.h_sector.value(), physical),
                                 n_a=self.h_na.value(), n_end=self.h_nend.value())
         except ValueError as exc:
-            self.h_out.setHtml(f"<span style='color:{T.warn}'>{exc}</span>")
+            self.h_out.setHtml(f"<span style='color:{T.warn}'>{html.escape(str(exc))}</span>")
             return
         rows = "".join(
             f"<tr><td>{r['level']}</td><td>{r['half_width']:.4g}</td><td><b>{r['box_half_length']:.4g}</b></td>"
@@ -309,10 +314,14 @@ class AetherMeshPanel(Panel):
     def wall(self) -> None:
         from aethercfd.mesh.wall import first_cell_height, ideal_gas_rho, plan_layers, sutherland_mu
 
-        rho = ideal_gas_rho(self.w_p.value(), self.w_T.value())
-        nu = sutherland_mu(self.w_T.value()) / rho
-        r = first_cell_height(self.w_yplus.value(), self.w_U.value(), self.w_L.value(), nu=nu, rho=rho,
-                              kind=self.w_kind.currentText())
+        try:
+            rho = ideal_gas_rho(self.w_p.value(), self.w_T.value())
+            nu = sutherland_mu(self.w_T.value()) / rho
+            r = first_cell_height(self.w_yplus.value(), self.w_U.value(), self.w_L.value(), nu=nu, rho=rho,
+                                  kind=self.w_kind.currentText())
+        except (ValueError, ZeroDivisionError, OverflowError) as exc:
+            self.w_out.setHtml(f"<span style='color:{T.warn}'>{html.escape(str(exc))}</span>")
+            return
         txt = (f"Re = {r.reynolds:,.0f} ({r.regime}), C<sub>f</sub> = {r.cf:.4g}, u<sub>τ</sub> = {r.u_tau:.4g} m/s<br>"
                f"<b>First cell height = {r.first_cell * 1e6:.2f} µm</b> (centre at y = {r.y_p * 1e6:.2f} µm for "
                f"y+ = {self.w_yplus.value():g})")
@@ -380,9 +389,11 @@ class AetherMeshPanel(Panel):
         rel = f"{'constant/triSurface' if fam == 'esi' else 'constant/geometry'}/{Path(path).stem}.stl"
         self.status.setText("Converting with FreeCAD…")
 
+        freecad = getattr(self.sv.settings, "freecad_cmd", None)
+        self._cad_tmp = tempfile.TemporaryDirectory(prefix="aether-cad-")  # removed with the next import
+
         def work():
-            td = tempfile.mkdtemp(prefix="aether-cad-")
-            return cad_to_stl(path, Path(td) / "out.stl")
+            return cad_to_stl(path, Path(self._cad_tmp.name) / "out.stl", freecad=freecad)
 
         def done(res):
             r, err = res
@@ -415,7 +426,11 @@ class AetherMeshPanel(Panel):
         from aethercfd.mesh.snappy import minimal_system, snappy_setup
         from aethercfd.mesh.strategy import plan
 
-        geo = analyse(path)
+        try:
+            geo = analyse(path)
+        except Exception as exc:
+            self.status.setText(f"Could not read {Path(path).name}: {exc}")
+            return
         fam = "foundation" if "foundation" in str(getattr(s.case().fork_guess, "family", "")).lower() else "esi"
         best = next((m for m in plan(geo, flow=self.sn_flow.currentText(), target_cells=self.sn_cells.value(),
                                      fork=fam) if m.mesher.startswith("snappyHexMesh")), None)
@@ -427,6 +442,18 @@ class AetherMeshPanel(Panel):
             self.status.setText(str(exc))
             return
         root = Path(s.root)
+        changed = [rel for rel, text in st.files.items() if (root / rel).is_file()
+                   and (root / rel).read_text(encoding="utf-8", errors="replace") != text]
+        if changed:
+            from PySide6.QtWidgets import QMessageBox
+
+            ok = QMessageBox.question(
+                self, "Replace existing dictionaries?",
+                "These files exist and will be replaced (the Command Journal can revert them):\n\n  "
+                + "\n  ".join(changed), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if ok != QMessageBox.StandardButton.Yes:
+                return
         copies = {} if (root / st.copy_surface[1]).resolve() == Path(path).resolve() else {st.copy_surface[1]: path}
         res = s.executor.execute("files.write", {"root": str(root), "files": {**minimal_system(fam), **st.files},
                                                  "copies": copies, "keep_existing": list(minimal_system(fam))}, USER)
