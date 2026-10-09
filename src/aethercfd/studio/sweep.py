@@ -112,6 +112,16 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
     has_results = any(float(t) > 0 for t in times)
     latest = max(times, key=float) if times else None
 
+    # ---------------------------------------------------------------- the restored layout is not an empty window
+    def placed():
+        names = win.layouts.open_panel_names()
+        lost = [n for n in names if sv.host.dock(n) is not None and sv.host.dock(n).dockAreaWidget() is None]
+        if not names or lost:
+            raise AssertionError(f"panels open but in no dock area (empty window): {lost or 'none open'}")
+        return f"{len(names)} panels placed"
+
+    sw.step("restored layout shows its panels", placed)
+
     # ---------------------------------------------------------------- every panel opens and builds
     for spec in list(sv.panels.specs()):
         sw.step(f"open panel {spec.type_id}", lambda spec=spec: (sw.panel(spec.type_id), "built")[1])

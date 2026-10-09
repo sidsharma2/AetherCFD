@@ -340,10 +340,15 @@ class DockHost(QObject):
         for n in names:
             if n == "aether.workbench#main" or n in self._docks:
                 continue
-            self.create_dock(resolve_spec(self.split_name(n)[0]), n)
+            d = self.create_dock(resolve_spec(self.split_name(n)[0]), n)
+            # QtAds places only docks the manager knows: add each one (closed) so restoreState can move it
+            # into its saved area. A dock that is merely constructed stays "open" but in no area: an empty window.
+            self.manager.addDockWidget(ads.RightDockWidgetArea, d)
+            d.toggleView(False)
         ok = bool(self.manager.restoreState(QByteArray(blob)))
         self.fix_central_current()
-        return ok
+        return ok and all(self._docks[n].dockAreaWidget() is not None or self._docks[n].isClosed()
+                          for n in names if n in self._docks)
 
     def fix_central_current(self) -> None:
         """The workbench placeholder (no tab) must never cover a real panel in the central area."""

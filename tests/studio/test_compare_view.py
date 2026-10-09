@@ -84,3 +84,25 @@ def test_empty_saved_layout_falls_back_to_the_recipe(win):
     empty = dict(snap, ads_state=base64.b64encode(b'<QtAdvancedDockingSystem><Widget Name="aether.workbench#main" '
                                                   b'Closed="0"/></QtAdvancedDockingSystem>').decode())
     assert not w.layouts._apply_variant(empty)  # the restore then applies the perspective's recipe
+
+
+def test_saved_layout_restores_in_a_fresh_window(win, qtbot):
+    """Save in one window, restore in a brand-new one (an app restart): every panel must land in an area.
+    The docks used to be constructed but never added to the manager, so restoreState placed none of them
+    and the window came up empty."""
+    w, _sv = win
+    w.layouts.restore("setup")
+    snap = w.layouts.snapshot()
+    saved = set(w.layouts.open_panel_names())
+    assert saved
+    sv2 = AppServices()
+    register_builtin_panels(sv2.panels)
+    w2 = MainWindow(sv2)
+    qtbot.addWidget(w2)
+    w2.show()
+    assert w2.layouts._apply_variant(snap)
+    for name in saved:
+        d = sv2.host.dock(name)
+        assert d is not None and not d.isClosed() and d.dockAreaWidget() is not None, name
+    sv2.pool.waitForDone(10000)
+    sv2.bridge.close()
