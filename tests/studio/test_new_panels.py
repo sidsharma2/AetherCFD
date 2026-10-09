@@ -148,3 +148,15 @@ def test_analysis_on_a_case_without_results(tmp_path, qtbot, monkeypatch):
         assert p.analyse()
         qtbot.waitUntil(lambda: not p.m_busy, timeout=30000)
     assert "no saved time" in p.m_out.toPlainText() or "No field" in p.m_out.toPlainText()
+
+
+def test_empty_icon_pixmaps_do_not_paint(qtbot):
+    import qtawesome as qta
+    from PySide6.QtCore import QSize
+
+    from aethercfd.studio.theme import style
+
+    style._guard_empty_icon_pixmaps()
+    ic = qta.icon("mdi6.cube-outline")
+    assert ic.pixmap(QSize(0, 0)).isNull()  # used to paint into a null pixmap: ~10 QPainter warnings each
+    assert not ic.pixmap(QSize(16, 16)).isNull()

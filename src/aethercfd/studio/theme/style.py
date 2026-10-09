@@ -118,7 +118,27 @@ def icon(name: str, color: str | None = None) -> QIcon:
         return QIcon()
 
 
+def _guard_empty_icon_pixmaps() -> None:
+    """Qt asks icon engines for 0x0 pixmaps (e.g. tabs of hidden docks); qtawesome then paints into a null
+    pixmap and Qt logs ~10 QPainter warnings each time (thousands per session). Return the empty pixmap."""
+    from PySide6.QtGui import QPixmap
+    from qtawesome.iconic_font import CharIconEngine
+
+    if getattr(CharIconEngine, "_aether_guarded", False):
+        return
+    original = CharIconEngine.pixmap
+
+    def pixmap(self, size, mode, state):
+        if size.isEmpty():
+            return QPixmap()
+        return original(self, size, mode, state)
+
+    CharIconEngine.pixmap = pixmap
+    CharIconEngine._aether_guarded = True
+
+
 def apply(app: QApplication) -> None:
+    _guard_empty_icon_pixmaps()
     app.setStyle("Fusion")
     app.setPalette(palette())
     app.setFont(ui_font())
