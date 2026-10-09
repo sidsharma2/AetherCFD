@@ -48,11 +48,10 @@ class CaseData:
         return list(self._results().meta.regions)
 
     def _internal(self, time, names):
-        from aethercfd.results.foam_reader import iter_leaves
+        from aethercfd.results.foam_reader import iter_leaves, region_of
 
         r = self._results()
-        meshes = [m for m in r.meta.internal_meshes if (m.split("/")[0] == self.region if self.region else
-                                                        m.count("/") == 0 or m == "internalMesh")]
+        meshes = [m for m in r.meta.internal_meshes if region_of(m) == self.region]
         if not meshes and r.meta.regions and not self.region:
             # never append the regions' meshes: fields differ per region and cell ids would mix
             raise ValueError(f"multi-region case (regions: {', '.join(r.meta.regions)}): choose a region")

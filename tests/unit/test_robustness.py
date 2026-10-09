@@ -165,3 +165,20 @@ def test_pinn_result_written_atomically():
     text = src.read_text(encoding="utf-8")
     assert '"result.json").write_text' not in text and "tmp.replace" in text
     json.dumps({})  # (keeps the json import honest for linters)
+
+
+def test_region_names_from_the_vtk_reader():
+    from aethercfd.results.foam_reader import ResultsMeta, region_of
+
+    # VTK 9.7 prefixes region blocks with "/"; older versions do not
+    assert region_of("/fluid/internalMesh") == "fluid"
+    assert region_of("/solid_1_collar/patch/wall") == "solid_1_collar"
+    assert region_of("fluid/internalMesh") == "fluid"
+    assert region_of("fluid/patch/inlet") == "fluid"
+    for default in ("internalMesh", "patch/inlet", "group/wall"):
+        assert region_of(default) == ""
+    m = ResultsMeta(patches=["internalMesh", "patch/inlet", "/fluid/internalMesh", "/solid/internalMesh"],
+                    regions=["fluid", "solid"])
+    # the top-level mesh of a CHT case (often the unsplit original, no fields) must not overlap the regions
+    assert m.internal_meshes == ["/fluid/internalMesh", "/solid/internalMesh"]
+    assert ResultsMeta(patches=["internalMesh", "patch/inlet"]).internal_meshes == ["internalMesh"]

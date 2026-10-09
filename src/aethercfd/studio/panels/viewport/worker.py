@@ -153,7 +153,7 @@ class VtkWorker(QObject):
             patches = req.get("patches")
             show_internal = req.get("show_internal", True)
             if stages and patches is not None:
-                patches = list(dict.fromkeys([*patches, *[p for p in r.meta.patches if p.endswith("internalMesh")]]))
+                patches = list(dict.fromkeys([*patches, *r.meta.internal_meshes]))
             mb = r.read(req.get("time"), fields=sorted(want), patches=patches)
             blocks: dict[str, vtk.vtkPolyData] = {}
             internal, internal_paths = [], []

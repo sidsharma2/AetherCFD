@@ -272,13 +272,18 @@ class ViewportPanel(Panel):
             self.time.setCurrentIndex(self._latest_time_with(self.field.currentText()))
         if self.patches.count() == 0 or self._patch_names() != meta["patches"]:
             self.patches.clear()
+            from aethercfd.results.foam_reader import region_of
+
             big = (self.ctx.services.session.case().n_cells or 0) > 2_000_000 if self.ctx.services.session else False
+            multi = bool(meta.get("regions"))
             for p in meta["patches"]:
                 it = QListWidgetItem(p)
                 it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 internal = p.endswith("internalMesh")
-                it.setCheckState(Qt.CheckState.Checked if (internal and not big) or (not internal and big)
-                                 else Qt.CheckState.Unchecked)
+                on = (internal and not big) or (not internal and big)
+                if multi and not region_of(p):
+                    on = False  # a multi-region case's top-level mesh (often the unsplit original) overlaps the regions
+                it.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
                 self.patches.addItem(it)
         for w in (self.field, self.time, self.patches):
             w.blockSignals(False)
@@ -307,9 +312,15 @@ class ViewportPanel(Panel):
         """Reader names look like 'patch/inlet' or 'fluid/patch/inlet' -> Properties panel."""
         if cur is None or cur.text().endswith("internalMesh"):
             return
-        parts = cur.text().split("/")
-        region = parts[0] if len(parts) >= 3 else ""
-        self.ctx.services.select({"kind": "patch", "name": parts[-1], "region": region})
+        from aethercfd.results.foam_reader import region_of
+
+        self.ctx.services.select({"kind": "patch", "name": cur.text().split("/")[-1], "region": region_of(cur.text())})
+
+    def _internal_meshes(self) -> list[str]:
+        from aethercfd.results.foam_reader import region_of
+
+        meshes = [p for p in self.meta.get("patches", []) if p.endswith("internalMesh")]
+        return [p for p in meshes if region_of(p)] if self.meta.get("regions") else meshes
 
     def _patch_names(self) -> list[str]:
         return [self.patches.item(i).text() for i in range(self.patches.count())]
@@ -361,7 +372,7 @@ class ViewportPanel(Panel):
             normal[ax] = 1.0
             req["slice"] = {"origin": origin, "normal": normal}
             if not any(p.endswith("internalMesh") for p in patches):
-                req["patches"] = [*patches, *[p for p in self.meta["patches"] if p.endswith("internalMesh")]]
+                req["patches"] = [*patches, *self._internal_meshes()]
         self._req_load.emit(self.vid, self.gen, req)
 
     def _on_data(self, vid: str, gen: int, data: dict) -> None:
@@ -557,8 +568,11 @@ class ViewportPanel(Panel):
         super().hideEvent(ev)
         sv = self.ctx.services
         if sv.active_viewport is self and sv.host is not None:
-            others = [p for p in sv.host.panels_of("aether.viewport") if p is not self and p.isVisible()]
-            sv.set_active_viewport(others[0] if others else None)
+            try:
+                others = [p for p in sv.host.panels_of("aether.viewport") if p is not self and p.isVisible()]
+                sv.set_active_viewport(others[0] if others else None)
+            except RuntimeError:  # shutting down: the services' Qt side is already deleted
+                pass
 
     def eventFilter(self, obj, ev) -> bool:  # Qt override: a click/focus makes this the active viewport
         from PySide6.QtCore import QEvent

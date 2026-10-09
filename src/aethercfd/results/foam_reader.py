@@ -33,7 +33,23 @@ class ResultsMeta:
 
     @property
     def internal_meshes(self) -> list[str]:
-        return [p for p in self.patches if p.endswith("internalMesh")]
+        """Internal meshes to show: the regions' of a multi-region case (its top-level mesh, often the
+        unsplit original without fields, would overlap them), else the single one."""
+        meshes = [p for p in self.patches if p.endswith("internalMesh")]
+        if self.regions:
+            meshes = [p for p in meshes if region_of(p)]
+        return meshes
+
+
+def region_of(name: str) -> str:
+    """Region of a reader block name: '/fluid/internalMesh' or 'fluid/patch/inlet' -> 'fluid'; '' for the
+    default region ('internalMesh', 'patch/inlet', 'group/wall'). VTK 9.7 prefixes region names with '/'."""
+    parts = name.strip("/").split("/")
+    if name.startswith("/"):
+        return parts[0] if len(parts) >= 2 else ""
+    if len(parts) >= 3 or (len(parts) == 2 and parts[1] == "internalMesh"):
+        return parts[0]
+    return ""
 
 
 class FoamResults:
@@ -63,7 +79,7 @@ class FoamResults:
         tv = r.GetTimeValues()
         times = [tv.GetValue(i) for i in range(tv.GetNumberOfTuples())] if tv else []
         patches = [r.GetPatchArrayName(i) for i in range(r.GetNumberOfPatchArrays())]
-        regions = sorted({p.split("/")[0] for p in patches if p.count("/") >= 1 and p.endswith("internalMesh")})
+        regions = sorted({region_of(p) for p in patches if p.endswith("internalMesh")} - {""})
         cells = [r.GetCellArrayName(i) for i in range(r.GetNumberOfCellArrays())]
         # the reader lists only the fields of ONE time folder; a field written at other times (a derived field
         # such as TPinn, or one switched on mid-run) would be invisible: add every volume field on disk

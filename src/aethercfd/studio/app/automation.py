@@ -124,9 +124,10 @@ class AppAutomation:
         for f in [left, right] + ([diff] if diff else []):
             if time is not None:
                 t = f"{float(time):g}" if time.replace(".", "", 1).isdigit() else time
-                hits = [root / t / f, root / "processor0" / t / f]
+                hits = [root / t / f, root / "processor0" / t / f,  # + region folders (multi-region / CHT)
+                        *root.glob(f"{t}/*/{f}"), *root.glob(f"processor0/{t}/*/{f}")]
             else:
-                hits = list(root.glob(f"*/{f}")) + list(root.glob(f"processor0/*/{f}"))
+                hits = [*root.glob(f"*/{f}"), *root.glob(f"processor0/*/{f}"), *root.glob(f"*/*/{f}")]
             if not any(h.is_file() for h in hits):
                 missing.append(f)
         if missing:  # say so now (the viewports load asynchronously, after this returns)
@@ -176,10 +177,13 @@ class AppAutomation:
                     state["step"] = "wait-data"
                 return
             if all(v.range is not None and v.scalar for v in views):
+                # one colour range only for the same quantity (T | TPinn, U | UAssim); T | p keep their own
+                same = left == right or right.startswith(left) or left.startswith(right)
                 lo = min(views[0].range[0], views[1].range[0])
                 hi = max(views[0].range[1], views[1].range[1])
-                views[0].set_range(lo, hi)
-                views[1].set_range(lo, hi)
+                if same:
+                    views[0].set_range(lo, hi)
+                    views[1].set_range(lo, hi)
                 if diff:
                     m = max(abs(views[2].range[0]), abs(views[2].range[1])) or 1.0
                     views[2].set_cmap("coolwarm")
@@ -192,8 +196,9 @@ class AppAutomation:
                     vc.SetViewUp(cam.GetViewUp())
                     v.plotter.render()
                 stop()
-                self.sv.notify(f"Comparing {', '.join(fields)}: cameras linked, shared colour range "
-                               f"{lo:.4g}..{hi:.4g}")
+                self.sv.notify(f"Comparing {', '.join(fields)}: cameras linked, "
+                               + (f"shared colour range {lo:.4g}..{hi:.4g}" if same else
+                                  "different quantities, so each keeps its own colour range"))
 
         old = getattr(self.sv, "_compare_timer", None)
         if old is not None:  # a newer compare request replaces one still loading
