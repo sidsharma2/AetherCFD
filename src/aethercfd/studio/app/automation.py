@@ -224,8 +224,7 @@ class AppAutomation:
         if s is not None and Path(s.root).resolve() == p.resolve():
             return f"{p.name} is already the open case"
         QTimer.singleShot(delay_ms, lambda: self.sv.open_case(str(p)))
-        return (f"opening {p} in {delay_ms / 1000:g} s; this copilot conversation then closes (it belongs to the "
-                "current case) and the user can ask again in the new case")
+        return f"opening {p} in {delay_ms / 1000:g} s"
 
     def perspective(self, name: str) -> str:
         pid = PERSPECTIVE_ALIASES.get(name.lower().strip(), name.lower().strip())

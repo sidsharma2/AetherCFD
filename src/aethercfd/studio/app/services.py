@@ -64,6 +64,8 @@ class AppServices(QObject):
 
         self.follower = LogFollower(self, self)
         self.active_viewport = None
+        self.copilot_handoff: dict | None = None  # set when the copilot opens a case: its chat continues there
+        self.copilot_last_request = ""
         self.selection: dict | None = None
 
     def set_active_viewport(self, vp) -> None:

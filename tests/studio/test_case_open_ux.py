@@ -54,7 +54,7 @@ def test_copilot_keeps_the_message_when_claude_cannot_start(sv, qtbot, tmp_path,
     p = CopilotPanel(PanelContext(sv, "#main"))
     qtbot.addWidget(p)
 
-    def boom():
+    def boom(**_kw):
         raise FileNotFoundError("no such folder")
 
     monkeypatch.setattr(p, "_ensure_session", boom)
@@ -80,3 +80,61 @@ def test_start_page_built_after_a_case_is_open(sv, qtbot, tmp_path):
     w = WelcomePanel(PanelContext(sv, "#main"))  # e.g. the layout restores the Start page after opening
     qtbot.addWidget(w)
     assert not w.card.isHidden() and "400" in w.card_info.text()
+
+
+def test_copilot_chat_continues_when_it_opens_a_case(sv, qtbot, tmp_path, monkeypatch):
+    """The copilot opened a case: the chat stays on screen and the request is handed to a new conversation
+    for that case (it used to wipe the chat and leave the user with an empty box)."""
+    import time
+
+    a, b = _decomposed_case(tmp_path / "a"), _decomposed_case(tmp_path / "b")
+    sv.open_case(a, create_project=True)
+    p = CopilotPanel(PanelContext(sv, "#main"))
+    qtbot.addWidget(p)
+    p.items = [{"role": "user", "text": "open case b"}, {"role": "assistant", "text": "Opening b."}]
+    sent = []
+    monkeypatch.setattr(p, "send", lambda text, **kw: sent.append((text, kw)) or True)
+    sv.copilot_handoff = {"path": str(b), "t": time.monotonic(), "request": "open case b and show its regions"}
+    sv.open_case(b, create_project=True)
+    assert [i["text"] for i in p.items[:2]] == ["open case b", "Opening b."]  # kept
+    qtbot.waitUntil(lambda: bool(sent), timeout=3000)
+    text, kw = sent[0]
+    assert "open case b and show its regions" in text and kw.get("fresh") and kw.get("show_as") == "note"
+    # a case opened by the user (no hand-over) starts with a clean chat
+    sv.open_case(a)
+    assert p.items == []
+
+
+def test_copilot_ignores_a_stopped_conversation_and_foreign_session_ids(sv, qtbot, tmp_path):
+    import json
+
+    a, b = _decomposed_case(tmp_path / "a"), _decomposed_case(tmp_path / "b")
+    sv.open_case(a, create_project=True)
+    p = CopilotPanel(PanelContext(sv, "#main"))
+    qtbot.addWidget(p)
+    stale = p._gen
+    p._stop_session()  # e.g. the case changed while the reply was still arriving
+    p._on_event((stale, {"type": "result", "session_id": "old-conversation", "subtype": "success"}))
+    f = p._state_file()
+    assert not f.exists() or json.loads(f.read_text())["session_id"] != "old-conversation"
+    # a copilot.json naming another case is not resumed here
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"session_id": "x", "case": str(b)}))
+    assert p._saved_session_id() is None
+    f.write_text(json.dumps({"session_id": "y", "case": str(a)}))
+    assert p._saved_session_id() == "y"
+
+
+def test_copilot_enter_sends_and_shift_enter_adds_a_line(sv, qtbot, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+
+    sv.open_case(_decomposed_case(tmp_path))
+    p = CopilotPanel(PanelContext(sv, "#main"))
+    qtbot.addWidget(p)
+    sent = []
+    monkeypatch.setattr(p, "send", lambda text, **kw: sent.append(text) or True)
+    p.input.setPlainText("hello")
+    qtbot.keyClick(p.input, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
+    assert not sent and "\n" in p.input.toPlainText()
+    qtbot.keyClick(p.input, Qt.Key.Key_Return)
+    assert sent and sent[0].startswith("hello")

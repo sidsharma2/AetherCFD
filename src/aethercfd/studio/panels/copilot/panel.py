@@ -185,7 +185,14 @@ class _UiHooks(QObject):
         return self._auto("open_panel", name)
 
     def open_case(self, path: str) -> str:
-        return self._auto("open_case", path)
+        out = self._auto("open_case", path)
+        if isinstance(out, str) and out.startswith("opening "):
+            # the copilot panel carries the chat over to the new case and continues the request there
+            self.sv.copilot_handoff = {"path": path.strip().strip('"'), "t": time.monotonic(),
+                                       "request": getattr(self.sv, "copilot_last_request", "")}
+            return (out + "; this conversation then ends and the chat continues by itself in a new conversation for "
+                    "that case with the user's request handed over: do not ask the user to repeat it")
+        return out
 
     def show_diff(self, left: str, right: str, other_case: str, before_last_change: bool) -> str:
         return self._auto("show_diff", left, right, other_case, before_last_change)
@@ -228,9 +235,23 @@ class _UiHooks(QObject):
 
 
 # ============================================================================ panel
+class _ChatInput(QPlainTextEdit):
+    """Enter sends, Shift+Enter starts a new line (Ctrl+Enter also sends), like every chat box."""
+
+    def __init__(self, on_send, **kw):
+        super().__init__(**kw)
+        self._on_send = on_send
+
+    def keyPressEvent(self, e) -> None:  # Qt override
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (e.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            self._on_send()
+            return
+        super().keyPressEvent(e)
+
+
 class CopilotPanel(Panel):
-    _event = Signal(object)
-    _exited = Signal(int)
+    _event = Signal(object)  # (session generation, event)
+    _exited = Signal(object)  # (session generation, exit code)
     _tool_activity = Signal(str, object, object, object)
     _cli_ready = Signal(object, object)
 
@@ -247,6 +268,10 @@ class CopilotPanel(Panel):
         self._tool_items: dict[str, int] = {}
         self._busy = False
         self._t_start = 0.0
+        self._gen = 0  # events of a stopped conversation (e.g. the case changed) are ignored
+        self._conv_state: Path | None = None  # copilot.json of the case the running conversation belongs to
+        self._last_user_text = ""
+        self._conv_case: str | None = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(4)
@@ -294,10 +319,11 @@ class CopilotPanel(Panel):
         quick.addStretch(1)
         lay.addLayout(quick)
         row = QHBoxLayout()
-        self.input = QPlainTextEdit(placeholderText="Ask about this case… (Ctrl+Enter to send)")
+        self.input = _ChatInput(self._send_input,
+                                placeholderText="Ask about this case… (Enter sends, Shift+Enter for a new line)")
         self.input.setMaximumHeight(96)
         self.btn_send = QPushButton(icon("msc.send"), "")
-        self.btn_send.setToolTip("Send (Ctrl+Enter)")
+        self.btn_send.setToolTip("Send (Enter)")
         row.addWidget(self.input, 1)
         row.addWidget(self.btn_send)
         lay.addLayout(row)
@@ -369,21 +395,32 @@ class CopilotPanel(Panel):
         return Path(s.project.meta_dir) / "local" / "copilot.json"
 
     def _saved_session_id(self) -> str | None:
+        """The conversation saved for THIS case (one saved for another case is ignored)."""
         f = self._state_file()
+        s = self.sv.session
         try:
-            return json.loads(f.read_text(encoding="utf-8")).get("session_id") if f and f.exists() else None
+            d = json.loads(f.read_text(encoding="utf-8")) if f and f.exists() else {}
         except (OSError, json.JSONDecodeError):
             return None
+        same = s is not None and d.get("case") and Path(d["case"]).resolve() == Path(s.root).resolve()
+        return d.get("session_id") if same else None
 
-    def _save_session_id(self, sid: str | None) -> None:
-        f = self._state_file()
+    def _save_session_id(self, sid: str | None, state: Path | None = None, case: str | None = None) -> None:
+        """Into the copilot.json of the case the conversation belongs to (``state``), never into a case that was
+        opened while the reply was still arriving."""
+        f = state or self._state_file()
         if f is None:
             return
+        try:
+            prev = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            prev = {}
+        owner = case or prev.get("case") or (str(self.sv.session.root) if self.sv.session else None)
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps({"session_id": sid, "case": str(self.sv.session.root),
-                                 "updated": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=1), encoding="utf-8")
+        f.write_text(json.dumps({"session_id": sid, "case": owner, "updated": time.strftime("%Y-%m-%d %H:%M:%S")},
+                                indent=1), encoding="utf-8")
 
-    def _ensure_session(self) -> bool:
+    def _ensure_session(self, *, fresh: bool = False) -> bool:
         if self.copilot is not None and self.copilot.alive:
             return True
         s = self.sv.session
@@ -413,9 +450,14 @@ class CopilotPanel(Panel):
         if self.bridge is None:
             self.bridge = BridgeServer(lambda: self.toolset).start()
             self.bridge.on_call = lambda n, a, ok, t: self._tool_activity.emit(n, a, ok, t)
-        resume = self._saved_session_id()
-        self.copilot = CopilotSession(self.cli, s.root, self.bridge, on_event=self._event.emit,
-                                      on_exit=self._exited.emit, model=self.model.currentData(), resume=resume,
+        resume = None if fresh else self._saved_session_id()
+        self._gen += 1
+        gen = self._gen
+        self._conv_state = self._state_file()
+        self._conv_case = str(s.root)
+        self.copilot = CopilotSession(self.cli, s.root, self.bridge, on_event=lambda ev: self._event.emit((gen, ev)),
+                                      on_exit=lambda code: self._exited.emit((gen, code)),
+                                      model=self.model.currentData(), resume=resume,
                                       distro=s.settings.wsl.default_distro, wsl_path=s.case().wsl_path)
         self.copilot.start()
         if resume:
@@ -424,22 +466,51 @@ class CopilotPanel(Panel):
 
     def new_conversation(self) -> None:
         self._stop_session()
-        self._save_session_id(None)
+        self._save_session_id(None, case=str(self.sv.session.root) if self.sv.session else None)
+        self.status.setText(self._idle_status())
         self.items.clear()
         self._cur = None
         self._render()
 
     def _stop_session(self) -> None:
+        self._gen += 1  # whatever the stopped conversation still sends is dropped
         if self.copilot is not None:
             self.copilot.stop()
             self.copilot = None
         self._set_busy(False)
 
+    def _idle_status(self) -> str:
+        a, c = self.auth, self.cli
+        if a is not None and a.logged_in and c is not None:
+            return f"Claude Code {getattr(c, 'version', '')} · {a.detail}"
+        return self.status.text()
+
     def _case_changed(self) -> None:
+        handoff = getattr(self.sv, "copilot_handoff", None)
+        self.sv.copilot_handoff = None
+        s = self.sv.session
         self._stop_session()
-        self.items.clear()
         self._cur = None
+        self._tool_items.clear()
+        self.status.setText(self._idle_status())
+        if handoff and s is not None and time.monotonic() - handoff["t"] < 60 \
+                and Path(handoff["path"]).resolve() == Path(s.root).resolve():
+            # the copilot opened this case itself: keep the chat on screen and carry on here (a conversation
+            # belongs to one case, so a fresh one starts for this case with the request handed over)
+            self._add("note", f"Opened {Path(s.root).name}. Continuing in a new conversation for this case.")
+            request, name = handoff.get("request") or "", Path(s.root).name
+            QTimer.singleShot(300, lambda: self._continue_after_open(request, name))
+        else:
+            self.items.clear()
         self._render()
+
+    def _continue_after_open(self, request: str, case_name: str) -> None:
+        msg = (f"(Hand-over from the previous case.) At my request you opened the case {case_name}; it is now the "
+               f"open case and your tools act on it. My request was: '{request}'. Do whatever part of it is not "
+               "done yet. If opening the case was all I asked, reply in two or three sentences with what this case "
+               "is (solver, regions, cells, saved times) and suggest what I could ask next.")
+        self.send(msg, show_as="note", show_text="Handing your request over to the new conversation…",
+                  fresh=True)
 
     # ------------------------------------------------------------------ talking
     def _send_input(self) -> None:
@@ -447,12 +518,12 @@ class CopilotPanel(Panel):
         if text and self.send(text):
             self.input.clear()  # only once Claude has it: a failed start keeps your message in the box
 
-    def send(self, text: str) -> bool:
+    def send(self, text: str, *, show_as: str = "user", show_text: str | None = None, fresh: bool = False) -> bool:
         if self._busy:
             self.sv.notify("Claude is still answering; wait or press Stop", "warn")
             return False
         try:
-            ready = self._ensure_session()
+            ready = self._ensure_session(fresh=fresh)
         except Exception as exc:
             log.exception("copilot session failed to start")
             self.copilot = None
@@ -461,7 +532,10 @@ class CopilotPanel(Panel):
             return False
         if not ready:
             return False
-        self._add("user", text)
+        self._add(show_as, show_text if show_text is not None else text)
+        if show_as == "user":
+            self._last_user_text = text
+            self.sv.copilot_last_request = text  # the hand-over after app_open_case passes it on
         self.copilot.send(text)
         self._set_busy(True)
         return True
@@ -487,7 +561,10 @@ class CopilotPanel(Panel):
         return len(self.items) - 1
 
     @Slot(object)
-    def _on_event(self, ev: dict) -> None:
+    def _on_event(self, item) -> None:
+        gen, ev = item
+        if gen != self._gen:
+            return  # from a conversation that was stopped (new conversation, or the case changed)
         t = ev.get("type")
         if t == "stream_event":
             e = ev.get("event") or {}
@@ -522,7 +599,7 @@ class CopilotPanel(Panel):
         elif t == "result":
             self._set_busy(False)
             if ev.get("session_id"):
-                self._save_session_id(ev["session_id"])
+                self._save_session_id(ev["session_id"], self._conv_state, self._conv_case)
             secs = time.monotonic() - self._t_start
             cost = self.copilot.cost_usd if self.copilot else 0.0
             self.status.setText(f"Claude · {ev.get('num_turns', '?')} turns · {secs:.0f} s · est. ${cost:.2f}")
@@ -534,8 +611,11 @@ class CopilotPanel(Panel):
             if bad:
                 self._add("note", f"AetherCFD tools did not connect ({', '.join(bad)}); see the copilot log.")
 
-    @Slot(int)
-    def _on_exit(self, code: int) -> None:
+    @Slot(object)
+    def _on_exit(self, item) -> None:
+        gen, code = item
+        if gen != self._gen:
+            return
         self._set_busy(False)
         if code not in (0, None):
             self._add("note", f"Claude exited (code {code}). Your next message starts it again.")

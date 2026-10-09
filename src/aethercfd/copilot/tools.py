@@ -770,8 +770,9 @@ BASE_TOOLS: list[Tool] = [
          "PINN TPinn and the difference TPinnErr; or T at two times).", CompareParams, app_compare_fields,
          gui_only=True),
     Tool("app_open_case", "Open another OpenFOAM case in the app when the user asks for one (e.g. a case from the "
-         "Start page list or a path they give). Opening it ends this conversation, so say what you are opening "
-         "before calling this, and call it last.", OpenCaseParams, app_open_case, gui_only=True),
+         "Start page list or a path they give). Call it last in your turn. The chat then continues by itself in a "
+         "new conversation for the opened case, with the user's request handed over, so do NOT tell the user to "
+         "ask again or start a new conversation; just say which case you are opening.", OpenCaseParams, app_open_case, gui_only=True),
     Tool("app_select_file", "Select a case file in the Case Files tree; its details show in Properties.",
          SelectFileParams, app_select_file, gui_only=True),
     Tool("add_view_stage", "Add a visualization stage to the 3D viewport the user is looking at (Q-criterion vortices "
