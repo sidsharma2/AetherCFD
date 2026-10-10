@@ -221,6 +221,28 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
                     until=lambda: all(sv.host.build_panel(f"aether.viewport#cmp{x}").lock.isChecked()
                                       for x in ("AB" + ("C" if args[2] else ""))))
             sw.shot("compare")
+
+            # -------------------------------------------------------- post-processing looks (AI path: AppAutomation)
+            auto = AppAutomation(sv)
+            sv.set_active_viewport(vp)  # the tools act on the viewport the user looks at: make it the main one
+            vp.slice_on.setChecked(False)
+            for lname in ("classic", "studio"):
+                sw.step(f"viewport look {lname}", lambda n=lname: auto.viewport_look(n), timeout=300,
+                        until=lambda: getattr(vp, "drawn_gen", -1) == vp.gen,
+                        detail=lambda: f"{vp.look}; bar '{vp.scalar_bar.GetTitle()}'; {vp.info.text()[-120:]}")
+                sw.shot(f"look_{lname}")
+            sw.step("viewport showcase", auto.showcase, timeout=400,
+                    until=lambda: getattr(vp, "drawn_gen", -1) == vp.gen and not getattr(vp, "_showcase_pending", 0),
+                    detail=lambda: f"slice={vp.slice_on.isChecked()} axis={vp.slice_axis.currentText()}; "
+                                   f"{vp.info.text()[-100:]}")
+            sw.shot("showcase")
+            gif = sw.out / "sweep_turntable.gif"
+            sw.step("turntable animation (GIF)", lambda: vp.record_animation("turntable", str(gif), frames=12, fps=12)
+                    if Path(vp.record_animation("turntable", str(gif), frames=12, fps=12)).is_file() else
+                    _fail("no GIF written"), timeout=120)
+            rv = sw.panel("aether.run_status")
+            sw.step("run panel says what Start will do", lambda: (rv.preset.setCurrentIndex(0), rv._show_preset_hint(),
+                                                                   rv.preset_hint.text() or _fail("no hint"))[2])
             sw.step("compare reports a missing field", lambda: AppAutomation(sv).compare_fields(fld, "noSuchField")
                     if AppAutomation(sv).compare_fields(fld, "noSuchField").startswith("not written") else
                     (_ for _ in ()).throw(AssertionError("missing field not reported")))
@@ -249,7 +271,8 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
 
                 from aethercfd.results.casedata import CaseData
 
-                d = CaseData(root)
+                regs = CaseData(root).regions()
+                d = CaseData(root, regs[0]) if regs else CaseData(root)
                 f0 = "T" if "T" in d.field_names() else "p"
                 t = float(latest)
                 c, v = d.centres(t), d.fields(t, [f0])[f0]
@@ -262,8 +285,19 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
                 return f0
 
             f0 = sw.step("measurements: load CSV", make_csv, timeout=300) or "p"
-            sw.step("measurements: compare", lambda: (ms.compare() or _fail(ms.out.toPlainText())) and ms.out.toPlainText()[:300], timeout=300)
-            sw.step("measurements: assimilate", lambda: (ms.assimilate() or _fail(ms.out.toPlainText()))
+            from aethercfd.results.casedata import CaseData
+
+            multi = bool(CaseData(root).regions())
+
+            def region_limit(text: str) -> str:
+                # multi-region cases: these panels have no region picker yet and must SAY so (known limitation)
+                return text[:200] if "choose a region" in text else _fail(text)
+
+            sw.step("measurements: compare", lambda: (ms.compare() or (region_limit(ms.out.toPlainText()) if multi else
+                                                      _fail(ms.out.toPlainText()))) and ms.out.toPlainText()[:300],
+                    timeout=300)
+            sw.step("measurements: assimilate", lambda: (ms.assimilate() or (region_limit(ms.out.toPlainText()) if multi
+                                                                             else _fail(ms.out.toPlainText())))
                     and ms.out.toPlainText()[:300], timeout=300)
 
             # -------------------------------------------------------- PINN: a tiny training run (nothing written)
@@ -276,9 +310,9 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
                 an.p_ndata.setValue(60)
                 sw.step("analysis: tiny PINN (data only)", an.train_pinn, timeout=600,
                         until=lambda: an.p_go.isEnabled() and an.p_timer.isActive() is False
-                        and ("done on" in an.p_out.toPlainText() or "rror" in an.p_out.toPlainText()),
+                        and any(k in an.p_out.toPlainText() for k in ("done on", "rror", "choose a region")),
                         detail=lambda: an.p_out.toPlainText()[:300])
-                if "done on" not in an.p_out.toPlainText():
+                if "done on" not in an.p_out.toPlainText() and not (multi and "choose a region" in an.p_out.toPlainText()):
                     sw.steps[-1].update(ok=False, error=an.p_out.toPlainText()[:400])
 
             # -------------------------------------------------------- edge cases: bad input must give a message

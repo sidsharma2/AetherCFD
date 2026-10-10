@@ -44,10 +44,15 @@ def input_hashes(case_root: Path, start_time: str | None) -> tuple[dict[str, str
         if not base.is_dir():
             continue
         for p in sorted(base.rglob("*")):
-            if not p.is_file() or p.stat().st_size > _MAX_HASH_BYTES:
+            try:  # WSL symlinks (tutorial scripts link e.g. system/<region>/decomposeParDict) cannot be
+                # stat'ed from Windows: record them as such instead of failing the whole capture
+                if not p.is_file() or p.stat().st_size > _MAX_HASH_BYTES:
+                    continue
+                digest = _sha_file(p)
+            except OSError:
+                files[p.relative_to(case_root).as_posix()] = "unreadable-from-windows (WSL symlink?)"
                 continue
             rel = p.relative_to(case_root).as_posix()
-            digest = _sha_file(p)
             if "/polyMesh/" in f"/{rel}":
                 mesh.update(rel.encode())
                 mesh.update(digest.encode())

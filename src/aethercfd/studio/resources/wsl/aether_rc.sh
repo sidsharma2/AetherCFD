@@ -12,6 +12,10 @@ if [ -n "${AETHER_FOAM_BASHRC:-}" ]; then
     echo "AetherCFD: could not load OpenFOAM from $AETHER_FOAM_BASHRC" >&2
   fi
 fi
+if [ "$(id -u)" = 0 ]; then
+  # the distro runs as root: let tutorial scripts' mpirun (runParallel) start
+  export OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
+fi
 PS1='\[\e[36m\][${AETHER_FORK:-no OpenFOAM}]\[\e[0m\] \[\e[2m\]\w\[\e[0m\]\$ '
 alias ll='ls -la --color=auto'
 alias ls='ls --color=auto'

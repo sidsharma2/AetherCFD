@@ -58,6 +58,47 @@ def copy_tutorial(runner, fork: ForkProfile, t: Template, dest: Path) -> list[st
     return r.stdout.split()
 
 
+def write_interval_for_end(control_text: str) -> tuple[str, str] | None:
+    """When endTime is not a multiple of writeInterval, the last iterations are never written (a beginner sets
+    120 iterations, the tutorial writes every 100: results stop at 100). Returns (new writeInterval, why) so
+    the end time is written, or None when it already is."""
+    import math
+
+    from aethercfd.foamdict.parser import parse
+    from aethercfd.foamdict.semantic import DictView
+
+    v = DictView(parse(control_text))
+
+    def num(key):
+        try:
+            return float(v.get_text(key) or "nan")
+        except ValueError:
+            return float("nan")
+
+    ctrl = (v.get_text("writeControl") or "timeStep").strip()
+    end, wi, dt = num("endTime"), num("writeInterval"), num("deltaT")
+    if not all(math.isfinite(x) and x > 0 for x in (end, wi)):
+        return None
+    if ctrl == "timeStep":
+        steps = round(end / dt) if math.isfinite(dt) and dt > 0 else round(end)
+        every = max(1, round(wi))
+        if steps <= every or steps % every == 0:
+            return None if steps % every == 0 else (str(steps), f"writeInterval {every} -> {steps}: the end "
+                                                                 f"({steps} steps) comes before the first write")
+        new = max(d for d in range(1, every + 1) if steps % d == 0)
+        if new < every / 2:  # e.g. 2003 steps: only 1 divides it -> thousands of time folders; never do that
+            return None, (f"the last {steps % every} of the {steps} steps will not be written (writeInterval "
+                          f"{every}); choose an end that is a multiple of {every} to keep them")
+        return f"{new}", f"writeInterval {every} -> {new} so the last of the {steps} steps is written"
+    if ctrl in ("runTime", "adjustableRunTime"):
+        ratio = end / wi
+        if abs(ratio - round(ratio)) < 1e-9 * max(1.0, ratio):
+            return None
+        new = end / math.ceil(ratio)  # at most 1 more write than before, and the end is a write time
+        return f"{new!r}", f"writeInterval {wi:g} -> {new:.6g} so the end time {end:g} is written"
+    return None
+
+
 def current_values(case: Path, t: Template, family: str) -> dict[str, tuple[str, str, str]]:
     """param id -> (file, key, current value text) as found in the copied case."""
     from aethercfd.core.textio import decode_bytes

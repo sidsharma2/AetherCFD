@@ -104,16 +104,44 @@ class NewCaseWizard(QWizard):
                 changed += 1
             else:
                 failed.append(f"{p.label}: {res.message}")
+        if changed:  # a new end time must still be written, or the last results are silently lost
+            from aethercfd.templates.create import write_interval_for_end
+
+            cd = self.case_dir / "system" / "controlDict"
+            try:
+                fix = write_interval_for_end(cd.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                fix = None
+            if fix is not None and fix[0] is None:
+                sv.notify(f"Note: {fix[1]}", "warn")
+            elif fix is not None:
+                r = s.executor.execute("dict.set", {"file": str(cd), "key": "writeInterval", "value": fix[0]}, USER)
+                if r.ok:
+                    sv.notify(f"Adjusted {fix[1]}")
         msg = f"Created {self.case_dir.name} from '{self.template.title}'" + (f"; {changed} parameter(s) set"
                                                                               if changed else "")
         sv.notify(msg)
         if failed:
             QMessageBox.warning(self, "Some parameters were not set", "\n".join(failed))
-        if self.template.allrun:
-            QMessageBox.information(self, "Next step", f"{self.template.notes or ''}\n\nThis tutorial prepares its "
-                                    "mesh/fields with its Allrun script: open the Terminal panel in the case and run "
-                                    "./Allrun, or start the steps from the Run panel.")
         super().accept()
+        # next step for a beginner: the Run panel, set to do what this case needs (Allrun / mesh + solve)
+        from PySide6.QtCore import QTimer
+
+        def show_run() -> None:
+            from aethercfd.studio.app.automation import AppAutomation
+
+            try:  # the Run Monitor layout: Run (with Start), residuals and the solver log, side by side
+                AppAutomation(sv).perspective("run")
+            except Exception:
+                host = sv.host
+                spec = sv.panels.get("aether.run_status") if host is not None else None
+                if spec is not None:
+                    host.open_panel(spec)
+            sv.notify(f"Next: press Start in the Run panel. It is set to run what {self.case_dir.name} needs"
+                      + (" (the tutorial's ./Allrun prepares the mesh and fields)" if self.template.allrun else
+                         " (mesh, check, solve)"))
+
+        QTimer.singleShot(400, show_run)
 
 
 class _ChoosePage(QWizardPage):

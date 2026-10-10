@@ -135,8 +135,8 @@ class TerminalPanel(Panel):
         self._flush = QTimer(self, interval=16, timeout=self._flush_out)  # ~60 fps batching
         self._flush.start()
         sv = ctx.services
-        sv.backend_ready.connect(lambda s: self._fill_forks())
-        sv.case_changed.connect(lambda s: self.restart())
+        sv.backend_ready.connect(self._on_backend)  # bound slots: disconnected when this terminal is closed
+        sv.case_changed.connect(self._on_case)
         self._fill_forks()
 
     # ------------------------------------------------------------------ forks / launch
@@ -210,6 +210,12 @@ class TerminalPanel(Panel):
 
     def _on_pty_data(self, s: str) -> None:
         self._buf.append(s)
+
+    def _on_backend(self, _s=None) -> None:
+        self._fill_forks()
+
+    def _on_case(self, _s=None) -> None:
+        self.restart()
 
     def restart(self) -> None:
         self._stop_shell()

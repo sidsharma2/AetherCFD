@@ -203,6 +203,18 @@ class _UiHooks(QObject):
     def compare_fields(self, left: str, right: str, diff: str, time: str | None, slice_axis: str | None) -> str:
         return self._auto("compare_fields", left, right, diff, time, slice_axis)
 
+    def viewport_look(self, look: str) -> str:
+        return self._auto("viewport_look", look)
+
+    def showcase(self) -> str:
+        return self._auto("showcase")
+
+    def animation(self, kind: str, frames: int, fps: int, fmt: str) -> str:
+        return self._auto("animation", kind, frames, fps, fmt)
+
+    def open_paraview(self) -> str:
+        return self._auto("open_paraview")
+
     def perspective(self, name: str) -> str:
         return self._auto("perspective", name)
 

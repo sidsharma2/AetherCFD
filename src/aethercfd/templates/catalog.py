@@ -52,7 +52,7 @@ TEMPLATES: list[Template] = [
     Template("pitzDaily", "Backward-facing step (2D, steady RANS)",
              "Incompressible turbulent separated flow over a step; k-epsilon; blockMesh. The classic first case.",
              frozenset({"incompressible", "steady", "turbulent", "internal", "2d", "separation"}),
-             {"esi": "incompressible/simpleFoam/pitzDaily", "foundation": "incompressibleFluid/pitzDaily"},
+             {"esi": "incompressible/simpleFoam/pitzDaily", "foundation": "incompressibleFluid/pitzDailySteady"},
              (_p("Uin", "Inlet velocity", "m/s", "vector_x", ("0/U", "boundaryField/inlet/value"),
                  ("0/U", "boundaryField/inlet/value")),
               _p("nu", "Kinematic viscosity", "m²/s", "scalar", ("constant/transportProperties", "nu"),

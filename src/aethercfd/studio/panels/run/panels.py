@@ -119,9 +119,11 @@ class RunPanel(Panel):
         lay.setContentsMargins(8, 8, 8, 8)
         # --- start form
         form = QFormLayout()
-        self.preset = QComboBox()
-        for label, key in (("Solve", "solve"), ("Check mesh", "check"), ("Mesh + check + solve", "mesh-check-solve"),
-                           ("Mesh + check", "mesh")):
+        from aethercfd.commands.builtin.run_cmds import PRESETS
+
+        self.preset = QComboBox(toolTip="Automatic picks what this case needs: the tutorial's ./Allrun, mesh + "
+                                        "check + solve when there is no mesh yet, else solve")
+        for key, label in PRESETS.items():
             self.preset.addItem(label, key)
         self.nprocs = QSpinBox(minimum=1, maximum=64, value=1)
         self.placement = QComboBox()
@@ -130,6 +132,11 @@ class RunPanel(Panel):
         self.signals = QCheckBox("Enable write-now / stop-and-write controls")
         self.signals.setChecked(True)
         form.addRow("Run", self.preset)
+        self.preset_hint = QLabel()
+        self.preset_hint.setWordWrap(True)
+        self.preset_hint.setStyleSheet(f"color: {T.text_faint};")
+        form.addRow("", self.preset_hint)
+        self.preset.currentIndexChanged.connect(lambda *_: self._show_preset_hint())
         form.addRow("MPI processes", self.nprocs)
         form.addRow("Placement", self.placement)
         form.addRow("", self.signals)
@@ -190,8 +197,9 @@ class RunPanel(Panel):
         self._last_step = None
         sv.bridge.event.connect(self._on_event)
         sv.follower.steps.connect(self._on_steps)
-        sv.case_changed.connect(lambda s: self._refresh())
-        sv.backend_ready.connect(lambda s: self._refresh())
+        sv.case_changed.connect(self._on_session)  # bound slots: disconnected when the panel closes
+        sv.backend_ready.connect(self._on_session)
+        sv.files_changed.connect(self._on_files)
         self._timer = QTimer(self, interval=2000, timeout=self._tick)
         self._timer.start()
         self._refresh()
@@ -208,6 +216,28 @@ class RunPanel(Panel):
         self._read_end_time()
         self._fill_history()
         self._update_buttons()
+        self._show_preset_hint()
+
+    def _on_session(self, _s=None) -> None:
+        self._refresh()
+
+    def _on_files(self, _paths) -> None:
+        # a run (or the user) meshed the case: what Start will do next may have changed
+        if self.preset.currentData() == "auto":
+            self._show_preset_hint()
+
+    def _show_preset_hint(self) -> None:
+        s = self._session()
+        if s is None or self.preset.currentData() != "auto":
+            self.preset_hint.setText("")
+            return
+        try:
+            from aethercfd.commands.builtin.run_cmds import PRESETS, suggest_preset
+
+            key, why = suggest_preset(s.case())
+            self.preset_hint.setText(f"Start will run: {PRESETS[key]} ({why})")
+        except Exception as exc:  # an unreadable case: Start's plan explains it
+            self.preset_hint.setText(f"(cannot read the case: {exc})")
 
     def _read_end_time(self) -> None:
         s = self._session()
@@ -337,8 +367,10 @@ class RunPanel(Panel):
             frac = max(0.0, min(1.0, st.time / self.end_time))
             self.progress.setValue(int(frac * 1000))
             self.progress.setFormat(f"{frac:.1%} of endTime {self.end_time:g}")
-            if st.clock_time and frac > 0.002:
-                remaining = st.clock_time * (1 - frac) / frac
+            if frac >= 0.9995:
+                self.vals["eta"].setText("done")
+            elif st.clock_time and frac > 0.002:
+                remaining = max(0.0, st.clock_time * (1 - frac) / frac)
                 self.vals["eta"].setText(f"~{remaining / 60:.0f} min" if remaining > 90 else f"~{remaining:.0f} s")
 
     def _tick(self) -> None:

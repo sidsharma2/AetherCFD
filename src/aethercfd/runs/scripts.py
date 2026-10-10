@@ -54,6 +54,10 @@ def runner_sh(spec: RunSpec) -> str:
             "AETHER_EOF",
             'export WM_PROJECT_SITE="$LRUN/site"',
         ]
+    if spec.fork.mpi_run_as_root:
+        # the distro runs as root: tutorial scripts (Allrun's runParallel) call mpirun without
+        # --allow-run-as-root; Open MPI also accepts the permission through these two variables
+        lines += ["export OMPI_ALLOW_RUN_AS_ROOT=1", "export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1"]
     for k, v in spec.env.items():
         lines.append(f"export {k}={q(v)}")
     lines += [
@@ -81,6 +85,11 @@ def runner_sh(spec: RunSpec) -> str:
         "}",
     ]
     for i, s in enumerate(spec.steps):
+        if s.kind is StepKind.SCRIPT:
+            # tutorial scripts skip any step whose log.<app> already exists ("already run"): keep the earlier
+            # logs (never deleted) in the run folder so the script really runs every step
+            lines.append(f'mkdir -p "$RUN_DIR/earlier_logs"; for f in log.*; do [ -f "$f" ] && '
+                         f'[ "$f" != {q(s.log)} ] && mv -n "$f" "$RUN_DIR/earlier_logs/"; done')
         argv = " ".join(q(a) for a in _step_cmd(spec, s))
         lines.append(f'step {i} {s.kind.value} {q(s.log)} {argv} || {{ rc=$?; echo $rc > "$RUN_DIR/exit_code"; '
                      f"exit $rc; }}")

@@ -78,11 +78,88 @@ def _add_component(poly: vtk.vtkPolyData, field: str, comp: str) -> str | None:
     return name
 
 
+def _smooth(poly: vtk.vtkPolyData, name: str) -> vtk.vtkPolyData:
+    """Studio look: the shown cell array also as point data (averaged from the neighbouring cells) plus
+    point normals, for smooth gradients and lighting. Cell data stay on the polydata: probing and the
+    Classic look still use the true cell values."""
+    keep = vtk.vtkPassSelectedArrays()
+    keep.SetInputData(poly)
+    keep.GetCellDataArraySelection().EnableArray(name)
+    keep.GetPointDataArraySelection().DisableAllArrays()
+    c2p = vtk.vtkCellDataToPointData()
+    c2p.SetInputConnection(keep.GetOutputPort())
+    c2p.PassCellDataOff()
+    c2p.Update()
+    out = vtk.vtkPolyData()
+    out.ShallowCopy(poly)
+    pa = c2p.GetOutput().GetPointData().GetArray(name)
+    if pa is not None:
+        out.GetPointData().AddArray(pa)
+    if out.GetNumberOfPolys():
+        n = vtk.vtkPolyDataNormals()
+        n.SetInputData(out)
+        n.SplittingOff()  # keep the point arrays aligned with the points
+        n.ComputeCellNormalsOff()
+        n.ConsistencyOn()
+        n.Update()
+        nn = n.GetOutput().GetPointData().GetNormals()
+        if nn is not None and nn.GetNumberOfTuples() == out.GetNumberOfPoints():
+            out.GetPointData().SetNormals(nn)
+    return out
+
+
+def _outline(polys: list[vtk.vtkPolyData], angle: float = 40.0) -> vtk.vtkPolyData | None:
+    """Sharp and boundary edges of the shown surfaces: the crisp silhouette of the Studio look."""
+    app = vtk.vtkAppendPolyData()
+    n = 0
+    for p in polys:
+        if p is None or not p.GetNumberOfPolys():
+            continue
+        # a clean outline grows like the perimeter (~sqrt of the faces); far more lines than that is
+        # mesh texture (fine curved walls, AMI seams) and reads as noise: then sharp edges only, or none
+        budget = 14 * p.GetNumberOfPolys() ** 0.5 + 400
+        best = None
+        for boundary, ang in ((True, angle), (False, 60.0)):
+            fe = vtk.vtkFeatureEdges()
+            fe.SetInputData(p)
+            fe.SetBoundaryEdges(boundary)
+            fe.FeatureEdgesOn()
+            fe.SetFeatureAngle(ang)
+            fe.NonManifoldEdgesOff()
+            fe.ManifoldEdgesOff()
+            fe.ColoringOff()
+            fe.Update()
+            if fe.GetOutput().GetNumberOfLines() <= budget:
+                best = fe.GetOutput()
+                break
+        if best is None or not best.GetNumberOfLines():
+            continue
+        app.AddInputData(best)
+        n += 1
+    if not n:
+        return None
+    app.Update()
+    out = vtk.vtkPolyData()
+    out.ShallowCopy(app.GetOutput())
+    return out
+
+
 class VtkWorker(QObject):
     meta_ready = Signal(str, int, object)  # viewport id, generation, dict
     data_ready = Signal(str, int, object)  # viewport id, generation, dict
     probe_ready = Signal(str, int, object)  # viewport id, generation, dict (all fields at one cell)
     failed = Signal(str, int, str)
+
+    def _cached(self, key):
+        """Geometry that does not change between time steps (glass shell, outline), per worker."""
+        return self.__dict__.setdefault("_geo_cache", {}).get(key)
+
+    def _remember(self, key, value):
+        cache = self.__dict__.setdefault("_geo_cache", {})
+        cache[key] = value
+        while len(cache) > 12:  # a few cases / slices; oldest first out
+            cache.pop(next(iter(cache)))
+        return value
 
     @Slot(str, int, dict)
     def probe(self, vid: str, gen: int, req: dict) -> None:
@@ -169,6 +246,12 @@ class VtkWorker(QObject):
             if sl and internal:
                 for i, ds in enumerate(internal):
                     blocks[f"slice{i}"] = _slice(ds, sl["origin"], sl["normal"])
+                    if req.get("shell"):  # Studio: the domain as a faint glass shell around the slice
+                        key = (req["case"], i, ds.GetNumberOfPoints(), ds.GetNumberOfCells())
+                        shell = self._cached(("shell", key))
+                        if shell is None:
+                            shell = self._remember(("shell", key), _geometry(ds))
+                        blocks[f"shell:{i}"] = shell
             stage_info: dict[str, dict] = {}
             if stages and internal:
                 case = Path(req["case"])
@@ -183,6 +266,24 @@ class VtkWorker(QObject):
                                        "cmap": out.cmap, "interpolated": out.interpolated, "label": out.label,
                                        "notes": out.notes, "cells": out.poly.GetNumberOfCells(),
                                        "opacity": float(s.get("opacity", 1.0))}
+            scalar = None
+            n_comp = 0
+            lo, hi = np.inf, -np.inf
+            for bname, poly in blocks.items():
+                if bname in stage_info or bname.startswith("shell:"):
+                    continue  # stages carry their own colouring; the glass shell has none
+                raw = poly.GetCellData().GetArray(field) if field else None
+                if raw is not None:
+                    n_comp = raw.GetNumberOfComponents()
+                name = _add_component(poly, field, req.get("component", "magnitude")) if field else None
+                if name:
+                    scalar = name
+                    a = poly.GetCellData().GetArray(name)
+                    if a is not None and a.GetNumberOfTuples():
+                        rlo, rhi = a.GetRange()
+                        lo, hi = min(lo, rlo), max(hi, rhi)
+                        if req.get("look") == "studio":
+                            blocks[bname] = _smooth(poly, name)
             view = req.get("view") or {}
             if view.get("mirror"):
                 ax = view["mirror"]
@@ -199,34 +300,34 @@ class VtkWorker(QObject):
                         blocks[f"{name}~rev{k}"] = poly
                         if name in stage_info:
                             stage_info[f"{name}~rev{k}"] = stage_info[name]
-            scalar = None
-            n_comp = 0
-            lo, hi = np.inf, -np.inf
-            for bname, poly in blocks.items():
-                if bname in stage_info:
-                    continue  # stages carry their own colouring
-                raw = poly.GetCellData().GetArray(field) if field else None
-                if raw is not None:
-                    n_comp = raw.GetNumberOfComponents()
-                name = _add_component(poly, field, req.get("component", "magnitude")) if field else None
-                if name:
-                    scalar = name
-                    a = poly.GetCellData().GetArray(name)
-                    if a is not None and a.GetNumberOfTuples():
-                        rlo, rhi = a.GetRange()
-                        lo, hi = min(lo, rlo), max(hi, rhi)
+            overlays = {}
+            if req.get("look") == "studio":
+                base = [(k, p) for k, p in blocks.items() if k not in stage_info and "~rev" not in k]
+                key = ("edges", req["case"], tuple((k, p.GetNumberOfPoints(), p.GetNumberOfPolys()) for k, p in base),
+                       repr(req.get("slice")))
+                edges = self._cached(key)
+                if edges is None:
+                    edges = self._remember(key, _outline([p for _k, p in base]))
+                if edges is not None:
+                    overlays["edges"] = edges
             bounds = [np.inf, -np.inf] * 3
             n_cells = 0
-            for ds in internal:
+            # the domain's extent: the internal meshes, else (patches only, e.g. a big case) the shown surfaces
+            extent = internal or [p for k, p in blocks.items() if k not in stage_info and "~" not in k]
+            for ds in extent:
+                if ds.GetNumberOfPoints() == 0:
+                    continue
                 b = ds.GetBounds()
                 for k in range(3):
                     bounds[2 * k] = min(bounds[2 * k], b[2 * k])
                     bounds[2 * k + 1] = max(bounds[2 * k + 1], b[2 * k + 1])
+            for ds in internal:
                 n_cells += ds.GetNumberOfCells()
             self.data_ready.emit(vid, gen, {
                 "blocks": blocks, "scalar": scalar, "range": (lo, hi) if lo <= hi else None,
-                "time": req.get("time"), "bounds": bounds if n_cells else None, "n_cells": n_cells,
-                "components": n_comp, "stage_info": stage_info,
+                "time": req.get("time"), "bounds": bounds if bounds[0] <= bounds[1] else None, "n_cells": n_cells,
+                "components": n_comp, "stage_info": stage_info, "overlays": overlays,
+                "smoothed": req.get("look") == "studio" and scalar is not None,
                 "seconds": time.perf_counter() - t0})
         except Exception as exc:
             log.exception("viewport load failed")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -46,10 +47,46 @@ class StartParams(BaseModel):
     heavy_io: bool = False
 
 
+PRESETS = {"auto": "Automatic (what this case needs)", "solve": "Solve", "check": "Check mesh",
+           "mesh-check-solve": "Mesh + check + solve", "mesh": "Mesh + check",
+           "allrun": "Tutorial script (./Allrun)"}
+
+
+def _has_mesh(case) -> bool:
+    regs = getattr(case, "regions", None) or []
+    if any((r.mesh_dir / "owner").exists() or (r.mesh_dir / "owner.gz").exists() for r in regs):
+        return True
+    root = Path(case.root)
+    return (root / "constant" / "polyMesh" / "owner").exists() or any(
+        root.glob("processor*/constant/polyMesh/owner*")) or any(  # processorN/ and collated processorsN/
+        root.glob("processor*/constant/*/polyMesh/owner*"))
+
+
+def suggest_preset(case) -> tuple[str, str]:
+    """(preset, why) for a beginner pressing Start: a tutorial that prepares itself with Allrun gets its
+    script, a case without a mesh gets mesh + check + solve, a meshed case is solved."""
+    root = Path(case.root)
+    meshed = _has_mesh(case)
+    if (root / "Allrun").is_file() and not meshed:
+        return "allrun", "no mesh yet and the case has an Allrun script (the tutorial's own preparation steps)"
+    if not meshed:
+        if (root / "system" / "blockMeshDict").is_file():
+            return "mesh-check-solve", "no mesh yet: blockMesh, checkMesh, then the solver"
+        return "allrun" if (root / "Allrun").is_file() else "mesh-check-solve", "no mesh yet"
+    return "solve", "the mesh exists"
+
+
 def _steps(case, p: StartParams) -> list[RunStep]:
     if p.steps:
         return [RunStep(s.app, tuple(s.args), s.kind, s.parallel) for s in p.steps]
     preset = p.preset or "solve"
+    if preset == "auto":
+        preset = suggest_preset(case)[0]
+    if preset == "allrun":
+        if not (Path(case.root) / "Allrun").is_file():
+            raise CommandError("this case has no Allrun script")
+        # bash runs it even when the copy lost its executable bit (Windows drives)
+        return [RunStep("bash", ("./Allrun",), StepKind.SCRIPT, log_name="log.Allrun")]
     flags = {"solve": (False, False, True), "check": (False, True, False),
              "mesh-check-solve": (True, True, True), "mesh": (True, True, False)}.get(preset)
     if flags is None:
@@ -77,6 +114,13 @@ class RunStart(Command):
             plan.preconditions.append(CheckResult(False, f"no installed OpenFOAM fork matches "
                                                          f"{fork_id or case.fork_guess.family}"))
             return plan
+        if params.preset == "auto" and not params.steps:
+            # decide NOW and bind it into the approved plan (its hash): what runs is what was approved,
+            # even if the case changes between planning and approval
+            chosen, why_auto = suggest_preset(case)
+            params = params.model_copy(update={"preset": chosen})
+            plan.params["preset"] = chosen
+            plan.consequences.append(f"chosen automatically: {PRESETS[chosen]} ({why_auto})")
         try:
             steps = _steps(case, params)
         except CommandError as exc:
@@ -86,8 +130,22 @@ class RunStart(Command):
         if active:
             plan.preconditions.append(CheckResult(False, f"run {active[0].id} is still {active[0].state} on this case"))
         place, why = resolve_placement(case, params.placement, heavy_io=params.heavy_io)
+        if any(s.kind is StepKind.SCRIPT for s in steps):
+            # a tutorial script builds the mesh, 0/ and processor folders itself: it needs the whole case, so
+            # it runs in place (a stage copy would miss 0.orig/ and geometry, and not bring the mesh back)
+            if not case.path_safety.safe:
+                plan.preconditions.append(CheckResult(False, "the tutorial script must run in the case folder, "
+                                                             "but OpenFOAM cannot use this path ("
+                                                             + ", ".join(case.path_safety.problems)
+                                                             + "): copy the case to a folder without spaces"))
+            place, why = Placement.IN_PLACE, "a tutorial script runs in the case folder itself"
+            plan.params["placement"] = Placement.IN_PLACE.value
         plan.summary = f"run {' → '.join(s.app for s in steps)} on {case.name} ({fork.label})"
-        results = [t for _, t in case.times if t != "0"]
+        results = sorted({t for _, t in (case.times + case.processor_times) if t != "0"}, key=float)
+        if results and any(s.kind is StepKind.SCRIPT for s in steps):
+            plan.risk = Risk.DESTRUCTIVE
+            plan.consequences.append(f"the tutorial script usually re-meshes and resets fields; the {len(results)} "
+                                     "existing result time folder(s) may be replaced")
         if results and any(s.app in _MESHERS for s in steps):
             plan.risk = Risk.DESTRUCTIVE
             plan.consequences.append(f"re-meshing replaces constant/polyMesh; the {len(results)} existing result "

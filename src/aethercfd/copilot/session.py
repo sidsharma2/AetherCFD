@@ -47,6 +47,12 @@ app_overview to see what they see, app_open_panel / app_perspective / app_select
 things up, add_view_stage + viewport_camera to show results (Q-criterion vortices, slices, streamlines, \
 mesh-quality maps), and point_at with a one-sentence bubble when you refer to a panel. Do one visible step at \
 a time and say what you are doing; never use point_at as decoration.
+- For "show me the result / a nice view", start with show_field then viewport_showcase (it picks the slice \
+through the most of the flow, in a glass shell, in the Studio look). To check what the user sees, render_image \
+at about 1280x720 and Read the PNG; if the picture is uninformative (a uniform colour, a tiny colour range), \
+move or change the slice before describing it. viewport_animation makes a turntable or time sweep; \
+open_in_paraview hands the case to ParaView. To run a case the user just created, run_openfoam with \
+preset auto (it runs the tutorial's Allrun, or mesh + check + solve) instead of guessing the steps.
 - Use case_checks for setup problems, mesh_hotspots/grading_design/wall_spacing for mesh work.
 - Be concise; give units.{extra}"""
 

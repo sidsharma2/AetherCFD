@@ -98,7 +98,12 @@ class StepParam(BaseModel):
 
 
 class RunParams(Justified):
-    steps: list[StepParam] = Field(description="Applications to run in order in the case folder")
+    steps: list[StepParam] = Field(default_factory=list, description="Applications to run in order in the case "
+                                   "folder (leave empty to use preset)")
+    preset: str | None = Field(None, description="Instead of steps: auto (what the case needs: the tutorial's "
+                                                 "./Allrun, or blockMesh + checkMesh + solver when there is no mesh "
+                                                 "yet, else the solver) | solve | mesh-check-solve | mesh | check | "
+                                                 "allrun")
     nprocs: int = Field(1, ge=1, le=64, description="MPI processes for parallel solver steps")
     wait: bool = Field(True, description="Wait for the run to end (up to timeout_min) and return the outcome")
     timeout_min: float = Field(60.0, gt=0, le=24 * 60)
@@ -503,14 +508,18 @@ def write_file(ctx: ToolContext, p: WriteFileParams) -> dict:
 
 
 def run_openfoam(ctx: ToolContext, p: RunParams) -> dict:
-    params = {"case": str(ctx.root), "steps": [{"app": s.app, "args": s.args} for s in p.steps], "nprocs": p.nprocs}
-    if any(s.app in ("rhoSimpleFoam", "simpleFoam", "pimpleFoam", "rhoPimpleFoam", "foamRun", "buoyantSimpleFoam",
-                     "chtMultiRegionFoam", "chtMultiRegionSimpleFoam", "interFoam", "reactingFoam",
-                     "rhoCentralFoam", "sonicFoam", "buoyantPimpleFoam") for s in p.steps):
-        params["steps"] = [{"app": s.app, "args": s.args,
-                            "kind": "solver" if s.app.endswith("Foam") or s.app == "foamRun" else "utility",
-                            "parallel": p.nprocs > 1 and (s.app.endswith("Foam") or s.app == "foamRun")}
-                           for s in p.steps]
+    if not p.steps and not p.preset:
+        raise ToolError("give steps, or preset (e.g. auto)")
+
+    def solver(app: str) -> bool:  # every OpenFOAM solver is <name>Foam (or foamRun / foamMultiRun)
+        return app.endswith("Foam") or app in ("foamRun", "foamMultiRun")
+
+    params = {"case": str(ctx.root), "nprocs": p.nprocs}
+    if p.steps:
+        params["steps"] = [{"app": s.app, "args": s.args, "kind": "solver" if solver(s.app) else "utility",
+                            "parallel": p.nprocs > 1 and solver(s.app)} for s in p.steps]
+    else:
+        params["preset"] = p.preset
     out = ctx.execute("run.start", params, p)
     run_id = out.get("data")
     if not out["ok"] or not run_id or not p.wait:
@@ -705,6 +714,34 @@ def app_render(ctx: ToolContext, p: RenderParams) -> dict:
     return {"image": _ui(ctx).render(p.width, p.height, p.background, p.base, p.frame, p.filename)}
 
 
+class LookParams(BaseModel):
+    look: str = Field("studio", description="studio (AetherCFD's look: smooth shading, outlines, units, depth) | "
+                                            "classic (ParaView-style true cell colours)")
+
+
+class AnimationParams(BaseModel):
+    kind: str = Field("turntable", description="turntable (one camera orbit) | time (every saved time)")
+    frames: int = Field(72, ge=12, le=360, description="turntable frames")
+    fps: int = Field(24, ge=2, le=60)
+    format: str = Field("gif", description="gif | webp")
+
+
+def app_look(ctx: ToolContext, p: LookParams) -> dict:
+    return {"result": _ui(ctx).viewport_look(p.look)}
+
+
+def app_showcase(ctx: ToolContext, p: BaseModel) -> dict:
+    return {"result": _ui(ctx).showcase()}
+
+
+def app_animation(ctx: ToolContext, p: AnimationParams) -> dict:
+    return {"result": _ui(ctx).animation(p.kind, p.frames, p.fps, p.format)}
+
+
+def app_paraview(ctx: ToolContext, p: BaseModel) -> dict:
+    return {"result": _ui(ctx).open_paraview()}
+
+
 def app_highlight(ctx: ToolContext, p: HighlightParams) -> dict:
     return {"result": _ui(ctx).highlight(p.target, p.message, p.seconds)}
 
@@ -783,7 +820,19 @@ BASE_TOOLS: list[Tool] = [
     Tool("viewport_camera", "Move the 3D camera: iso, x, y, z, fit, or frame a stage.", CameraParams, app_camera,
          gui_only=True),
     Tool("render_image", "Render the current 3D view offscreen at up to 8K with anti-aliasing into the case's "
-         ".aethercfd/local/renders folder; returns the image path.", RenderParams, app_render, gui_only=True),
+         ".aethercfd/local/renders folder; returns the image path. To SEE what the user sees, render at e.g. "
+         "1280x720 and open the returned PNG with the Read tool.", RenderParams, app_render, gui_only=True),
+    Tool("viewport_look", "Switch the 3D viewport's look: studio (AetherCFD post-processing: smooth shading, "
+         "outline edges, units on the colour bar, depth) or classic (ParaView-style, true cell colours).",
+         LookParams, app_look, gui_only=True),
+    Tool("viewport_showcase", "One-click best first view of the shown field: Studio look; for 3D cases a mid-plane "
+         "slice in a glass shell of the domain with an isometric camera. Use it when the user wants to 'see the "
+         "result' or a nice picture.", NoParams, app_showcase, gui_only=True),
+    Tool("viewport_animation", "Record a turntable (camera orbit) or time sweep (every saved time) of the 3D view "
+         "as an animated GIF/WebP in .aethercfd/local/animations; returns the file (a time sweep finishes later).",
+         AnimationParams, app_animation, gui_only=True),
+    Tool("open_in_paraview", "Open the case in ParaView (the expert/backup post-processor) on the viewport's field "
+         "and time.", NoParams, app_paraview, gui_only=True),
     Tool("point_at", "Point at a panel with a glowing outline and a short bubble message, so the user sees what you "
          "are talking about. Use it when explaining the app or a result.", HighlightParams, app_highlight,
          gui_only=True),

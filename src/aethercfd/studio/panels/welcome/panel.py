@@ -102,11 +102,22 @@ class WelcomePanel(Panel):
         self.env.setText("OpenFOAM backend: not started yet (it starts when you open a case).")
         # last: _on_case uses the Recent list built above (a case may already be open)
         sv.case_changed.connect(self._on_case)
+        # a run writes the mesh and new time folders: keep the card's cells / results current
+        from PySide6.QtCore import QTimer
+
+        self._card_timer = QTimer(self, singleShot=True, interval=1500,
+                                  timeout=lambda: self._on_case(sv.session, recent=False))
+        sv.files_changed.connect(self._on_files)  # a bound slot: disconnected when this page is closed
         if sv.session is not None:
             self._on_case(sv.session)
 
-    def _on_case(self, session) -> None:
-        self._refresh_recent()
+    def _on_files(self, _paths) -> None:
+        if self.ctx.services.session is not None:
+            self._card_timer.start()
+
+    def _on_case(self, session, recent: bool = True) -> None:
+        if recent:
+            self._refresh_recent()
         if session is None:
             self.card.hide()
             return

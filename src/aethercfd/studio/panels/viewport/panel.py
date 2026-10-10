@@ -7,6 +7,7 @@ filtering happen on the shared VtkWorker thread.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 
@@ -30,13 +31,41 @@ from PySide6.QtWidgets import (
 )
 
 from aethercfd.results.foam_reader import display_name
+from aethercfd.studio.panels.viewport import look as lk
 from aethercfd.studio.panels.viewport.worker import shared_worker
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
 
 log = logging.getLogger(__name__)
-CMAPS = ["viridis", "turbo", "inferno", "plasma", "coolwarm", "RdBu_r", "jet", "gray"]
+PARAVIEW_SCRIPT = """# AetherCFD: open the case in ParaView (generated; safe to edit or delete)
+from paraview.simple import *
+r = OpenFOAMReader(registrationName={name!r}, FileName={control!r})
+r.CaseType = 'Decomposed Case' if {decomposed} else 'Reconstructed Case'
+r.UpdatePipelineInformation()
+avail = list(r.GetProperty('MeshRegions').Available) if hasattr(r.GetProperty('MeshRegions'), 'Available') else []
+inner = [m for m in avail if m.endswith('internalMesh')]
+regions = [m for m in inner if m.strip('/').count('/') >= 1]
+if inner:
+    r.MeshRegions = regions or inner
+r.UpdatePipelineInformation()
+scene = GetAnimationScene()
+scene.UpdateAnimationUsingDataTimeSteps()
+if {time} is not None:
+    scene.AnimationTime = {time}
+view = GetActiveViewOrCreate('RenderView')
+d = Show(r, view)
+if {field!r}:
+    try:
+        ColorBy(d, ('CELLS', {field!r}))
+        d.RescaleTransferFunctionToDataRange(True, False)
+        d.SetScalarBarVisibility(view, True)
+    except Exception as exc:
+        print('could not colour by', {field!r}, exc)
+view.ResetCamera()
+Render()
+"""
+CMAPS = ["viridis", "turbo", "inferno", "magma", "plasma", "cividis", "coolwarm", "RdBu_r", "jet", "gray"]
 _DIVERGING = {"coolwarm", "RdBu_r"}
 
 
@@ -107,11 +136,14 @@ class ViewportPanel(Panel):
         self.follow = QCheckBox("Follow", toolTip="Jump to new time steps as a run writes them")
         self.rep = QComboBox(toolTip="Representation")
         self.rep.addItems(["Surface", "Surface + edges", "Wireframe"])
-        self.cmap = QComboBox(toolTip="Colour map")
+        self.look_box = QComboBox(toolTip="Look: Studio = AetherCFD's post-processing (smooth shading, outlines, "
+                                          "depth); Classic = ParaView-style true cell colours")
+        self.look_box.addItems(["Studio", "Classic"])
+        self.cmap = QComboBox(toolTip="Colour map (Studio picks one per field until you choose)")
         self.cmap.addItems(CMAPS)
         self.lock = QCheckBox("Lock range", toolTip="Keep the colour range when the time changes")
         for w in (QLabel("Field"), self.field, self.comp, QLabel("  t"), self.prev_t, self.time, self.next_t,
-                  self.last_t, self.follow, QLabel("  "), self.rep, self.cmap, self.lock):
+                  self.last_t, self.follow, QLabel("  "), self.look_box, self.rep, self.cmap, self.lock):
             bar.addWidget(w)
         bar.addStretch(1)
         self.btn_fit = _tool("msc.screen-full", "Fit view")
@@ -123,8 +155,12 @@ class ViewportPanel(Panel):
         self.btn_shot = _tool("msc.device-camera", "Screenshot (PNG, 2x)")
         self.btn_render = _tool("mdi6.image-filter-hdr", "Render image… (up to 8K, 8x anti-aliasing)")
         self.btn_side = _tool("msc.layout-sidebar-right", "Display options", checkable=True)
-        for b in (self.btn_fit, self.btn_x, self.btn_y, self.btn_z, self.btn_iso, self.btn_ao, self.btn_shot,
-                  self.btn_render, self.btn_side):
+        self.btn_rec = _tool("mdi6.movie-open-outline", "Animation: turntable or time sweep (GIF / WebP)")
+        self.btn_show = _tool("mdi6.creation", "Showcase: the best first view of this result (Studio look, "
+                                               "mid-plane slice in a glass shell for 3D, isometric camera)")
+        self.btn_pv = _tool("mdi6.alpha-p-box-outline", "Open this case in ParaView (with this field and time)")
+        for b in (self.btn_show, self.btn_fit, self.btn_x, self.btn_y, self.btn_z, self.btn_iso, self.btn_ao,
+                  self.btn_shot, self.btn_render, self.btn_rec, self.btn_pv, self.btn_side):
             bar.addWidget(b)
         lay.addLayout(bar)
         # ---------------- view + sidebar
@@ -178,6 +214,21 @@ class ViewportPanel(Panel):
             tp.ShadowOff()
         self.scalar_bar.VisibilityOff()
         self.plotter.renderer.AddViewProp(self.scalar_bar)  # (AddActor2D was removed in VTK 9.7)
+        self.bar_lut = None  # the colour bar's own LUT, in display units (e.g. MPa)
+        self.hud = lk.make_hud()
+        self.plotter.renderer.AddViewProp(self.hud)
+        self.edge_actor, self.edge_mapper = lk.make_edges_actor()
+        self.plotter.renderer.AddActor(self.edge_actor)
+        self._units: dict[str, str | None] = {}
+        self._cmap_user = False
+        self._orient = None
+        self._sweep = None  # a time-sweep animation in progress
+        self._ao_diag = None  # the domain size the ambient-occlusion pass was built for
+        self.smoothed = False
+        self.look = getattr(sv.settings, "viewport_look", "studio") if getattr(sv, "settings", None) else "studio"
+        if self.look not in lk.LOOKS:
+            self.look = "studio"
+        self.look_box.setCurrentText(self.look.capitalize())
         # ---------------- wiring
         self._slice_timer = QTimer(self, singleShot=True, interval=150, timeout=self.request_load)
         w = shared_worker()
@@ -197,6 +248,11 @@ class ViewportPanel(Panel):
         self.last_t.clicked.connect(lambda: self.time.setCurrentIndex(self.time.count() - 1))
         self.rep.currentIndexChanged.connect(lambda *_: self._apply_display())
         self.cmap.currentIndexChanged.connect(lambda *_: self._apply_display())
+        self.cmap.activated.connect(lambda *_: setattr(self, "_cmap_user", True))
+        self.look_box.currentTextChanged.connect(lambda t: self.set_look(t.lower()))
+        self.btn_rec.clicked.connect(self.animation_dialog)
+        self.btn_show.clicked.connect(lambda: self.ctx.services.notify("Viewport: " + self.showcase()))
+        self.btn_pv.clicked.connect(self.open_in_paraview)
         self.btn_fit.clicked.connect(self._fit)
         self.btn_x.clicked.connect(lambda: self._view("yz"))
         self.btn_y.clicked.connect(lambda: self._view("xz"))
@@ -208,18 +264,32 @@ class ViewportPanel(Panel):
         self.btn_side.toggled.connect(self.side.setVisible)
         self.plotter.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.plotter.customContextMenuRequested.connect(self._context_menu)
-        sv.case_changed.connect(lambda s: self.set_case(s.root if s else None))
+        sv.case_changed.connect(self._on_case_changed)
         sv.files_changed.connect(self._on_files_changed)
         self._refresh_meta_timer = QTimer(self, singleShot=True, interval=1500, timeout=self.request_meta)
         QTimer.singleShot(300, self._report_gpu)
         self.plotter.installEventFilter(self)
+        self._apply_scene()
         sv.set_active_viewport(self)
         if sv.session is not None:
             self.set_case(sv.session.root)
 
     # ------------------------------------------------------------------ case / meta
+    def _on_case_changed(self, session) -> None:
+        self.set_case(session.root if session else None)
+
     def set_case(self, root: Path | None) -> None:
+        self._end_sweep("the case changed")
+        self.gen += 1  # anything still loading for the previous case is now stale
+        self._is2d = False
         self.case_root = Path(root) if root else None
+        self._queued_show = None
+        self._showcase_pending = False
+        self.bounds = None  # never the previous case's
+        for w in (self.field, self.time):  # never offer the previous case's fields and times
+            w.blockSignals(True)
+            w.clear()
+            w.blockSignals(False)
         self._clear_actors()
         self._first_data = True
         self.meta = {}
@@ -233,6 +303,8 @@ class ViewportPanel(Panel):
             if n > 2_000_000:
                 self.info.setText(f"{n:,} cells: boundary patches are shown by default; enable the internal mesh "
                                   "or a slice when needed.")
+        self._units.clear()
+        self._apply_scene()  # 2D cases: no ambient occlusion
         self.request_meta()
 
     def request_meta(self) -> None:
@@ -251,6 +323,9 @@ class ViewportPanel(Panel):
     def _on_meta(self, vid: str, gen: int, meta: dict) -> None:
         if vid != self.vid or gen != self.gen:
             return
+        queued, self._queued_show = getattr(self, "_queued_show", None), None
+        if queued is not None:
+            QTimer.singleShot(0, lambda q=queued: self.ctx.services.notify("Viewport: " + self.show_field(*q)))
         prev_field, prev_time = self.field.currentText(), self.time.currentText()
         was_latest = self.time.currentIndex() == self.time.count() - 1
         self.meta = meta
@@ -264,6 +339,10 @@ class ViewportPanel(Panel):
                                   names else "")
         if pref in names:
             self.field.setCurrentText(pref)
+        if self.look == "studio" and not self._cmap_user and self.field.currentText():
+            self.cmap.blockSignals(True)  # the first field gets its Studio colour map too
+            self.cmap.setCurrentText(lk.auto_cmap(self.field.currentText()))
+            self.cmap.blockSignals(False)
         self.time.clear()
         self.time.addItems([f"{t:g}" for t in meta["times"]])
         if prev_time and not (self.follow.isChecked() and was_latest) and prev_time in [f"{t:g}" for t in meta["times"]]:
@@ -326,6 +405,10 @@ class ViewportPanel(Panel):
         return [self.patches.item(i).text() for i in range(self.patches.count())]
 
     def _on_field_changed(self, *_):
+        if self.look == "studio" and not self._cmap_user and self.field.currentText():
+            self.cmap.blockSignals(True)
+            self.cmap.setCurrentText(lk.auto_cmap(self.field.currentText()))
+            self.cmap.blockSignals(False)
         if self.meta and not self.follow.isChecked():
             idx = self._latest_time_with(self.field.currentText())
             if idx != self.time.currentIndex():
@@ -361,7 +444,7 @@ class ViewportPanel(Panel):
                "patches": patches, "show_internal": any(p.endswith("internalMesh") for p in patches),
                "stages": [{**s, "field": self._vtk_names.get(s["field"], s["field"])} if s.get("field") else s
                           for s in self.stages],
-               "view": self.view_opts}
+               "view": self.view_opts, "look": self.look}
         if self.slice_on.isChecked() and self.bounds is not None:
             ax = self.slice_axis.currentIndex()
             b = self.bounds
@@ -371,6 +454,7 @@ class ViewportPanel(Panel):
             normal = [0.0, 0.0, 0.0]
             normal[ax] = 1.0
             req["slice"] = {"origin": origin, "normal": normal}
+            req["shell"] = self.look == "studio" and not self._is2d
             if not any(p.endswith("internalMesh") for p in patches):
                 req["patches"] = [*patches, *self._internal_meshes()]
         self._req_load.emit(self.vid, self.gen, req)
@@ -378,6 +462,7 @@ class ViewportPanel(Panel):
     def _on_data(self, vid: str, gen: int, data: dict) -> None:
         if vid != self.vid or gen != self.gen:
             return  # stale (a newer request superseded it)
+        self.drawn_gen = gen  # the view now shows request `gen` (tests and the copilot wait for this)
         blocks: dict = data["blocks"]
         for name in list(self.actors):
             if name not in blocks:
@@ -387,6 +472,11 @@ class ViewportPanel(Panel):
         self.stage_info = data.get("stage_info", {})
         if data["bounds"] is not None:
             self.bounds = data["bounds"]
+            if self.btn_ao.isChecked():
+                b = self.bounds
+                diag = ((b[1] - b[0]) ** 2 + (b[3] - b[2]) ** 2 + (b[5] - b[4]) ** 2) ** 0.5
+                if diag > 0 and (self._ao_diag is None or not (0.8 < diag / self._ao_diag < 1.25)):
+                    self._set_ao(True, quiet=True)  # (re)build the pass for this domain's size
         if self.range is None or not self.lock.isChecked():
             self.range = data["range"]
         for name, poly in blocks.items():
@@ -404,11 +494,21 @@ class ViewportPanel(Panel):
             self._first_data = False
             self._fit()
         self.comp.setVisible(data.get("components", 0) > 1)
+        if getattr(self, "_showcase_pending", False) and self.bounds is not None:
+            self._showcase_pending = False
+            QTimer.singleShot(0, lambda: self.ctx.services.notify("Viewport: " + self.showcase()))
+        edges = (data.get("overlays") or {}).get("edges")
+        self.edge_mapper.SetInputData(edges if edges is not None else vtk.vtkPolyData())
+        self.edge_actor.SetVisibility(edges is not None and self.look == "studio"
+                                      and self.view_opts.get("base") != "hidden")
+        self.smoothed = bool(data.get("smoothed"))
         msg = (f"{data['n_cells']:,} cells read · {data['seconds']:.2f} s · t = {data['time']:g}"
                if data["time"] is not None else "")
         if self.field.currentText() and data["scalar"] is None:
             msg += f" · '{self.field.currentText()}' is not written at this time"
             self.ctx.services.notify(f"Viewport: '{self.field.currentText()}' is not written at t = {data['time']:g}")
+        if self.smoothed:
+            msg += " · Studio look: colours smoothed from the cell values (Classic shows the cells as computed)"
         interp = sorted({i["label"] for k, i in self.stage_info.items() if i.get("interpolated") and "~" not in k})
         if interp:
             msg += " · interpolated: " + ", ".join(interp)
@@ -468,12 +568,31 @@ class ViewportPanel(Panel):
                 else:
                     mapper.ScalarVisibilityOff()
                 continue
+            if name.startswith("shell:"):  # Studio: the domain around a slice, as faint glass
+                mapper.ScalarVisibilityOff()
+                prop.SetRepresentationToSurface()
+                prop.SetEdgeVisibility(False)
+                prop.SetInterpolationToPhong()
+                prop.SetLighting(True)
+                prop.SetColor(0.72, 0.80, 0.95)
+                prop.SetOpacity(0.10)
+                prop.SetAmbient(0.2)
+                prop.SetDiffuse(0.6)
+                prop.SetSpecular(0.5)
+                prop.SetSpecularPower(60)
+                actor.SetVisibility(True)
+                actor.SetPickable(False)
+                continue
             # the base mesh: translucent by default once pipeline stages are shown (they sit inside it)
             base = self.view_opts.get("base") or ("translucent" if any(
                 s.get("visible", True) for s in self.stages) else "surface")
             actor.SetVisibility(base != "hidden")
             prop.SetOpacity({"translucent": 0.15, "outline": 0.35}.get(base, 1.0))
-            prop.SetInterpolationToFlat()
+            poly = mapper.GetInput()
+            smooth = (self.look == "studio" and self.scalar is not None and poly is not None
+                      and poly.GetPointData().GetArray(self.scalar) is not None)
+            lk.surface_material(prop, self.look, smooth=smooth or (self.look == "studio" and self.scalar is None),
+                                flat_view=self._is2d)
             if rep == 2 or base == "outline":
                 prop.SetRepresentationToWireframe()
             else:
@@ -482,7 +601,11 @@ class ViewportPanel(Panel):
             prop.SetEdgeColor(0.15, 0.15, 0.17)
             prop.SetColor(0.65, 0.67, 0.70)
             if self.scalar and lo_hi is not None:
-                mapper.SetScalarModeToUseCellFieldData()
+                if smooth:
+                    mapper.SetScalarModeToUsePointFieldData()
+                    mapper.InterpolateScalarsBeforeMappingOn()  # crisp gradients, no Gouraud colour smear
+                else:
+                    mapper.SetScalarModeToUseCellFieldData()
                 mapper.SelectColorArray(self.scalar)
                 mapper.SetLookupTable(lut)
                 mapper.SetUseLookupTableScalarRange(True)
@@ -492,12 +615,347 @@ class ViewportPanel(Panel):
         if stage_bar is not None and self.bar_stage != "field":
             bar = stage_bar
         if bar is not None:
-            self.scalar_bar.SetLookupTable(bar[0])
-            self.scalar_bar.SetTitle(display_name(bar[1]))
+            title, blut = self._bar_title_and_lut(bar[0], bar[1], cmap)
+            self.bar_lut = blut
+            self.scalar_bar.SetLookupTable(blut)
+            self.scalar_bar.SetTitle(title)
             self.scalar_bar.VisibilityOn()
         else:
             self.scalar_bar.VisibilityOff()
+        self._update_hud()
         self.plotter.render()
+
+    # ------------------------------------------------------------------ looks
+    def _unit(self, field: str) -> str | None:
+        if field not in self._units and self.case_root is not None:
+            from aethercfd.results.units import dimensions_of, unit_text
+
+            try:
+                self._units[field] = unit_text(dimensions_of(self.case_root, field))
+            except OSError:
+                self._units[field] = None
+        return self._units.get(field)
+
+    def _bar_title_and_lut(self, lut, name: str, cmap: str):
+        """Colour-bar title with units and an SI prefix (p [MPa]); its LUT is in those display units."""
+        from aethercfd.results.units import bar_title, si_scale
+
+        shown = display_name(name)
+        base = shown.split("_mag")[0].split("_x")[0].split("_y")[0].split("_z")[0].strip("|")
+        unit = self._unit(base)
+        lo, hi = lut.GetTableRange()
+        f, lab = si_scale(lo, hi, unit)
+        pretty = f"|{base}|" if shown.endswith("_mag") else shown
+        scaled = vtk.vtkLookupTable()
+        scaled.DeepCopy(lut)
+        scaled.SetTableRange(lo / f, hi / f)
+        bar = self.scalar_bar
+        fmt = lk.label_format(lo / f, hi / f)
+        if self.look == "studio":  # round tick values in display units (0, 10, 20 ... not 2.53e-05, 12.49)
+            ticks = vtk.vtkDoubleArray()
+            for t in lk.nice_ticks(lo / f, hi / f):
+                ticks.InsertNextValue(t)
+            bar.SetUseCustomLabels(True)
+            bar.SetCustomLabels(ticks)
+            bar.SetLabelFormat(fmt)
+        else:
+            bar.SetUseCustomLabels(False)
+            bar.SetLabelFormat(fmt.replace("%", "%-#"))
+        return bar_title(pretty, unit, lab), scaled
+
+    def _update_hud(self) -> None:
+        if self.look != "studio" or self.case_root is None or not self.scalar:
+            self.hud.SetVisibility(False)
+            return
+        t = self.time.currentText()
+        self.hud.SetInput(f"{self.case_root.name}   ·   {self.field.currentText()}   ·   t = {t}")
+        self.hud.SetVisibility(True)
+
+    def _apply_scene(self) -> None:
+        """Background, depth cues, orientation widget and colour-bar style of the current look."""
+        lk.apply_background(self.plotter.renderer, self.look)
+        lk.style_bar(self.scalar_bar, self.look)
+        studio = self.look == "studio"
+        try:
+            if studio:
+                self.plotter.hide_axes()
+                if self._orient is None:
+                    self._orient = self.plotter.add_camera_orientation_widget()
+                    rep = self._orient.GetRepresentation()
+                    rep.SetSize(76, 76)
+                    rep.AnchorToUpperRight()
+                self._orient.On()
+            else:
+                if self._orient is not None:
+                    self._orient.Off()
+                self.plotter.show_axes()
+        except Exception:
+            log.exception("orientation widget")
+        self.btn_ao.blockSignals(True)
+        self.btn_ao.setChecked(studio and not self._is2d)
+        self.btn_ao.blockSignals(False)
+        self._set_ao(studio and not self._is2d, quiet=True)
+        inp = self.edge_mapper.GetInput()
+        self.edge_actor.SetVisibility(studio and inp is not None and inp.GetNumberOfLines() > 0
+                                      and self.view_opts.get("base") != "hidden")
+        self._update_hud()
+
+    def set_look(self, name: str) -> str:
+        """'studio' (AetherCFD post-processing) or 'classic' (ParaView-style true cell colours)."""
+        name = (name or "").lower()
+        if name not in lk.LOOKS:
+            return f"unknown look {name!r}: studio or classic"
+        self.look = name
+        self.look_box.blockSignals(True)
+        self.look_box.setCurrentText(name.capitalize())
+        self.look_box.blockSignals(False)
+        st = getattr(self.ctx.services, "settings", None)
+        if st is not None and getattr(st, "viewport_look", None) != name:
+            st.viewport_look = name
+            try:
+                st.save()
+            except Exception:
+                log.exception("saving the viewport look")
+        if name == "studio" and not self._cmap_user and self.field.currentText():
+            self.cmap.blockSignals(True)
+            self.cmap.setCurrentText(lk.auto_cmap(self.field.currentText()))
+            self.cmap.blockSignals(False)
+        self._apply_scene()
+        self.request_load()
+        return f"look: {name}"
+
+    def showcase(self) -> str:
+        """The best first view of the result, in one click (also the copilot's): the Studio look; a 3D
+        case gets a mid-plane slice through its long axis inside a glass shell, an isometric camera and
+        depth shading; a 2D case is framed flat."""
+        if self.case_root is None or not self.meta:
+            return "no results are loaded yet"
+        if self.look != "studio":
+            self.set_look("studio")
+        if self.bounds is None:  # nothing drawn yet: decide once the first data (and its size) arrive
+            self._showcase_pending = True
+            return "showcase: will frame the result as soon as it is loaded"
+        if not self._is2d and self.bounds is not None:
+            b = self.bounds
+            ext = [b[1] - b[0], b[3] - b[2], b[5] - b[4]]
+            # the plane spanning the two largest extents shows the most of the flow (along a pipe, through
+            # a box and the tube entering it): cut normal to the smallest extent, through the middle
+            normal = ext.index(min(ext))
+            self.slice_axis.setCurrentIndex(normal)
+            self.slice_pos.blockSignals(True)
+            self.slice_pos.setValue(500)
+            self.slice_pos.blockSignals(False)
+            self.slice_on.setChecked(True)
+            self._first_data = True  # re-frame when the slice arrives
+            self.request_load(reset_range=True)
+            return (f"showcase: mid-plane slice normal to {'xyz'[normal]} in a glass shell, Studio look "
+                    f"({self.field.currentText()})")
+        self.slice_on.setChecked(False)
+        self._first_data = True
+        self.request_load(reset_range=True)
+        return f"showcase: {self.field.currentText()} in the Studio look"
+
+    # ------------------------------------------------------------------ animation + ParaView
+    def _out_dir(self, sub: str) -> Path:
+        s = self.ctx.services.session
+        base = (Path(s.project.meta_dir) / "local" / sub) if s is not None and s.project is not None else \
+            Path.home() / "Pictures" / "AetherCFD"
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
+    MAX_SWEEP_FRAMES = 240
+
+    @staticmethod
+    def _safe_name(text: str) -> str:
+        """A file-name-safe version of a field name (thermo:mu -> thermo_mu; ':' is an NTFS stream)."""
+        import re
+
+        return re.sub(r"[^\w.+-]+", "_", text or "view").strip("._") or "view"
+
+    def record_animation(self, kind: str = "turntable", path: str | None = None, *, frames: int = 72,
+                         fps: int = 24, on_done=None) -> str:
+        """Turntable (one orbit of the camera) or time sweep (the saved times, at most MAX_SWEEP_FRAMES) of
+        what is shown, written as an animated GIF or WebP (by the file extension). Frames go to temporary
+        PNGs, so memory stays small. A time sweep loads each time first: it finishes later and calls
+        ``on_done(path)``; it is aborted cleanly if a load fails, the case changes or the panel closes."""
+        import tempfile
+
+        if not self.actors:
+            return "nothing is shown yet"
+        if getattr(self, "_sweep", None) is not None:
+            return "a time sweep is already being recorded in this viewport"
+        stamp = __import__("time").strftime("%Y%m%d_%H%M%S")
+        out = Path(path) if path else self._out_dir("animations") / (
+            f"{self._safe_name(self.field.currentText())}_{kind}_{stamp}.gif")
+        tmp = tempfile.TemporaryDirectory(prefix="aether-anim-")
+        shots: list[Path] = []
+
+        def grab():
+            from PIL import Image
+
+            self.plotter.render()
+            img = self.plotter.screenshot(return_img=True)
+            f = Path(tmp.name) / f"{len(shots):05d}.png"
+            Image.fromarray(img[:, :, :3]).save(f)
+            shots.append(f)
+
+        def write() -> str:
+            from PIL import Image
+
+            try:
+                if not shots:
+                    raise ValueError("no frames were captured")
+                first = Image.open(shots[0]).convert("RGB")
+                gif = out.suffix.lower() == ".gif"
+                if gif:  # ONE palette for every frame: no colour flicker between frames
+                    first = first.quantize(colors=255, method=Image.Quantize.MEDIANCUT)
+
+                def rest():
+                    for f in shots[1:]:
+                        im = Image.open(f).convert("RGB")
+                        yield im.quantize(palette=first) if gif else im
+
+                out.parent.mkdir(parents=True, exist_ok=True)
+                first.save(out, save_all=True, append_images=rest(), duration=int(1000 / max(fps, 1)), loop=0)
+            finally:
+                tmp.cleanup()
+            self.ctx.services.notify(f"Animation saved: {out}")
+            return str(out)
+
+        if kind == "turntable":
+            cam = self.plotter.camera
+            keep = (cam.GetPosition(), cam.GetFocalPoint(), cam.GetViewUp())
+            n = max(8, min(360, int(frames)))
+            try:
+                for _ in range(n):
+                    grab()
+                    cam.Azimuth(360.0 / n)
+            finally:
+                cam.SetPosition(*keep[0])
+                cam.SetFocalPoint(*keep[1])
+                cam.SetViewUp(*keep[2])
+                self.plotter.render()
+            res = write()
+            if on_done:
+                on_done(res)
+            return res
+        if kind != "time":
+            tmp.cleanup()
+            return f"unknown animation {kind!r}: turntable or time"
+        count = self.time.count()
+        if count < 2:
+            tmp.cleanup()
+            return "only one saved time: nothing to sweep (use a turntable)"
+        step_n = max(1, -(-count // self.MAX_SWEEP_FRAMES))  # subsample long histories
+        indices = list(range(0, count, step_n))
+        if indices[-1] != count - 1:
+            indices.append(count - 1)
+        sweep = {"indices": indices, "k": 0, "lock": self.lock.isChecked(), "start": self.time.currentIndex(),
+                 "case": self.case_root, "on_done": on_done, "tmp": tmp}
+        watchdog = QTimer(self, singleShot=True, interval=180_000)
+        sweep["watchdog"] = watchdog
+
+        def step(_info=None):
+            if self._sweep is not sweep:
+                return
+            watchdog.start()
+            grab()
+            sweep["k"] += 1
+            if sweep["k"] >= len(indices):
+                self._end_sweep()
+                res = write()
+                if on_done:
+                    on_done(res)
+                return
+            self.time.setCurrentIndex(indices[sweep["k"]])
+
+        sweep["slot"] = step
+        watchdog.timeout.connect(lambda: self._end_sweep("a time step took more than 3 minutes to load"))
+        self._sweep = sweep
+        self.lock.setChecked(True)  # one colour range for the whole sweep
+        self.stages_updated.connect(step)
+        watchdog.start()
+        if self.time.currentIndex() == indices[0]:
+            self.request_load()
+        else:
+            self.time.setCurrentIndex(indices[0])
+        return (f"recording a time sweep over {len(indices)} of {count} saved times into {out}"
+                + (f" (every {step_n}th)" if step_n > 1 else ""))
+
+    def _end_sweep(self, aborted: str | None = None) -> None:
+        """Finish or abort the time sweep: disconnect it, restore the colour lock and the time."""
+        sweep, self._sweep = getattr(self, "_sweep", None), None
+        if sweep is None:
+            return
+        with contextlib.suppress(RuntimeError, TypeError):
+            self.stages_updated.disconnect(sweep["slot"])
+        sweep["watchdog"].stop()
+        self.lock.setChecked(sweep["lock"])
+        if sweep["case"] == self.case_root and 0 <= sweep["start"] < self.time.count():
+            self.time.setCurrentIndex(sweep["start"])
+        if aborted:
+            sweep["tmp"].cleanup()
+            self.ctx.services.notify(f"Animation stopped: {aborted}", "warn")
+
+    def animation_dialog(self) -> None:
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QSpinBox
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Animation")
+        f = QFormLayout(dlg)
+        kind = QComboBox()
+        kind.addItem("Turntable (orbit the camera once)", "turntable")
+        kind.addItem("Time sweep (every saved time)", "time")
+        fmt = QComboBox()
+        fmt.addItems(["GIF (plays everywhere)", "WebP (smaller, sharper)"])
+        n = QSpinBox(minimum=12, maximum=360, value=72)
+        fps = QSpinBox(minimum=2, maximum=60, value=24)
+        f.addRow("What", kind)
+        f.addRow("Format", fmt)
+        f.addRow("Turntable frames", n)
+        f.addRow("Frames per second", fps)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        f.addRow(bb)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        ext = ".gif" if fmt.currentIndex() == 0 else ".webp"
+        stamp = __import__("time").strftime("%Y%m%d_%H%M%S")
+        default = self._out_dir("animations") / f"{self.field.currentText() or 'view'}_{kind.currentData()}_{stamp}{ext}"
+        path, _ = QFileDialog.getSaveFileName(self, "Save animation", str(default), f"Animation (*{ext})")
+        if path:
+            self.ctx.services.notify(self.record_animation(kind.currentData(), path, frames=n.value(),
+                                                           fps=fps.value()))
+
+    def open_in_paraview(self) -> str:
+        """The open case in ParaView (the backup / expert view), on this field and time. A small pvpython
+        script in the project's local folder sets it up; nothing is written into the case."""
+        import subprocess
+
+        st = getattr(self.ctx.services, "settings", None)
+        exe = Path(getattr(st, "paraview_exe", "") or "")
+        if self.case_root is None:
+            return "no case is open"
+        if not exe.is_file():
+            msg = f"ParaView not found at {exe} (set paraview_exe in settings)"
+            self.ctx.services.notify(msg, "warn")
+            return msg
+        field = self.field.currentText()
+        t = self.meta.get("times", [None])[self.time.currentIndex()] if self.meta.get("times") else None
+        try:
+            script = self._out_dir("paraview") / "open_case.py"
+            script.write_text(PARAVIEW_SCRIPT.format(control=str(self.case_root / "system" / "controlDict"),
+                                                     decomposed=self._decomposed(), field=field,
+                                                     time=repr(t), name=self.case_root.name), encoding="utf-8")
+            subprocess.Popen([str(exe), f"--script={script}"], cwd=str(self.case_root), creationflags=0x00000008)
+        except OSError as exc:
+            msg = f"could not start ParaView: {exc}"
+            self.ctx.services.notify(msg, "error")
+            return msg
+        msg = f"opening {self.case_root.name} in ParaView ({field} at t = {t})"
+        self.ctx.services.notify(msg)
+        return msg
 
     def _stage_bar_title(self, key: str, info: dict) -> str:
         sid = key.split(":", 1)[1]
@@ -583,6 +1041,7 @@ class ViewportPanel(Panel):
 
     def _on_fail(self, vid: str, gen: int, msg: str) -> None:
         if vid == self.vid:
+            self._end_sweep("a time step could not be read")
             self.info.setText(f"Could not read results: {msg}")
             self.ctx.services.notify(f"Viewport: {msg}", "warn")
 
@@ -591,6 +1050,9 @@ class ViewportPanel(Panel):
             self.plotter.renderer.RemoveActor(actor)
         self.actors.clear()
         self.scalar_bar.VisibilityOff()
+        self.edge_actor.SetVisibility(False)
+        self.edge_mapper.SetInputData(vtk.vtkPolyData())
+        self.hud.SetVisibility(False)
         self.plotter.render()
 
     # ------------------------------------------------------------------ camera
@@ -598,6 +1060,8 @@ class ViewportPanel(Panel):
         if self._is2d and self.bounds is not None:
             self._fit_2d()
         else:
+            if self.look == "studio":
+                self.plotter.view_isometric()  # a 3D case reads as 3D from the start
             self.plotter.reset_camera()
             self.plotter.camera_set = True
         self.plotter.render()
@@ -637,21 +1101,33 @@ class ViewportPanel(Panel):
         if sum(cross[i] * right[i] for i in range(3)) > 0:
             pos[thin] = c[thin] - dist
             cam.SetPosition(*pos)
-        # leave the bottom ~14% for the colour bar
-        cam.SetParallelScale((1 + padding) * max(h / 2 / 0.86, w / (2 * aspect)))
+        if self.look == "studio":  # the colour bar is at the right: keep the domain clear of it
+            scale = (1 + padding) * max(h / 2 / 0.80, w / (2 * aspect * 0.84))
+            shift = scale * aspect * 0.13  # world units: move the view so the domain sits left of the bar
+            fp, ps = list(cam.GetFocalPoint()), list(cam.GetPosition())
+            fp[horiz] += shift
+            ps[horiz] += shift
+            cam.SetFocalPoint(*fp)
+            cam.SetPosition(*ps)
+            cam.SetParallelScale(scale)
+        else:  # leave the bottom ~14% for the colour bar
+            cam.SetParallelScale((1 + padding) * max(h / 2 / 0.86, w / (2 * aspect)))
         self.plotter.renderer.ResetCameraClippingRange()
         self.plotter.camera_set = True  # stop pyvista from resetting our camera on its first render
 
-    def _set_ao(self, on: bool) -> None:
+    def _set_ao(self, on: bool, *, quiet: bool = False) -> None:
         b = self.bounds or [0, 1, 0, 1, 0, 1]
         diag = ((b[1] - b[0]) ** 2 + (b[3] - b[2]) ** 2 + (b[5] - b[4]) ** 2) ** 0.5 or 1.0
         try:
-            if on:
+            # pyvista keeps an existing pass (and its radius): drop it first, then build it for this domain
+            self.plotter.disable_ssao()
+            self._ao_diag = None
+            if on and self.bounds is not None:
                 self.plotter.enable_ssao(radius=0.02 * diag, bias=0.002 * diag, kernel_size=128, blur=True)
-            else:
-                self.plotter.disable_ssao()
+                self._ao_diag = diag
         except Exception as exc:
-            self.ctx.services.notify(f"Ambient occlusion unavailable: {exc}", "warn")
+            if not quiet:
+                self.ctx.services.notify(f"Ambient occlusion unavailable: {exc}", "warn")
         self.plotter.render()
 
     def render_image(self, path: str, width: int, height: int, *, background: str = "dark",
@@ -668,7 +1144,9 @@ class ViewportPanel(Panel):
         rw.AddRenderer(ren)
         bg = {"dark": (0.105, 0.11, 0.122), "black": (0, 0, 0), "white": (1, 1, 1)}.get(background, (0.105, 0.11, 0.122))
         ren.SetBackground(*bg)
-        if background == "gradient":
+        if background in ("gradient", "look") and self.look == "studio":
+            lk.apply_background(ren, "studio")  # the same vignette as on screen
+        elif background == "gradient":
             ren.GradientBackgroundOn()
             ren.SetBackground(0.03, 0.035, 0.05)
             ren.SetBackground2(0.20, 0.22, 0.27)
@@ -694,6 +1172,21 @@ class ViewportPanel(Panel):
             elif not is_stage and base == "translucent":
                 a.GetProperty().SetOpacity(0.12)
             ren.AddActor(a)
+        if self.edge_actor.GetVisibility() and self.edge_mapper.GetInput() is not None:
+            em = vtk.vtkPolyDataMapper()
+            em.SetInputData(self.edge_mapper.GetInput())
+            em.ScalarVisibilityOff()
+            ea = vtk.vtkActor()
+            ea.SetMapper(em)
+            ea.GetProperty().DeepCopy(self.edge_actor.GetProperty())
+            ea.GetProperty().SetLineWidth(max(1.0, 1.3 * height / max(1, self.plotter.height())))
+            ren.AddActor(ea)
+        if self.hud.GetVisibility():
+            hud = lk.make_hud()
+            hud.SetInput(self.hud.GetInput())
+            hud.GetTextProperty().SetFontSize(max(10, round(13 * height / max(1, self.plotter.height()))))
+            hud.SetVisibility(True)
+            ren.AddViewProp(hud)
         if base in ("outline", "translucent", "as shown"):
             rw.SetAlphaBitPlanes(1)
             ren.SetUseDepthPeeling(1)
@@ -911,6 +1404,10 @@ class ViewportPanel(Panel):
 
     # ------------------------------------------------------------------ scripted control (copilot)
     def show_field(self, field: str, time: str | None = None, slice_axis: str | None = None) -> str:
+        if self.case_root is not None and not self.meta:
+            # the case was just opened and its time steps / fields are still being read: do it when ready
+            self._queued_show = (field, time, slice_axis)
+            return f"the case is still loading; {field} will be shown as soon as its results are read"
         names = [self.field.itemText(i) for i in range(self.field.count())]
         if not names:
             return "the viewport has no results loaded for this case yet"
@@ -948,6 +1445,7 @@ class ViewportPanel(Panel):
 
     def set_cmap(self, name: str) -> None:
         if name in CMAPS:
+            self._cmap_user = True  # chosen on purpose: the Studio look stops picking per field
             self.cmap.setCurrentText(name)
 
     def link_camera(self, others: list) -> None:
@@ -1002,6 +1500,7 @@ class ViewportPanel(Panel):
         self.rep.setCurrentIndex(int(state.get("rep", 0)))
         if state.get("cmap") in CMAPS:
             self.cmap.setCurrentText(state["cmap"])
+            self._cmap_user = True
         self.follow.setChecked(bool(state.get("follow", False)))
         if state.get("component"):
             self.comp.setCurrentText(state["component"])
@@ -1009,6 +1508,7 @@ class ViewportPanel(Panel):
         self.view_opts = dict(state.get("view") or {})
 
     def dispose(self) -> None:
+        self._end_sweep()
         self._disposed = True
         for o in getattr(self, "_linked", []):  # unlink from compare-view peers before the plotter goes
             peers = getattr(o, "_linked", None)

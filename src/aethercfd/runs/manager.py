@@ -338,6 +338,20 @@ class RunManager:
                     m.tail = LogTail(self.exec_case_win(rec) / ev["log"])
                     m.parser = LogParser()
                     m.repeat = guards.RepetitionGuard()
+        # 1b) a tutorial script writes one log per application it runs: follow the newest of them
+        script = m.tail_log is not None and any(
+            s.get("kind") == "script" and s.get("log") == m.tail_log for s in rec.steps)
+        if script or (m.tail_log or "").endswith("Allrun"):
+            try:
+                case_dir = self.exec_case_win(rec)
+                logs = [p for p in case_dir.glob("log.*") if p.name != m.tail_log and p.is_file()]
+                newest = max(logs, key=lambda p: p.stat().st_mtime) if logs else None
+            except OSError:
+                newest = None
+            if newest is not None and (m.tail is None or Path(m.tail.path) != newest):
+                m.tail = LogTail(newest)
+                m.parser = LogParser()
+                m.repeat = guards.RepetitionGuard()
         # 2) log progress
         if m.tail is not None:
             lines = m.tail.read_new()

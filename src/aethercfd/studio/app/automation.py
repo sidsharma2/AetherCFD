@@ -310,6 +310,27 @@ class AppAutomation:
         vp.render_image(str(f), width, height, background=background, base=base, frame_stages=frame)
         return str(f)
 
+    def viewport_look(self, look: str) -> str:
+        vp = self._viewport(open_if_missing=True)
+        return vp.set_look(look) if vp is not None else "no viewport"
+
+    def showcase(self) -> str:
+        vp = self._viewport(open_if_missing=True)
+        return vp.showcase() if vp is not None else "no viewport"
+
+    def animation(self, kind: str, frames: int, fps: int, fmt: str) -> str:
+        vp = self._viewport(open_if_missing=False)
+        if vp is None or self.sv.session is None:
+            return "no viewport/case"
+        ext = ".webp" if fmt.lower().startswith("web") else ".gif"
+        # the project's local folder (wherever the sidecar lives), a file-name-safe field name
+        f = vp._out_dir("animations") / f"{vp._safe_name(vp.field.currentText())}_{kind}_{time.strftime('%Y%m%d_%H%M%S')}{ext}"
+        return vp.record_animation(kind, str(f), frames=frames, fps=fps)
+
+    def open_paraview(self) -> str:
+        vp = self._viewport(open_if_missing=True)
+        return vp.open_in_paraview() if vp is not None else "no viewport"
+
     # ------------------------------------------------------------------ pointing and actions
     def highlight(self, target: str, message: str, seconds: float = 6.0) -> str:
         from aethercfd.studio.widgets.callout import point_at

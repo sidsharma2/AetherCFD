@@ -125,3 +125,29 @@ def test_existing_step_log_is_kept_not_overwritten(tmp_path):
     assert r.returncode == 0, r.stderr
     kept = [p for p in tmp_path.iterdir() if p.name.startswith("log.rhoSimpleFoam.")]
     assert len(kept) == 1 and kept[0].read_text() == "stage A\n" and log.read_text() == "stage B\n"
+
+
+def test_allrun_step_keeps_earlier_logs_and_allows_mpi_as_root():
+    s = runner_sh(spec(steps=(RunStep("bash", ("./Allrun",), StepKind.SCRIPT, log_name="log.Allrun"),)))
+    # Allrun's runApplication skips any app whose log exists: earlier logs move to the run folder (kept)
+    assert 'mv -n "$f" "$RUN_DIR/earlier_logs/"' in s and "rm " not in s.split("earlier_logs")[1][:200]
+    assert "export OMPI_ALLOW_RUN_AS_ROOT=1" in s and "export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1" in s
+    import dataclasses
+
+    user = dataclasses.replace(ESI, mpi_run_as_root=False)
+    assert "OMPI_ALLOW_RUN_AS_ROOT" not in runner_sh(spec(fork=user))
+
+
+def test_collated_and_decomposed_meshes_count(tmp_path):
+    import shutil
+
+    from aethercfd.commands.builtin.run_cmds import _has_mesh, suggest_preset
+
+    case = tmp_path / "c"
+    shutil.copytree(FIX / "esi_cavity", case)
+    shutil.rmtree(case / "constant" / "polyMesh", ignore_errors=True)
+    (case / "Allrun").write_text("#!/bin/sh\n")
+    assert not _has_mesh(load_case(case)) and suggest_preset(load_case(case))[0] == "allrun"
+    (case / "processors4" / "constant" / "polyMesh").mkdir(parents=True)
+    (case / "processors4" / "constant" / "polyMesh" / "owner").write_text("")
+    assert _has_mesh(load_case(case)) and suggest_preset(load_case(case))[0] == "solve"
