@@ -52,6 +52,9 @@ class Settings(BaseModel):
     ml_python: str | None = None  # python.exe of the PyTorch environment for PINNs (default: found automatically)
     freecad_cmd: str | None = None  # FreeCADCmd.exe for CAD import (default: found automatically)
     viewport_look: str = "studio"  # studio (AetherCFD's own look) | classic (ParaView-style, true cell values)
+    # auto (Smooth in Studio, Cells in Classic) | smooth (colours and contours interpolated to the mesh points)
+    # | cells (every cell's own value, stair-stepped contours: the mesh resolution stays visible)
+    viewport_smoothing: str = "auto"
     recent_cases: list[str] = Field(default_factory=list)
     case_roots: list[str] = Field(default_factory=lambda: [r"D:\OpenFOAM"])
 

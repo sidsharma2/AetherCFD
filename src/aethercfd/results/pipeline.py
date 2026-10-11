@@ -5,8 +5,16 @@ it. Cell data stays cell data wherever the operation allows (slice, clip, thresh
 polygon shows its parent cell's value. Stages that need continuous fields (contour, streamlines,
 quick schlieren) interpolate cell->point and say so ("interpolated") -- the viewport labels them.
 
+Smoothing is the viewer's choice (``smooth`` in run_stage): smooth colours slices and clips with the values
+interpolated to the mesh points and draws contours as smooth iso-lines/surfaces; cells (the default here)
+keeps every cell's own value and draws contours as the stair-stepped faces between cells (results.sections).
+
 Stage specs are plain dicts so they can be saved with layouts and sent across threads:
   {"id": "s1", "type": "slice", "axis": "z", "pos": 0.5}                      (pos: 0..1 of the bounds)
+  {"type": "slice", "section": True, "stack": 5, "axis": "x", "contours": 8, "arrows": True, "edges": True}
+  {"type": "slice", "origin": [x, y, z], "normal": [nx, ny, nz]}  or  {"type": "slice", "through": "<patch>"}
+  {"type": "streamlines", "seed": "patches", "patches": ["patch/inlet"], "color_by": "residence_time",
+   "tubes": True}                                                     (flow paths from inlets)
   {"type": "clip", "axis": "x", "pos": 0.5, "invert": False, "crinkle": False}
   {"type": "threshold", "field": "T", "lo": 1500, "hi": 2500}
   {"type": "contour", "field": "T", "values": [1500, 1800]}
@@ -32,9 +40,11 @@ CELLS = vtk.vtkDataObject.FIELD_ASSOCIATION_CELLS
 POINTS = vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS
 
 STAGE_TYPES = ["slice", "clip", "threshold", "contour", "streamlines", "glyphs", "schlieren", "quality",
-               "qcriterion", "isosurface"]
+               "qcriterion", "isosurface", "pathlines"]
 STAGE_FIELDS = {"threshold": "field", "contour": "field", "streamlines": "field", "glyphs": "field",
-                "schlieren": "source", "isosurface": "field", "qcriterion": "field"}
+                "schlieren": "source", "isosurface": "field", "qcriterion": "field", "slice": "field",
+                "clip": "field", "pathlines": "field"}
+RESIDENCE = "IntegrationTime"  # the stream tracer's time along a path: residence time from the seed
 
 
 @dataclass
@@ -47,6 +57,10 @@ class StageOutput:
     interpolated: bool = False
     label: str = ""
     notes: list[str] = field(default_factory=list)
+    # extra solid-coloured geometry drawn with the stage: "lines" (contours on a section), "arrows"
+    overlays: dict[str, vtk.vtkPolyData] = field(default_factory=dict)
+    edges: bool = False  # draw the cut cells' edges (the mesh) on this stage
+    title: str | None = None  # colour-bar title when it is not the array name (e.g. residence time [s])
 
 
 # ============================================================================ helpers
@@ -112,12 +126,47 @@ def _append(polys: list) -> vtk.vtkPolyData:
         return vtk.vtkPolyData()
     if len(polys) == 1:
         return polys[0]
+    polys = _pad_arrays(polys)
     app = vtk.vtkAppendPolyData()
     for p in polys:
         app.AddInputData(p)
     app.Update()
     out = vtk.vtkPolyData()
     out.ShallowCopy(app.GetOutput())
+    return out
+
+
+def _pad_arrays(polys: list) -> list:
+    """Appending keeps only the arrays every piece has: a multi-region section (fluid with U, solids without)
+    would lose U. Pieces missing an array get it filled with NaN (drawn in the colour map's 'no data' grey)."""
+    out = []
+    for kind in ("point", "cell"):
+        want: dict[str, tuple[int, int]] = {}
+        for p in polys:
+            data = p.GetPointData() if kind == "point" else p.GetCellData()
+            for i in range(data.GetNumberOfArrays()):
+                a = data.GetArray(i)
+                if a is not None and a.GetName() and a.GetDataType() in (vtk.VTK_FLOAT, vtk.VTK_DOUBLE):
+                    want.setdefault(a.GetName(), (a.GetNumberOfComponents(), a.GetDataType()))
+        if not want:
+            continue
+        for k, p in enumerate(polys):
+            data = p.GetPointData() if kind == "point" else p.GetCellData()
+            missing = [n for n in want if data.GetArray(n) is None]
+            if not missing:
+                continue
+            q = p.NewInstance()
+            q.ShallowCopy(p)
+            qd = q.GetPointData() if kind == "point" else q.GetCellData()
+            n = q.GetNumberOfPoints() if kind == "point" else q.GetNumberOfCells()
+            for name in missing:
+                ncomp, vtype = want[name]  # same type and width, or the append drops the array anyway
+                vals = np.full((n, ncomp) if ncomp > 1 else n, np.nan, dtype=nps.get_numpy_array_type(vtype))
+                arr = nps.numpy_to_vtk(vals, deep=True, array_type=vtype)
+                arr.SetName(name)
+                qd.AddArray(arr)
+            polys[k] = q
+    out.extend(polys)
     return out
 
 
@@ -161,9 +210,23 @@ def cell_to_point(ds):
     return out
 
 
-# ============================================================================ stages
-def stage_slice(spec, internal, field_name, comp) -> StageOutput:
-    plane = plane_from(spec, bounds_of(internal))
+def has_points(polys, name: str | None) -> bool:
+    """Does every non-empty dataset carry ``name`` as point data (the reader's cell-to-point values)?"""
+    polys = [p for p in polys if p is not None and p.GetNumberOfCells()]
+    return bool(name and polys and all(p.GetPointData().GetArray(name) is not None for p in polys))
+
+
+def colour_array(poly, name: str | None, comp: str, smooth: bool) -> tuple[str | None, str]:
+    """(array, association) to colour a cut surface by: interpolated point values when smoothing (and the
+    reader made them), else the cells' own values."""
+    if not name:
+        return None, "cell"
+    if smooth and poly.GetPointData().GetArray(name) is not None:
+        return scalar_array(poly, name, comp, "point"), "point"
+    return scalar_array(poly, name, comp), "cell"
+
+
+def _cut(internal, plane) -> vtk.vtkPolyData:
     polys = []
     for ds in internal:
         c = vtk.vtkPlaneCutter()
@@ -172,12 +235,125 @@ def stage_slice(spec, internal, field_name, comp) -> StageOutput:
         c.InterpolateAttributesOn()
         c.Update()
         polys.append(to_poly(c.GetOutput()))
+    return _append(polys)
+
+
+def section_planes(spec, bounds, patches: dict | None = None) -> tuple[list[vtk.vtkPlane], list[str]]:
+    """The plane(s) of a slice spec: one plane (axis/pos, origin/normal, through a patch's centre) or a
+    stack of n parallel planes along the axis."""
+    from aethercfd.results import sections as sx
+
+    notes = []
+    if spec.get("stack"):
+        base = {k: v for k, v in spec.items() if k != "origin"}
+        return [plane_from({**base, "pos": f}, bounds) for f in sx.stack_positions(int(spec["stack"]))], notes
+    spec = dict(spec)
+    if spec.get("through"):
+        hit = [p for k, p in (patches or {}).items() if k == spec["through"] or k.split("/")[-1] == spec["through"]]
+        centre = sx.centre_of(hit)
+        if centre is None:
+            notes.append(f"patch {spec['through']!r} not found: the plane goes through the domain centre")
+        else:
+            spec["origin"] = centre
+    if spec.get("origin") is None:
+        spec.pop("origin", None)
+    return [plane_from(spec, bounds)], notes
+
+
+def section_overlays(spec, poly, name, assoc, internal_vec, normal) -> tuple[dict, list[str]]:
+    """Contour lines and in-plane arrows drawn on a section (solid colours, over the field)."""
+    from aethercfd.results import sections as sx
+
+    out, notes = {}, []
+    nlev = spec.get("contours")
+    if nlev and name and poly.GetNumberOfCells():
+        levels = list(nlev) if isinstance(nlev, list | tuple) else None
+        data = poly.GetPointData() if assoc == "point" else poly.GetCellData()
+        lo, hi = data.GetArray(name).GetRange()
+        levels = levels or sx.auto_levels(lo, hi, int(nlev) if not isinstance(nlev, bool) else 8)
+        if assoc == "point":  # smooth: the iso-lines of the interpolated field
+            c = vtk.vtkContourFilter()
+            c.SetInputData(poly)
+            c.SetInputArrayToProcess(0, 0, 0, POINTS, name)
+            for i, v in enumerate(levels):
+                c.SetValue(i, float(v))
+            c.Update()
+            lines = to_poly(c.GetOutput())
+        else:  # cells: the edges between cut cells on either side of each level
+            lines = sx.staircase(poly, name, levels)
+        out["lines"] = lines
+    if spec.get("arrows") and poly.GetNumberOfCells():
+        vec = spec.get("vector") or internal_vec
+        arr = poly.GetCellData().GetArray(vec)
+        if arr is None or arr.GetNumberOfComponents() != 3:
+            notes.append(f"arrows: {vec!r} is not loaded")
+        else:
+            cc = vtk.vtkCellCenters()
+            cc.SetInputData(poly)
+            cc.VertexCellsOn()
+            cc.Update()
+            m = vtk.vtkMaskPoints()
+            m.SetInputConnection(cc.GetOutputPort())
+            m.SetMaximumNumberOfPoints(int(spec.get("max_arrows", 900)))
+            m.RandomModeOn()
+            m.SetRandomModeType(2)  # spatially stratified: evenly spread, not clumped where cells are small
+            m.GenerateVerticesOn()
+            m.Update()
+            pts = to_poly(m.GetOutput())
+            a = np.nan_to_num(nps.vtk_to_numpy(pts.GetPointData().GetArray(vec)).astype(np.float64))
+            n = np.asarray(normal, dtype=np.float64)
+            n = n / (np.linalg.norm(n) or 1.0)
+            inplane = a - np.outer(a @ n, n)  # what the section shows: the velocity in its plane
+            v = nps.numpy_to_vtk(np.ascontiguousarray(inplane), deep=True)
+            v.SetName("_inplane")
+            pts.GetPointData().AddArray(v)
+            b = poly.GetBounds()
+            diag = math.dist((b[0], b[2], b[4]), (b[1], b[3], b[5]))
+            mag = np.linalg.norm(inplane, axis=1)
+            spacing = diag / max(8.0, math.sqrt(max(pts.GetNumberOfPoints(), 1)))
+            g = vtk.vtkGlyph3D()
+            g.SetInputData(pts)
+            arrow = vtk.vtkArrowSource()
+            g.SetSourceConnection(arrow.GetOutputPort())
+            g.SetInputArrayToProcess(1, 0, 0, POINTS, "_inplane")
+            g.SetVectorModeToUseVector()
+            g.SetScaleModeToScaleByVector()
+            g.SetScaleFactor(float(spec.get("arrow_scale", 1.0)) * 0.9 * spacing / (mag.max() or 1.0))
+            g.OrientOn()
+            g.Update()
+            out["arrows"] = to_poly(g.GetOutput())
+            notes.append(f"arrows: in-plane {vec}")
+    return out, notes
+
+
+# ============================================================================ stages
+def stage_slice(spec, internal, field_name, comp, *, smooth: bool = False, patches: dict | None = None) \
+        -> StageOutput:
+    fname = spec.get("field") or field_name
+    planes, notes = section_planes(spec, bounds_of(internal), patches)
+    polys, lines, arrows = [], [], []
+    vec = "U"
+    for plane in planes:  # contours and arrows per plane: a stack's planes never connect to each other
+        poly = _cut(internal, plane)
+        name, assoc = colour_array(poly, fname, spec.get("component", comp), smooth)
+        ov, ov_notes = section_overlays(spec, poly, name, assoc, vec, plane.GetNormal())
+        polys.append(poly)
+        lines.append(ov.get("lines"))
+        arrows.append(ov.get("arrows"))
+        notes += [n for n in ov_notes if n not in notes]
     poly = _append(polys)
-    name = scalar_array(poly, field_name, comp) if field_name else None
-    return StageOutput(poly, name, "cell", _range(poly, name, "cell"), label="slice")
+    name, assoc = colour_array(poly, fname, spec.get("component", comp), smooth)
+    overlays = {k: _append(v) for k, v in (("lines", lines), ("arrows", arrows)) if any(x is not None for x in v)}
+    n = len(planes)
+    label = f"section{'s' if n > 1 else ''}" + (f" ×{n}" if n > 1 else "") if spec.get("section") else "slice"
+    if spec.get("contours"):
+        notes.append("contours: " + ("smooth iso-lines" if assoc == "point" else "per cell (the mesh's steps)"))
+    return StageOutput(poly, name, assoc, _range(poly, name, assoc), interpolated=assoc == "point",
+                       label=label + (" (smoothed)" if assoc == "point" else ""), notes=notes, overlays=overlays,
+                       edges=bool(spec.get("edges")))
 
 
-def stage_clip(spec, internal, field_name, comp) -> StageOutput:
+def stage_clip(spec, internal, field_name, comp, *, smooth: bool = False) -> StageOutput:
     plane = plane_from(spec, bounds_of(internal))
     if spec.get("invert"):
         n = plane.GetNormal()
@@ -197,9 +373,11 @@ def stage_clip(spec, internal, field_name, comp) -> StageOutput:
         f.Update()
         polys.append(to_poly(f.GetOutput()))
     poly = _append(polys)
-    name = scalar_array(poly, field_name, comp) if field_name else None
-    return StageOutput(poly, name, "cell", _range(poly, name, "cell"),
-                       label="clip (whole cells)" if spec.get("crinkle") else "clip")
+    name, assoc = colour_array(poly, spec.get("field") or field_name, comp, smooth and not spec.get("crinkle"))
+    label = "cut-away" if spec.get("cutaway") else "clip"
+    return StageOutput(poly, name, assoc, _range(poly, name, assoc), interpolated=assoc == "point",
+                       label=f"{label} (whole cells)" if spec.get("crinkle") else
+                       label + (" (smoothed)" if assoc == "point" else ""), edges=bool(spec.get("edges")))
 
 
 def stage_threshold(spec, internal, field_name, comp) -> StageOutput:
@@ -228,39 +406,66 @@ def stage_threshold(spec, internal, field_name, comp) -> StageOutput:
     return out
 
 
-def stage_contour(spec, internal, field_name, comp) -> StageOutput:
+def _levels(spec, internal, name) -> list[float]:
+    vals = spec.get("values") or []
+    if vals:
+        return [float(v) for v in vals]
+    rng = [ds.GetCellData().GetArray(name).GetRange() for ds in internal if ds.GetCellData().GetArray(name)]
+    if not rng:
+        return []
+    lo, hi = min(r[0] for r in rng), max(r[1] for r in rng)
+    return list(np.linspace(lo, hi, int(spec.get("n", 5)) + 2)[1:-1])
+
+
+def _pointed(ds, name: str):
+    """``ds`` with ``name`` as point data: the reader's (smooth mode reads it) or averaged from the cells."""
+    if ds.GetPointData().GetArray(name) is not None:
+        return ds
+    return cell_to_point(ds)
+
+
+def stage_contour(spec, internal, field_name, comp, *, smooth: bool = True) -> StageOutput:
+    """Smooth: iso-surfaces of the field interpolated to the mesh points. Cells: the faces between cells on
+    either side of each value -- a stair-stepped surface that shows the mesh resolution, nothing interpolated."""
+    from aethercfd.results import sections as sx
+
     fname = spec.get("field") or field_name
-    polys, used = [], None
-    for ds in internal:
-        name = scalar_array(ds, fname, spec.get("component", comp))
+    names = [scalar_array(ds, fname, spec.get("component", comp)) if fname else None for ds in internal]
+    used = next((n for n in names if n), None)
+    vals = _levels(spec, internal, used) if used else []
+    polys = []
+    for ds, name in zip(internal, names, strict=True):
         if name is None:
             continue
-        used = name
-        pd = cell_to_point(ds)
+        if not smooth:
+            polys.append(sx.staircase(ds, name, vals))
+            continue
+        pd = _pointed(ds, fname)
+        if pd.GetPointData().GetArray(name) is None:  # a vector component: point values of that component
+            scalar_array(pd, fname, spec.get("component", comp), "point")
         c = vtk.vtkContourFilter()
         c.SetInputData(pd)
         c.SetInputArrayToProcess(0, 0, 0, POINTS, name)
-        vals = spec.get("values") or []
-        if not vals:
-            lo, hi = ds.GetCellData().GetArray(name).GetRange()
-            vals = list(np.linspace(lo, hi, int(spec.get("n", 5)) + 2)[1:-1])
         for i, v in enumerate(vals):
             c.SetValue(i, float(v))
         c.ComputeScalarsOn()
         c.Update()
         polys.append(to_poly(c.GetOutput()))
     poly = _append(polys)
-    color = spec.get("color_by") or used
+    color = (spec.get("color_by") or used) if smooth else used  # a stepped surface carries its level only
     assoc = "point"
     if color and poly.GetPointData().GetArray(color) is None and poly.GetCellData().GetArray(color) is not None:
         assoc = "cell"
-    notes = []
+    notes = [] if smooth else ["per cell: the faces between cells on either side of each value (the mesh's steps)"]
     sm, sub = int(spec.get("smooth", 0) or 0), int(spec.get("subdivide", 0) or 0)
-    if sm or sub:
+    if (sm or sub) and smooth:
         poly = present_smooth(poly, sm, sub)
         notes.append(f"smoothed for presentation ({sm} iterations, {sub} subdivisions): not the raw data")
-    return StageOutput(poly, color, assoc, _range(poly, color, assoc), interpolated=True,
-                       label=f"contour {fname}", notes=notes)
+    out = StageOutput(poly, color, assoc, _range(poly, color, assoc), interpolated=smooth,
+                      label=f"contour {fname}" + ("" if smooth else " (per cell)"), notes=notes)
+    if used is None:
+        out.notes.append(f"field {fname!r} is not loaded")
+    return out
 
 
 def _seeds(spec, bounds) -> vtk.vtkAlgorithm:
@@ -301,38 +506,89 @@ def _seeds(spec, bounds) -> vtk.vtkAlgorithm:
         return s
     s = vtk.vtkPointSource()
     s.SetCenter(*(spec.get("center") or c))
-    s.SetRadius(float(spec.get("radius", 0.1 * max(ext))))
+    s.SetRadius(float(spec.get("radius", (0.03 if kind == "point" else 0.1) * max(ext))))
     s.SetNumberOfPoints(n)
     return s
 
 
-def stage_streamlines(spec, internal, field_name, comp) -> StageOutput:
+class _Static:
+    """A ready seed polydata posing as an algorithm (patch seeds are computed, not a VTK source)."""
+
+    def __init__(self, poly):
+        self.poly = poly
+
+    def Update(self):
+        pass
+
+    def GetOutput(self):
+        return self.poly
+
+
+def flow_seeds(spec, bounds, patches: dict | None = None):
+    """The seeds of a streamline / pathline stage: on patches (inlets), a line, a plane or a ball."""
+    from aethercfd.results import sections as sx
+
+    if spec.get("seed") == "patches":
+        want = spec.get("patches") or []
+        polys = [p for k, p in (patches or {}).items() if k in want or k.split("/")[-1] in want]
+        return _Static(sx.patch_seeds(polys, int(spec.get("n", 150))))
+    return _seeds(spec, bounds)
+
+
+def stage_streamlines(spec, internal, field_name, comp, *, patches: dict | None = None) -> StageOutput:
+    """Streamlines of the velocity interpolated to the mesh points (always: a path needs a continuous field).
+    Seeded on the inlet patches they run downstream only; 'IntegrationTime' along them is the residence time
+    since the seed (an estimate: no turbulent dispersion)."""
+    from aethercfd.results import sections as sx
+
     vec = spec.get("field") or "U"
     b = bounds_of(internal)
     diag = math.dist((b[0], b[2], b[4]), (b[1], b[3], b[5]))
     polys = []
-    seeds = _seeds(spec, b)  # keep the source alive while the tracer runs (a temporary crashes VTK)
+    seeds = flow_seeds(spec, b, patches)  # keep the source alive while the tracer runs (a temporary crashes VTK)
     seeds.Update()
+    from_patches = spec.get("seed") == "patches"
     for ds in internal:
         if ds.GetCellData().GetArray(vec) is None:
             continue
-        pd = cell_to_point(ds)
+        pd = _pointed(ds, vec)
         st = vtk.vtkStreamTracer()
         st.SetInputData(pd)
         st.SetSourceData(seeds.GetOutput())
         st.SetInputArrayToProcess(0, 0, 0, POINTS, vec)
         st.SetMaximumPropagation(float(spec.get("max_length", 3.0)) * diag)
-        st.SetIntegrationDirectionToBoth()
+        if from_patches:  # from an inlet, downstream only
+            st.SetIntegrationDirectionToForward()
+        else:
+            st.SetIntegrationDirectionToBoth()
         st.SetIntegratorTypeToRungeKutta45()
         st.SetInitialIntegrationStep(0.2)
         st.SetMaximumNumberOfSteps(int(spec.get("max_steps", 4000)))
         st.Update()
         polys.append(to_poly(st.GetOutput()))
     poly = _append(polys)
-    name = scalar_array(poly, vec, "magnitude", "point") if poly.GetNumberOfCells() else None
-    out = StageOutput(poly, name, "point", _range(poly, name, "point"), interpolated=True,
-                      label=f"streamlines {vec}")
-    if not poly.GetNumberOfCells():
+    notes = []
+    color = spec.get("color_by") or vec
+    title = None
+    if color in ("residence_time", "time", RESIDENCE):
+        name = RESIDENCE if poly.GetPointData().GetArray(RESIDENCE) is not None else None
+        title = "residence time [s]"
+        if name:
+            notes.append("residence time: time along each path from its seed (integration time; an estimate, "
+                         "no turbulent dispersion)")
+    else:
+        name = scalar_array(poly, color, "magnitude", "point") if poly.GetNumberOfCells() else None
+    if name is None and poly.GetNumberOfCells():
+        notes.append(f"{color!r} is not on the paths: coloured by |{vec}|")
+        name = scalar_array(poly, vec, "magnitude", "point")
+    rng = _range(poly, name, "point")
+    if spec.get("tubes") and poly.GetNumberOfLines():
+        poly = sx.tubes(poly, float(spec.get("tube_radius", 0.0025)) * diag)
+    out = StageOutput(poly, name, "point", rng, interpolated=True, title=title, notes=notes,
+                      label=("flow paths" if from_patches else "streamlines") + f" {vec}")
+    if from_patches and not seeds.GetOutput().GetNumberOfPoints():
+        out.notes.append("no inlet patch geometry to seed from")
+    elif not poly.GetNumberOfCells():
         out.notes.append(f"no streamlines: is {vec!r} loaded and are the seeds inside the domain?")
     return out
 
@@ -659,17 +915,55 @@ def stage_gpu_iso(spec, internal, field_name, comp, *, mesh_dirs: list[Path], de
     return out
 
 
+def stage_cell_iso(spec, internal, field_name, comp) -> StageOutput:
+    """Cells mode isosurface: the faces between cells on either side of the value (no interpolation)."""
+    from aethercfd.results import sections as sx
+
+    name = spec.get("field") or field_name
+    used, polys, notes = None, [], []
+    level = spec.get("value")
+    for ds in internal:
+        n = scalar_array(ds, name, spec.get("component", comp)) if name else None
+        if n is None:
+            continue
+        used = n
+        if level is None:
+            vals = nps.vtk_to_numpy(ds.GetCellData().GetArray(n))
+            level = float(np.median(vals))
+            notes.append(f"value {level:.4g} (median)")
+        polys.append(sx.staircase(ds, n, [float(level)]))
+    if used is None:
+        return StageOutput(vtk.vtkPolyData(), notes=[f"field {name!r} is not loaded"], label="isosurface")
+    poly = _append(polys)
+    notes.append("per cell: the faces between cells on either side of the value (the mesh's steps)")
+    return StageOutput(poly, used, "cell", _range(poly, used, "cell"), cmap=spec.get("cmap"),
+                       label=f"isosurface {name} (per cell)", notes=notes)
+
+
 STAGES = {"slice": stage_slice, "clip": stage_clip, "threshold": stage_threshold, "contour": stage_contour,
           "streamlines": stage_streamlines, "glyphs": stage_glyphs, "schlieren": stage_schlieren}
 
 
 def run_stage(spec: dict, internal: list, field_name: str | None, comp: str = "magnitude", *,
-              mesh_dirs: list[Path] | None = None, decomposed: bool = False) -> StageOutput:
+              mesh_dirs: list[Path] | None = None, decomposed: bool = False, smooth: bool = True,
+              patches: dict | None = None) -> StageOutput:
+    """One stage. ``smooth`` is the viewer's Smooth / Cells choice (slices, clips, contours, isosurfaces);
+    ``patches`` the patch surfaces read for it (inlet seeds, a plane through a patch)."""
     t = spec.get("type")
     if t == "quality":
         return stage_quality(spec, internal, field_name, comp, mesh_dirs=mesh_dirs or [])
+    if t == "isosurface" and not smooth:
+        return stage_cell_iso(spec, internal, field_name, comp)
     if t in ("qcriterion", "isosurface"):
         return stage_gpu_iso(spec, internal, field_name, comp, mesh_dirs=mesh_dirs or [], decomposed=decomposed)
+    if t == "slice":
+        return stage_slice(spec, internal, field_name, comp, smooth=smooth, patches=patches)
+    if t == "clip":
+        return stage_clip(spec, internal, field_name, comp, smooth=smooth)
+    if t == "contour":
+        return stage_contour(spec, internal, field_name, comp, smooth=smooth)
+    if t == "streamlines":
+        return stage_streamlines(spec, internal, field_name, comp, patches=patches)
     fn = STAGES.get(t)
     if fn is None:
         return StageOutput(vtk.vtkPolyData(), notes=[f"unknown stage {t!r}"])
@@ -684,10 +978,23 @@ def fields_needed(stages: list[dict]) -> set[str]:
             out.add(s[key])
             if s["type"] == "schlieren":
                 out.add(f"grad({s[key]})")
-        elif s.get("type") in ("streamlines", "glyphs", "qcriterion"):
+        elif s.get("type") in ("streamlines", "glyphs", "qcriterion", "pathlines"):
             out.add("U")
-        if s.get("color_by"):
+        if s.get("type") == "slice" and s.get("arrows"):
+            out.add(s.get("vector") or "U")
+        if s.get("color_by") and s["color_by"] not in ("residence_time", "time", RESIDENCE):
             out.add(s["color_by"])
+    return out
+
+
+def patches_needed(stages: list[dict]) -> set[str]:
+    """Patch surfaces the stages need besides the volume: inlet seeds, a plane through a patch."""
+    out = set()
+    for s in stages:
+        if s.get("seed") == "patches":
+            out.update(s.get("patches") or [])
+        if s.get("through"):
+            out.add(s["through"])
     return out
 
 

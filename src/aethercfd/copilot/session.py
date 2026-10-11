@@ -50,7 +50,13 @@ a time and say what you are doing; never use point_at as decoration.
 - For "show me the result / a nice view", start with show_field then viewport_showcase (it picks the slice \
 through the most of the flow, in a glass shell, in the Studio look). To check what the user sees, render_image \
 at about 1280x720 and Read the PNG; if the picture is uninformative (a uniform colour, a tiny colour range), \
-move or change the slice before describing it. viewport_animation makes a turntable or time sweep; \
+move or change the slice before describing it. viewport_section cuts sections (mid-planes, three orthogonal \
+planes, a slice stack, a plane through 3 points or through a patch such as the probe tip) with contours, \
+arrows or mesh edges, and opens a 2D view of it; viewport_flow_paths draws flow paths from the inlets (or a \
+named inlet, a point, a line) coloured by |U| or residence time; viewport_smoothing switches Smooth \
+(interpolated, labelled 'smoothed') vs Cells (each cell's own value: the mesh resolution shows) -- use cells when \
+the user wants to see the mesh. viewport_bookmark / viewport_quad / viewport_line_probe for saved views, four \
+views and a field profile along a line. viewport_animation makes a turntable or time sweep; \
 open_in_paraview hands the case to ParaView. To run a case the user just created, run_openfoam with \
 preset auto (it runs the tutorial's Allrun, or mesh + check + solve) instead of guessing the steps.
 - Use case_checks for setup problems, mesh_hotspots/grading_design/wall_spacing for mesh work.

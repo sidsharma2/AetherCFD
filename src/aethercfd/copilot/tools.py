@@ -34,7 +34,8 @@ class ToolError(RuntimeError):
 class UiHooks(Protocol):
     """Implemented by the GUI; absent in headless mode."""
 
-    def show_field(self, field: str, time: str | None, slice_axis: str | None) -> str: ...
+    def show_field(self, field: str, time: str | None, slice_axis: str | None,
+                   smoothing: str | None = None) -> str: ...
 
     def open_file(self, path: Path, line: int | None) -> str: ...
 
@@ -136,10 +137,16 @@ class JournalParams(BaseModel):
     last: int = Field(10, ge=1, le=100)
 
 
+SMOOTHING_HELP = ("smooth (colours, sections and contours interpolated from the cell values, no mesh stair-steps) | "
+                  "cells (every cell's own value, contours per cell: the mesh resolution shows) | auto (the "
+                  "look's default); omit to keep the current choice")
+
+
 class ShowFieldParams(BaseModel):
     field: str
     time: str | None = Field(None, description="Time folder name; default latest")
     slice_axis: str | None = Field(None, description="x | y | z for a mid-plane slice, or omit")
+    smoothing: str | None = Field(None, description=SMOOTHING_HELP)
 
 
 class OpenFileParams(BaseModel):
@@ -552,7 +559,7 @@ def run_control(ctx: ToolContext, p: RunControlParams) -> dict:
 def show_field(ctx: ToolContext, p: ShowFieldParams) -> dict:
     if ctx.ui is None:
         raise ToolError("no GUI attached")
-    return {"result": ctx.ui.show_field(p.field, p.time, p.slice_axis)}
+    return {"result": ctx.ui.show_field(p.field, p.time, p.slice_axis, p.smoothing)}
 
 
 def open_file(ctx: ToolContext, p: OpenFileParams) -> dict:
@@ -611,6 +618,74 @@ class AddStageParams(BaseModel):
         "'line','axis':'x','pos':0.05,'n':60}; threshold {'field':'T','lo':1500}; quality {'metric':"
         "'nonOrthogonality','min':60}; schlieren {'source':'rho','axis':'z'}. smooth/subdivide are presentation-only."))
     wait_s: float = Field(60.0, ge=0, le=600, description="Wait for the stage to be computed and report its result")
+    smoothing: str | None = Field(None, description=SMOOTHING_HELP + " (applies to slices, clips, contours and "
+                                                                     "isosurfaces)")
+
+
+class SmoothingParams(BaseModel):
+    mode: str = Field(description="smooth | cells | auto")
+    mesh_edges: bool | None = Field(None, description="Cells mode: draw the mesh edges on surfaces and sections")
+
+
+class SectionParams(BaseModel):
+    preset: str = Field("mid-z", description="mid-x | mid-y | mid-z (one mid-plane) | ortho3 (three orthogonal "
+                                             "mid-planes) | stack (n parallel slices along axis) | plane (through "
+                                             "3 points, a point + normal, or the centre of a patch)")
+    axis: str | None = Field(None, description="stack: the axis the slices are spread along; plane: the normal "
+                                               "direction when no normal is given")
+    n: int = Field(5, ge=2, le=40, description="stack: number of slices")
+    points: list[list[float]] | None = Field(None, description="plane: three points [[x,y,z],[x,y,z],[x,y,z]]")
+    origin: list[float] | None = Field(None, description="plane: a point on it [x,y,z]")
+    normal: list[float] | None = Field(None, description="plane: its normal [nx,ny,nz]")
+    through: str | None = Field(None, description="plane: through the centre of this patch (fuzzy name, e.g. "
+                                                  "'probe tip' -> PROBE_TIP_REGION_FRAGMENT)")
+    field_colours: bool | None = Field(None, description="colour the sections by the field (default on)")
+    mesh_edges: bool | None = Field(None, description="draw the cut cells' edges on the sections")
+    contours: bool | None = Field(None, description="contour lines on the sections (smooth or per cell, by the "
+                                                    "smoothing)")
+    arrows: bool | None = Field(None, description="arrows of the in-plane velocity on the sections")
+    smoothing: str | None = Field(None, description=SMOOTHING_HELP)
+    keep_existing: bool = Field(False, description="add to the current sections instead of replacing them")
+    open_2d: bool = Field(False, description="also open a 2D view looking straight at the (last) section")
+    cutaway_axis: str | None = Field(None, description="instead of sections: clip the volume normal to x|y|z to see "
+                                                       "inside (in a glass shell)")
+    clear: bool = Field(False, description="remove all sections and cut-aways")
+
+
+class BookmarkParams(BaseModel):
+    action: str = Field(description="save | restore | delete | list | render (one image per saved view)")
+    name: str = Field("", description="name of the saved view")
+
+
+class QuadParams(BaseModel):
+    on: bool = Field(True, description="four linked views (top, front, right orthographic + 3D) or back to one")
+
+
+class FlowPathParams(BaseModel):
+    source: str = Field("inlets", description="inlets (seeded on the inlet patches) | point | line | plane")
+    inlets: list[str] | None = Field(None, description="inlets: only these patches (fuzzy names, e.g. 'dilution "
+                                                       "inlet'); default every inlet found")
+    point: list[float] | None = Field(None, description="point: [x,y,z] (seeds in a small ball around it)")
+    p1: list[float] | None = Field(None, description="line: first point")
+    p2: list[float] | None = Field(None, description="line: second point")
+    axis: str | None = Field(None, description="plane: its normal x|y|z (default the long axis)")
+    pos: float | None = Field(None, ge=0, le=1, description="plane: position along the axis, 0..1")
+    n: int | None = Field(None, ge=4, le=2000, description="number of seeds")
+    color_by: str | None = Field(None, description="U (speed) | residence_time (time along the path from its "
+                                                   "seed, shown on the colour bar) | a field name | field (the "
+                                                   "shown field)")
+    tubes: bool | None = Field(None, description="draw as tubes (default in the Studio look)")
+    pathlines: bool | None = Field(None, description="pathlines through the saved times (transient runs; a steady "
+                                                     "run or a single time falls back to streamlines and says so)")
+    clear: bool = Field(False, description="remove the flow paths")
+
+
+class LineProbeParams(BaseModel):
+    p1: list[float] = Field(description="start point [x,y,z]")
+    p2: list[float] = Field(description="end point [x,y,z]")
+    field: str | None = Field(None, description="field (default the shown one)")
+    n: int = Field(300, ge=2, le=20000, description="samples along the line")
+    wait_s: float = Field(60.0, ge=0, le=600)
 
 
 class RemoveStageParams(BaseModel):
@@ -618,7 +693,8 @@ class RemoveStageParams(BaseModel):
 
 
 class CameraParams(BaseModel):
-    view: str = Field(description="iso | x | y | z | fit | frame (zoom onto a stage)")
+    view: str = Field(description="iso | front | back | top | bottom | left | right | x | y | z | fit | frame "
+                                  "(zoom onto a stage) | the name of a saved view")
     stage_id: str | None = None
 
 
@@ -684,9 +760,62 @@ def app_select_file(ctx: ToolContext, p: SelectFileParams) -> dict:
     return {"result": _ui(ctx).select_file(p.path)}
 
 
+def app_smoothing(ctx: ToolContext, p: SmoothingParams) -> dict:
+    return {"result": _ui(ctx).viewport_smoothing(p.mode, p.mesh_edges)}
+
+
+def app_section(ctx: ToolContext, p: SectionParams) -> dict:
+    ui = _ui(ctx)
+    if p.cutaway_axis:
+        return {"result": ui.cutaway(p.cutaway_axis)}
+    show = {k: v for k, v in (("field", p.field_colours), ("edges", p.mesh_edges), ("contours", p.contours),
+                              ("arrows", p.arrows)) if v is not None}
+    return {"result": ui.section(p.preset, p.axis, p.n, p.origin, p.normal, p.points, p.through, show or None,
+                                 p.smoothing, p.keep_existing, p.open_2d, p.clear)}
+
+
+def app_bookmark(ctx: ToolContext, p: BookmarkParams) -> dict:
+    return {"result": _ui(ctx).bookmark(p.action, p.name)}
+
+
+def app_quad(ctx: ToolContext, p: QuadParams) -> dict:
+    return {"result": _ui(ctx).quad(p.on)}
+
+
+def app_flow_paths(ctx: ToolContext, p: FlowPathParams) -> dict:
+    ui = _ui(ctx)
+    res = ui.flow_paths(p.source, p.inlets, p.point, p.p1, p.p2, p.axis, p.pos, p.n, p.color_by, p.tubes,
+                        p.pathlines, p.clear)
+    return {"result": res}
+
+
+def app_line_probe(ctx: ToolContext, p: LineProbeParams) -> dict:
+    ui = _ui(ctx)
+    msg = ui.line_probe(p.p1, p.p2, p.field, p.n)
+    if not str(msg).startswith("probing"):
+        raise ToolError(str(msg))
+    deadline = time.monotonic() + p.wait_s
+    res = None
+    while time.monotonic() < deadline:
+        res = ui.line_status()
+        if res:
+            break
+        time.sleep(0.4)
+    if not res:
+        return {"result": msg, "computed": False}
+    if res.get("error"):
+        raise ToolError(res["error"])
+    vals = [v for v in res["values"] if v is not None]
+    k = max(1, len(res["values"]) // 40)  # a readable profile for the model: ~40 samples
+    return {"result": msg, "field": res["field"], "association": res["association"],
+            "inside": res["inside"], "n": res["n"], "min": min(vals) if vals else None,
+            "max": max(vals) if vals else None,
+            "profile": [[round(s, 6), v] for s, v in list(zip(res["s"], res["values"], strict=True))[::k]]}
+
+
 def app_add_stage(ctx: ToolContext, p: AddStageParams) -> dict:
     ui = _ui(ctx)
-    sid = ui.add_stage(p.type, p.params)
+    sid = ui.add_stage(p.type, p.params, p.smoothing) if p.smoothing else ui.add_stage(p.type, p.params)
     if not str(sid).startswith("c"):
         raise ToolError(str(sid))
     deadline = time.monotonic() + p.wait_s
@@ -817,8 +946,27 @@ BASE_TOOLS: list[Tool] = [
          "wait for its result.", AddStageParams, app_add_stage, gui_only=True),
     Tool("remove_view_stage", "Remove one visualization stage (or all).", RemoveStageParams, app_remove_stage,
          gui_only=True),
-    Tool("viewport_camera", "Move the 3D camera: iso, x, y, z, fit, or frame a stage.", CameraParams, app_camera,
-         gui_only=True),
+    Tool("viewport_camera", "Move the 3D camera: a standard view (iso, front, back, top, bottom, left, right), fit, "
+         "frame a stage, or a saved view by name.", CameraParams, app_camera, gui_only=True),
+    Tool("viewport_smoothing", "Smooth vs Cells in the 3D viewport: smooth = colours, sections and contours "
+         "interpolated from the cell values (no mesh stair-steps, labelled 'smoothed'); cells = every cell's own "
+         "value and per-cell contours, so the mesh resolution is visible (optionally with mesh edges). The "
+         "user's choice is remembered.", SmoothingParams, app_smoothing, gui_only=True),
+    Tool("viewport_section", "Sections through the 3D result: a mid-plane, three orthogonal planes, a stack of "
+         "parallel slices, or a plane through 3 points / a point + normal / the centre of a patch (e.g. the probe "
+         "tip); with field colours, mesh edges, contour lines and in-plane arrows; optionally a 2D view looking "
+         "straight at it, or a cut-away (clip) to see inside.", SectionParams, app_section, gui_only=True),
+    Tool("viewport_bookmark", "Saved camera views of the case: save, restore, delete, list, or render one image "
+         "per saved view.", BookmarkParams, app_bookmark, gui_only=True),
+    Tool("viewport_quad", "Quad view: top, front and right (orthographic) and the 3D view at once, same scene.",
+         QuadParams, app_quad, gui_only=True),
+    Tool("viewport_flow_paths", "Flow paths: streamlines seeded on the inlet patches (all, or named ones such as "
+         "the dilution inlet), a point, a line or a plane; coloured by |U|, a field, or the residence time along "
+         "each path; tubes in the Studio look; pathlines through saved times for transient runs.",
+         FlowPathParams, app_flow_paths, gui_only=True),
+    Tool("viewport_line_probe", "Plot a field along a straight line through the mesh (opens a line plot for the "
+         "user) and return the profile: interpolated in Smooth mode, the cells' own (stepped) values in Cells "
+         "mode.", LineProbeParams, app_line_probe, gui_only=True),
     Tool("render_image", "Render the current 3D view offscreen at up to 8K with anti-aliasing into the case's "
          ".aethercfd/local/renders folder; returns the image path. To SEE what the user sees, render at e.g. "
          "1280x720 and open the returned PNG with the Read tool.", RenderParams, app_render, gui_only=True),
