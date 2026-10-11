@@ -70,6 +70,9 @@ def check_wsl_options(options: Sequence[str]) -> None:
 class WslRunner:
     def __init__(self, distro: str, *, allowed: Sequence[str] | None = None, wsl_exe: str = "wsl.exe"):
         allowed = list(allowed) if allowed is not None else [distro]
+        if not distro:
+            raise DistroNotAllowed("no WSL distro is set up for OpenFOAM yet: open Help > Setup Wizard to pick one "
+                                   "(or set wsl.default_distro in settings.toml)")
         if distro not in allowed:
             raise DistroNotAllowed(f"distro {distro!r} is not in the allowed list {allowed}")
         if distro.lower() == "agora":

@@ -76,6 +76,9 @@ class AppAutomation:
                                                            if k in ("cells", "notes", "label", "range")}}
                                           for s in vp.stages],
                                "gpu": self.sv.gl_renderer}
+            if vp.regions():
+                out["viewport"]["regions"] = {"all": vp.regions(), "kinds": vp.region_kinds,
+                                              "shown": vp.region_sel or vp.regions()}
         return out
 
     # ------------------------------------------------------------------ panels and perspectives
@@ -250,7 +253,9 @@ class AppAutomation:
         return f"selected {p.name} (details in the Properties panel)"
 
     # ------------------------------------------------------------------ visualization
-    def add_stage(self, kind: str, params: dict) -> str:
+    def add_stage(self, kind: str, params: dict, regions=None) -> str:
+        """A visualization stage on the viewport's shown regions (``regions``: show those first, e.g.
+        'solids' on a CHT case). Returns the stage id ('c<n>') or why not."""
         from aethercfd.results.pipeline import STAGE_TYPES
 
         if kind not in STAGE_TYPES:
@@ -258,6 +263,10 @@ class AppAutomation:
         vp = self._viewport()
         if vp is None:
             return "no viewport"
+        if regions is not None:
+            msg = vp._apply_regions(regions)  # loaded with the stage below
+            if msg.startswith("cannot"):
+                return msg
         sid = f"c{next(_IDS)}"
         vp.set_stages([*vp.stages, {"id": sid, "type": kind, "visible": True, **params}])
         vis = next(iter(self.sv.host.panels_of("aether.vis_controls")), None)
@@ -321,9 +330,21 @@ class AppAutomation:
         except ValueError as exc:
             return str(exc)
 
-    def showcase(self) -> str:
+    def showcase(self, regions=None) -> str:
         vp = self._viewport(open_if_missing=True)
-        return vp.showcase() if vp is not None else "no viewport"
+        return vp.showcase(regions) if vp is not None else "no viewport"
+
+    def viewport_regions(self, regions=None) -> dict:
+        """Show only some regions of a multi-region (CHT) case ('solids', 'fluid', names, 'all'); with
+        ``regions`` None just report them. Slices and visualization stages use only the shown regions."""
+        vp = self._viewport(open_if_missing=True)
+        if vp is None:
+            return {"ok": False, "result": "no viewport"}
+        msg = vp.set_regions(regions) if regions is not None else "regions shown: " + (
+            ", ".join(vp.region_sel or vp.regions()) or "(single-region case)")
+        bad = msg.startswith("cannot")
+        return {"ok": not bad, "result": msg, "regions": vp.regions(), "kinds": vp.region_kinds,
+                "shown": vp.region_sel or vp.regions()}
 
     def animation(self, kind: str, frames: int, fps: int, fmt: str) -> str:
         vp = self._viewport(open_if_missing=False)

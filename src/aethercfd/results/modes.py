@@ -46,8 +46,12 @@ class DmdResult:
         return int(np.argmax(self.growth_rate))
 
 
-def _linalg_backend(backend: str):
-    """(xp, name): CuPy only if its linear algebra (cuBLAS/cuSOLVER) loads; numpy otherwise."""
+GPU_POD_MIN_VALUES = 2_000_000  # values per snapshot from which POD runs faster on the GPU (incl. the copy)
+
+
+def _linalg_backend(backend: str, nbytes: int = 0):
+    """(xp, name): CuPy only if its linear algebra (cuBLAS/cuSOLVER) loads and the data (about 4 working copies of
+    ``nbytes``) fits in the GPU's free memory; numpy otherwise (a 4 GB laptop GPU swaps to a crawl when full)."""
     from aethercfd.core.gpu import array_module
 
     xp, name = array_module(backend)
@@ -57,6 +61,12 @@ def _linalg_backend(backend: str):
             _ = (a @ a, xp.linalg.eigh(a))
         except Exception:  # cuBLAS/cuSOLVER are not part of the minimal CUDA wheels
             return np, "cpu (CUDA linear algebra unavailable)"
+        try:
+            free, _total = xp.cuda.Device().mem_info
+            if nbytes and 4 * nbytes > 0.8 * free:
+                return np, f"cpu ({nbytes / 2**30:.1f} GB of snapshots: too large for the GPU's free memory)"
+        except Exception:
+            pass
     return xp, name
 
 
@@ -71,8 +81,10 @@ def pod(snapshots, *, weights: np.ndarray | None = None, n_modes: int | None = N
         backend: str = "auto") -> PodResult:
     from aethercfd.core.gpu import to_numpy
 
-    xp, name = _linalg_backend(backend)
     X, shape = _flatten(snapshots)
+    if backend == "auto" and X.shape[1] < GPU_POD_MIN_VALUES:
+        backend = "cpu"  # measured on an RTX 3050 Ti: below ~2M values the PCIe copy costs more than it saves
+    xp, name = _linalg_backend(backend, X.nbytes)
     nt = X.shape[0]
     if nt < 2:
         raise ValueError("POD needs at least two snapshots")
@@ -114,7 +126,6 @@ def dmd(snapshots, *, dt: float = 1.0, rank: int | None = None, delays: int = 1,
     (a standing wave has one shape but two eigenvalues), which plain DMD cannot represent."""
     from aethercfd.core.gpu import to_numpy
 
-    xp, name = _linalg_backend(backend)
     X, shape = _flatten(snapshots)
     if delays > 1:
         m = X.shape[0] - delays + 1
@@ -123,13 +134,24 @@ def dmd(snapshots, *, dt: float = 1.0, rank: int | None = None, delays: int = 1,
         X = np.hstack([X[k:k + m] for k in range(delays)])
     if X.shape[0] < 3:
         raise ValueError("DMD needs at least three equally spaced snapshots")
+    if backend == "auto":
+        backend = "cpu"  # measured: with the method of snapshots the CPU beats copying the data to the GPU
+    xp, name = _linalg_backend(backend, X.nbytes)
     D = xp.asarray(X.T)  # (n * delays, m+1)
     X1, X2 = D[:, :-1], D[:, 1:]
-    U, s, Vh = xp.linalg.svd(X1, full_matrices=False)
+    # SVD by the method of snapshots: eigen-decompose the small (m x m) Gram matrix instead of factorising the
+    # tall (n x m) data -- one big GEMM, fast on CPU and GPU (a tall-skinny SVD is slow on cuSOLVER)
+    G = X1.conj().T @ X1
+    lam_g, V = xp.linalg.eigh(G)
+    order = xp.argsort(lam_g)[::-1]
+    lam_g, V = xp.clip(lam_g[order], 0, None), V[:, order]
+    s = xp.sqrt(lam_g)
     r = int(min(rank or len(s), len(s)))
-    keep = s[:r] > s[0] * 1e-10
+    keep = s[:r] > s[0] * 1e-7  # the Gram matrix squares the condition number: a looser cut than for an SVD
     r = int(to_numpy(keep).sum()) or 1
-    U, s, Vh = U[:, :r], s[:r], Vh[:r]
+    s, V = s[:r], V[:, :r]
+    Vh = V.conj().T
+    U = (X1 @ V) / s
     Atilde = U.conj().T @ X2 @ Vh.conj().T / s
     lam, W = np.linalg.eig(to_numpy(Atilde))  # small r x r: on the CPU
     Phi = to_numpy(X2 @ Vh.conj().T / s) @ W  # exact DMD modes (n, r)

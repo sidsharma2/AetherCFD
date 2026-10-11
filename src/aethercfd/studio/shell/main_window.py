@@ -114,6 +114,8 @@ class MainWindow(QMainWindow):
         w.addAction("Layout Diagnostics…", self.show_layout_diagnostics)
 
         h = mb.addMenu("&Help")
+        h.addAction(icon("msc.settings-gear"), "Setup Wizard…", self.show_setup_wizard)
+        h.addSeparator()
         h.addAction("About AetherCFD", lambda: QMessageBox.about(
             self, "AetherCFD Studio", f"AetherCFD Studio {__version__}\nDrives OpenFOAM without hiding it."))
 
@@ -229,10 +231,20 @@ class MainWindow(QMainWindow):
         NewCaseWizard(self.services, self).exec()
 
     def open_case_dialog(self) -> None:
+        roots = [r for r in self.services.settings.case_roots if r]
         d = QFileDialog.getExistingDirectory(self, "Open OpenFOAM case (folder with system/controlDict)",
-                                             r"D:\OpenFOAM")
+                                             roots[0] if roots else "")
         if d:
             self.services.open_case(d)
+
+    def show_setup_wizard(self) -> None:
+        """First-run setup (WSL, OpenFOAM, case folders, optional tools, the copilot's AI sign-in); re-openable."""
+        from aethercfd.studio.dialogs.setup_wizard import SetupWizard
+
+        if SetupWizard(self.services, self).exec():
+            for p in self.host.panels_of("aether.copilot"):  # the provider choice may have changed
+                if hasattr(p, "reload_provider"):
+                    p.reload_provider()
 
     def show_layout_diagnostics(self) -> None:
         scr = current_screens()

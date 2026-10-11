@@ -142,7 +142,19 @@ class ViewportPanel(Panel):
         self.cmap = QComboBox(toolTip="Colour map (Studio picks one per field until you choose)")
         self.cmap.addItems(CMAPS)
         self.lock = QCheckBox("Lock range", toolTip="Keep the colour range when the time changes")
-        for w in (QLabel("Field"), self.field, self.comp, QLabel("  t"), self.prev_t, self.time, self.next_t,
+        # multi-region (CHT) cases: which regions are shown (and sliced, and run through the stages)
+        self.region_btn = QToolButton(toolTip="Regions of this multi-region (CHT) case to show: slices and "
+                                              "visualization stages use only the shown regions")
+        self.region_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.region_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.region_menu = QMenu(self.region_btn)
+        self.region_btn.setMenu(self.region_menu)
+        self.region_btn.setVisible(False)
+        self.region_sel: list[str] | None = None  # shown regions; None = all (or a single-region case)
+        self.region_kinds: dict[str, str] = {}  # region -> 'fluid' | 'solid'
+        self.block_regions: dict[str, str] = {}  # drawn block -> its region (per-region depth offsets)
+        for w in (QLabel("Field"), self.field, self.comp, self.region_btn, QLabel("  t"), self.prev_t, self.time,
+                  self.next_t,
                   self.last_t, self.follow, QLabel("  "), self.look_box, self.rep, self.cmap, self.lock):
             bar.addWidget(w)
         bar.addStretch(1)
@@ -170,12 +182,15 @@ class ViewportPanel(Panel):
         self.plotter.enable_anti_aliasing("fxaa")
         self.plotter.enable_depth_peeling(number_of_peels=4)  # correct order for translucent base meshes
         self.plotter.enable_lightkit()  # key/fill/back lights: shape reads clearly on smooth surfaces
+        # coincident faces (the surfaces of two regions at their interface) get per-mapper depth offsets, so
+        # one region always wins there instead of the two flickering in dark streaks (z-fighting)
+        vtk.vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
         self.plotter.add_axes(color=T.text_dim)
         split.addWidget(self.plotter)
         side = QWidget()
         sl = QFormLayout(side)
         self.patches = QListWidget()
-        self.patches.itemChanged.connect(lambda *_: self.request_load())
+        self.patches.itemChanged.connect(self._on_patch_toggled)
         self.patches.currentItemChanged.connect(self._select_patch)
         sl.addRow(QLabel("Show"))
         sl.addRow(self.patches)
@@ -293,6 +308,8 @@ class ViewportPanel(Panel):
         self._clear_actors()
         self._first_data = True
         self.meta = {}
+        self.region_sel, self.region_kinds, self.block_regions = None, {}, {}
+        self.region_btn.setVisible(False)
         if self.case_root is None:
             return
         case = self.ctx.services.session.case() if self.ctx.services.session else None
@@ -364,8 +381,10 @@ class ViewportPanel(Panel):
                     on = False  # a multi-region case's top-level mesh (often the unsplit original) overlaps the regions
                 it.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
                 self.patches.addItem(it)
+            self._check_regions(self.region_sel)  # a rebuilt list keeps the shown regions
         for w in (self.field, self.time, self.patches):
             w.blockSignals(False)
+        self._setup_regions()
         self.request_load(reset_range=True)
 
     def _latest_time_with(self, field: str) -> int:
@@ -396,10 +415,153 @@ class ViewportPanel(Panel):
         self.ctx.services.select({"kind": "patch", "name": cur.text().split("/")[-1], "region": region_of(cur.text())})
 
     def _internal_meshes(self) -> list[str]:
+        """Internal meshes of the shown regions (all of them for a single-region case)."""
         from aethercfd.results.foam_reader import region_of
 
         meshes = [p for p in self.meta.get("patches", []) if p.endswith("internalMesh")]
-        return [p for p in meshes if region_of(p)] if self.meta.get("regions") else meshes
+        if not self.meta.get("regions"):
+            return meshes
+        return [p for p in meshes if region_of(p) and (self.region_sel is None or region_of(p) in self.region_sel)]
+
+    # ------------------------------------------------------------------ regions (multi-region / CHT cases)
+    def regions(self) -> list[str]:
+        return list(self.meta.get("regions") or [])
+
+    def _setup_regions(self) -> None:
+        """Fill the Regions menu from the case's regions (hidden for a single-region case)."""
+        regions = self.regions()
+        if regions and self.case_root is not None and set(self.region_kinds) != set(regions):
+            from aethercfd.results.casedata import region_kinds
+
+            self.region_kinds = region_kinds(self.case_root, regions)
+        pending, self._pending_regions = getattr(self, "_pending_regions", None), None
+        if pending and regions and self.region_sel is None:
+            from aethercfd.results.casedata import resolve_regions
+
+            with contextlib.suppress(ValueError):  # a saved / queued choice that no longer fits: all regions
+                sel = resolve_regions(pending, regions, self.region_kinds)
+                if sel and len(sel) < len(regions):
+                    self._check_regions(sel)
+                    self.region_sel = sel
+                    self._first_data = True
+        if self.region_sel is not None and not set(self.region_sel) <= set(regions):
+            self.region_sel = None
+        m = self.region_menu
+        m.clear()
+        if not regions:
+            self.region_btn.setVisible(False)
+            return
+
+        def later(fn):  # the menu is rebuilt by what its actions do: never inside their own signal
+            return lambda *_: QTimer.singleShot(0, fn)
+
+        m.addAction("All regions", later(lambda: self.set_regions(None)))
+        fluids = [r for r in regions if self.region_kinds.get(r) == "fluid"]
+        solids = [r for r in regions if self.region_kinds.get(r) == "solid"]
+        if fluids and solids:
+            m.addAction("Fluid only" if len(fluids) == 1 else "Fluids only", later(lambda: self.set_regions("fluid")))
+            m.addAction("Solids only" if len(solids) > 1 else "Solid only", later(lambda: self.set_regions("solids")))
+        m.addSeparator()
+        shown = set(self.region_sel or regions)
+        for r in regions:
+            a = m.addAction(f"{r}  ({self.region_kinds.get(r, '?')})")
+            a.setCheckable(True)
+            a.setChecked(r in shown)
+            a.toggled.connect(lambda on, r=r: QTimer.singleShot(0, lambda: self._toggle_region(r, on)))
+        self.region_btn.setText(f"Regions: {self._regions_label()}  ")
+        self.region_btn.setVisible(True)
+
+    def _regions_label(self, sel: list[str] | None = None) -> str:
+        sel = self.region_sel if sel is None else sel
+        regions = self.regions()
+        if sel is None or set(sel) == set(regions):
+            return "all"
+        kinds = {self.region_kinds.get(r) for r in sel}
+        same_kind = [r for r in regions if self.region_kinds.get(r) in kinds]
+        if len(kinds) == 1 and set(sel) == set(same_kind) and len(sel) > 1:
+            return "solids" if kinds == {"solid"} else "fluids"
+        return ", ".join(sel) if len(sel) <= 2 else f"{len(sel)} of {len(regions)}"
+
+    def _toggle_region(self, region: str, on: bool) -> None:
+        current = self.region_sel or self.regions()
+        shown = [r for r in self.regions() if (r in current and r != region) or (r == region and on)]
+        if shown:
+            self.set_regions(shown)
+        else:  # never nothing: the last region stays
+            self._setup_regions()
+
+    def _check_regions(self, sel: list[str] | None) -> None:
+        """Tick the 'Show' list for the shown regions: a hidden region's entries off; a shown region with
+        nothing ticked gets its default (internal mesh, or its patches for a very large case)."""
+        from aethercfd.results.foam_reader import region_of
+
+        items = [self.patches.item(i) for i in range(self.patches.count())]
+        big = (self.ctx.services.session.case().n_cells or 0) > 2_000_000 if self.ctx.services.session else False
+        ticked = {region_of(it.text()) for it in items if it.checkState() == Qt.CheckState.Checked}
+        was = self.patches.blockSignals(True)
+        try:
+            for it in items:
+                r = region_of(it.text())
+                if not r:
+                    continue
+                internal = it.text().endswith("internalMesh")
+                if sel is not None and r not in sel:
+                    it.setCheckState(Qt.CheckState.Unchecked)
+                elif r not in ticked and internal != big:
+                    it.setCheckState(Qt.CheckState.Checked)
+        finally:
+            self.patches.blockSignals(was)
+
+    def _on_patch_toggled(self, *_) -> None:
+        """The expert 'Show' list: the shown regions follow what is ticked there."""
+        from aethercfd.results.foam_reader import region_of
+
+        regions = self.regions()
+        if regions:
+            on = {region_of(self.patches.item(i).text()) for i in range(self.patches.count())
+                  if self.patches.item(i).checkState() == Qt.CheckState.Checked} - {""}
+            sel = [r for r in regions if r in on]
+            new = None if not sel or len(sel) == len(regions) else sel
+            if new != self.region_sel:
+                self.region_sel = new
+                self._setup_regions()
+        self.request_load()
+
+    def set_regions(self, regions=None) -> str:
+        """Show only these regions of a multi-region (CHT) case: names, 'fluid', 'solids' or None / 'all'
+        (see casedata.resolve_regions). Slices and visualization stages then use only these regions, and
+        the camera frames them. Returns what is shown, or why not."""
+        msg = self._apply_regions(regions)
+        if not msg.startswith("cannot"):
+            self.request_load(reset_range=True)
+        return msg
+
+    def _apply_regions(self, regions) -> str:
+        """set_regions without loading (the caller loads)."""
+        from aethercfd.results.casedata import resolve_regions
+
+        if self.case_root is not None and not self.meta:
+            self._pending_regions = regions
+            return f"the case is still loading; regions {regions!r} will be shown as soon as its results are read"
+        avail = self.regions()
+        if not avail:
+            return "this case has a single region (nothing to choose)" if regions in (None, "", "all", [], ["all"]) \
+                else "cannot choose regions: this case has a single region"
+        try:
+            sel = resolve_regions(regions, avail, self.region_kinds)
+        except ValueError as exc:
+            return f"cannot show regions: {exc}"
+        if sel is not None and len(sel) == len(avail):
+            sel = None
+        self._check_regions(sel)
+        changed = sel != self.region_sel
+        self.region_sel = sel
+        self._setup_regions()
+        if changed:
+            self.bounds = None  # the slice, the showcase and the camera follow the shown regions
+            self._first_data = True
+        kinds = ", ".join(f"{r} ({self.region_kinds.get(r, '?')})" for r in (sel or avail))
+        return f"regions shown: {self._regions_label()} -- {kinds}"
 
     def _patch_names(self) -> list[str]:
         return [self.patches.item(i).text() for i in range(self.patches.count())]
@@ -444,16 +606,13 @@ class ViewportPanel(Panel):
                "patches": patches, "show_internal": any(p.endswith("internalMesh") for p in patches),
                "stages": [{**s, "field": self._vtk_names.get(s["field"], s["field"])} if s.get("field") else s
                           for s in self.stages],
-               "view": self.view_opts, "look": self.look}
-        if self.slice_on.isChecked() and self.bounds is not None:
+               "view": self.view_opts, "look": self.look, "regions": self.region_sel}
+        if self.slice_on.isChecked():
+            # placed by the worker along the extent of the shown regions (right after a region change too)
             ax = self.slice_axis.currentIndex()
-            b = self.bounds
-            frac = self.slice_pos.value() / 1000
-            origin = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2]
-            origin[ax] = b[2 * ax] + frac * (b[2 * ax + 1] - b[2 * ax])
             normal = [0.0, 0.0, 0.0]
             normal[ax] = 1.0
-            req["slice"] = {"origin": origin, "normal": normal}
+            req["slice"] = {"axis": ax, "frac": self.slice_pos.value() / 1000, "normal": normal}
             req["shell"] = self.look == "studio" and not self._is2d
             if not any(p.endswith("internalMesh") for p in patches):
                 req["patches"] = [*patches, *self._internal_meshes()]
@@ -470,6 +629,7 @@ class ViewportPanel(Panel):
                 self.plotter.renderer.RemoveActor(actor)
         self.scalar = data["scalar"]
         self.stage_info = data.get("stage_info", {})
+        self.block_regions = data.get("block_regions", {})
         if data["bounds"] is not None:
             self.bounds = data["bounds"]
             if self.btn_ao.isChecked():
@@ -533,6 +693,7 @@ class ViewportPanel(Panel):
         for name, (actor, mapper) in self.actors.items():
             prop = actor.GetProperty()
             info = self.stage_info.get(name)
+            mapper.SetRelativeCoincidentTopologyPolygonOffsetParameters(*self._depth_offset(name))
             if info is not None:  # a pipeline stage: its own array, range and colour map
                 key = name.split("~")[0]
                 prop.SetRepresentationToSurface()
@@ -624,6 +785,19 @@ class ViewportPanel(Panel):
             self.scalar_bar.VisibilityOff()
         self._update_hud()
         self.plotter.render()
+
+    def _depth_offset(self, name: str) -> tuple[float, float]:
+        """Polygon offset (factor, units) of a drawn block: each region of a multi-region case gets its own
+        small constant depth step, so where two regions' surfaces coincide (their interface, seen through a
+        translucent base or the glass shells) one region always wins -- the solids over the fluid -- instead
+        of the two flickering. No slope factor: at grazing angles it pushes a region through a thin wall in
+        front of it (the inner tube speckling through the outer one)."""
+        region = self.block_regions.get(name.split("~")[0], "")
+        regions = self.regions()
+        if not region or region not in regions or name.startswith("stage:"):
+            return 0.0, 0.0
+        order = sorted(regions, key=lambda r: (self.region_kinds.get(r) == "solid", regions.index(r)))
+        return 0.0, -4.0 * order.index(region)
 
     # ------------------------------------------------------------------ looks
     def _unit(self, field: str) -> str | None:
@@ -737,17 +911,27 @@ class ViewportPanel(Panel):
         self.request_load()
         return f"look: {name}"
 
-    def showcase(self) -> str:
+    def showcase(self, regions=None) -> str:
         """The best first view of the result, in one click (also the copilot's): the Studio look; a 3D
         case gets a mid-plane slice through its long axis inside a glass shell, an isometric camera and
-        depth shading; a 2D case is framed flat."""
+        depth shading; a 2D case is framed flat. On a multi-region (CHT) case ``regions`` ('solids', a
+        region name, ...) picks what to show first: the slice then cuts through those regions' own
+        middle and the camera frames them."""
         if self.case_root is None or not self.meta:
             return "no results are loaded yet"
+        where = ""
+        if regions is not None:
+            msg = self._apply_regions(regions)
+            if msg.startswith("cannot"):
+                return msg
+        if self.region_sel is not None:
+            where = f" in {self._regions_label()}"
         if self.look != "studio":
             self.set_look("studio")
         if self.bounds is None:  # nothing drawn yet: decide once the first data (and its size) arrive
             self._showcase_pending = True
-            return "showcase: will frame the result as soon as it is loaded"
+            self.request_load(reset_range=True)
+            return f"showcase{where}: will frame the result as soon as it is loaded"
         if not self._is2d and self.bounds is not None:
             b = self.bounds
             ext = [b[1] - b[0], b[3] - b[2], b[5] - b[4]]
@@ -761,12 +945,14 @@ class ViewportPanel(Panel):
             self.slice_on.setChecked(True)
             self._first_data = True  # re-frame when the slice arrives
             self.request_load(reset_range=True)
-            return (f"showcase: mid-plane slice normal to {'xyz'[normal]} in a glass shell, Studio look "
-                    f"({self.field.currentText()})")
+            hint = ("; the case has regions: showcase(regions='solids') or a region name shows only those"
+                    if self.regions() and self.region_sel is None else "")
+            return (f"showcase{where}: mid-plane slice normal to {'xyz'[normal]} in a glass shell, Studio look "
+                    f"({self.field.currentText()}){hint}")
         self.slice_on.setChecked(False)
         self._first_data = True
         self.request_load(reset_range=True)
-        return f"showcase: {self.field.currentText()} in the Studio look"
+        return f"showcase{where}: {self.field.currentText()} in the Studio look"
 
     # ------------------------------------------------------------------ animation + ParaView
     def _out_dir(self, sub: str) -> Path:
@@ -946,12 +1132,15 @@ class ViewportPanel(Panel):
         script in the project's local folder sets it up; nothing is written into the case."""
         import subprocess
 
+        from aethercfd.firstrun.detect import find_paraview
+
         st = getattr(self.ctx.services, "settings", None)
-        exe = Path(getattr(st, "paraview_exe", "") or "")
+        exe = find_paraview(getattr(st, "paraview_exe", None))
         if self.case_root is None:
             return "no case is open"
-        if not exe.is_file():
-            msg = f"ParaView not found at {exe} (set paraview_exe in settings)"
+        if exe is None:
+            msg = ("ParaView was not found (install it from paraview.org/download, or set paraview_exe in "
+                   "settings / Help > Setup Wizard)")
             self.ctx.services.notify(msg, "warn")
             return msg
         field = self.field.currentText()
@@ -1416,16 +1605,31 @@ class ViewportPanel(Panel):
             self.ctx.services.window.set_gpu(renderer)
 
     # ------------------------------------------------------------------ scripted control (copilot)
-    def show_field(self, field: str, time: str | None = None, slice_axis: str | None = None) -> str:
+    def show_field(self, field: str, time: str | None = None, slice_axis: str | None = None,
+                   regions=None) -> str:
+        """Show a field (at a time, optionally on a mid-plane slice); on a multi-region (CHT) case in
+        ``regions`` only ('solids', 'fluid', region names, 'all'; None keeps the shown regions)."""
         if self.case_root is not None and not self.meta:
             # the case was just opened and its time steps / fields are still being read: do it when ready
-            self._queued_show = (field, time, slice_axis)
+            self._queued_show = (field, time, slice_axis, regions)
             return f"the case is still loading; {field} will be shown as soon as its results are read"
         names = [self.field.itemText(i) for i in range(self.field.count())]
         if not names:
             return "the viewport has no results loaded for this case yet"
         if field not in names:
             return f"field {field!r} is not available; available: {', '.join(names[:40])}"
+        where = ""
+        if regions is not None:
+            msg = self._apply_regions(regions)
+            if msg.startswith("cannot"):
+                return msg
+        if self.region_sel is not None:
+            missing = [r for r in self.region_sel if not self._region_has(r, field)]
+            if len(missing) == len(self.region_sel):
+                self.request_load(reset_range=True)
+                return (f"{field} is not written in {', '.join(missing)} (a solid region has e.g. T but no U); "
+                        "nothing changed except the shown regions")
+            where = f" in {self._regions_label()}" + (f" (not written in {', '.join(missing)})" if missing else "")
         self.field.setCurrentText(field)
         if time is not None:
             times = [self.time.itemText(i) for i in range(self.time.count())]
@@ -1445,8 +1649,18 @@ class ViewportPanel(Panel):
         else:
             self.slice_on.setChecked(False)
         self.request_load(reset_range=True)
-        return (f"showing {field} at t = {self.time.currentText()}"
+        return (f"showing {field}{where} at t = {self.time.currentText()}"
                 + (f", mid-plane slice normal to {slice_axis}" if self.slice_on.isChecked() else ""))
+
+    def _region_has(self, region: str, field: str) -> bool:
+        """Is ``field`` saved in some time folder of ``region`` (cheap existence check)?"""
+        if self.case_root is None:
+            return True
+        for base in (self.case_root, self.case_root / "processor0"):
+            for t in base.glob("[0-9]*"):
+                if (t / region / field).exists() or (t / region / f"{field}.gz").exists():
+                    return True
+        return False
 
     # ------------------------------------------------------------------ comparisons
     def set_range(self, lo: float, hi: float) -> None:
@@ -1505,7 +1719,7 @@ class ViewportPanel(Panel):
         cam = self.plotter.camera
         return {"field": self.field.currentText(), "component": self.comp.currentText(),
                 "rep": self.rep.currentIndex(), "cmap": self.cmap.currentText(), "follow": self.follow.isChecked(),
-                "stages": self.stages, "view": self.view_opts,
+                "stages": self.stages, "view": self.view_opts, "regions": self.region_sel,
                 "camera": {"position": list(cam.position), "focal_point": list(cam.focal_point),
                            "view_up": list(cam.up)}}
 
@@ -1519,6 +1733,8 @@ class ViewportPanel(Panel):
             self.comp.setCurrentText(state["component"])
         self.stages = [s for s in state.get("stages", []) if isinstance(s, dict) and s.get("type")]
         self.view_opts = dict(state.get("view") or {})
+        if isinstance(state.get("regions"), list) and state["regions"]:
+            self._pending_regions = [str(r) for r in state["regions"]]  # applied once the case's regions are known
 
     def dispose(self) -> None:
         self._end_sweep()

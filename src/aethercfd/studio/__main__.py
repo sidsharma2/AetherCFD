@@ -45,6 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     from aethercfd.studio.theme import style
 
     style.apply(app)
+    from aethercfd.core.settings import Settings
+
+    settings_existed = Settings.path().exists()  # a fresh install has none yet: the setup wizard explains
     services = AppServices()
     try:  # before any window exists: everything is built in the chosen theme
         services.theme.set_mode(services.settings.theme)
@@ -61,6 +64,13 @@ def main(argv: list[str] | None = None) -> int:
     win.layouts.restore(args.perspective or "setup")
     if args.case:
         services.open_case(args.case)
+    if not (args.smoke or args.sweep):
+        from aethercfd.firstrun.detect import needs_setup
+
+        if needs_setup(services.settings, settings_existed=settings_existed):
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(400, win.show_setup_wizard)  # once the window is up
     if args.smoke:
         from aethercfd.studio.smoke import run_smoke
 

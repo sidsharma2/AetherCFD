@@ -28,9 +28,15 @@ def cache_dir() -> Path:
     return p
 
 
+def default_case_root() -> Path:
+    """Where new users keep cases unless they choose otherwise: ~/OpenFOAM."""
+    return Path.home() / "OpenFOAM"
+
+
 class WslSettings(BaseModel):
-    allowed_distros: list[str] = Field(default_factory=lambda: ["LMAE-OpenFOAM"])
-    default_distro: str = "LMAE-OpenFOAM"
+    # empty on a new PC: the first-run setup (Help > Setup Wizard) picks the distro that has OpenFOAM
+    allowed_distros: list[str] = Field(default_factory=list)
+    default_distro: str = ""
     use_distro_anchor: bool = False  # ADR 0006: not needed on WSL 2.7; opt-in fallback
 
 
@@ -45,18 +51,23 @@ class GuardSettings(BaseModel):
 class Settings(BaseModel):
     wsl: WslSettings = Field(default_factory=WslSettings)
     guards: GuardSettings = Field(default_factory=GuardSettings)
-    plot_style: str = r"D:\OpenFOAM\plot_style.py"
+    plot_style: str = ""  # your matplotlib style module for publication plots (default: a bundled journal style)
     gpu: str = "high-performance"  # high-performance (discrete NVIDIA on Optimus laptops) | integrated | system
     gpu_compute: str = "auto"  # auto (CUDA via CuPy when available) | cuda | cpu
+    copilot_provider: str = "claude"  # claude (Claude Code) | codex (OpenAI Codex CLI)
+    copilot_model: str | None = None  # model for new copilot conversations (default: the provider's own default)
     claude_exe: str | None = None  # Claude Code CLI for the copilot (default: found automatically)
+    codex_exe: str | None = None  # OpenAI Codex CLI for the copilot (default: found automatically)
     ml_python: str | None = None  # python.exe of the PyTorch environment for PINNs (default: found automatically)
     freecad_cmd: str | None = None  # FreeCADCmd.exe for CAD import (default: found automatically)
     theme: str = "system"  # system (follows Windows' app mode) | light | dark
     viewport_look: str = "studio"  # studio (AetherCFD's own look) | classic (ParaView-style, true cell values)
     recent_cases: list[str] = Field(default_factory=list)
-    case_roots: list[str] = Field(default_factory=lambda: [r"D:\OpenFOAM"])
+    case_roots: list[str] = Field(default_factory=lambda: [str(default_case_root())])
+    mechanism_roots: list[str] = Field(default_factory=list)  # folders with kinetic mechanisms (YAML/CHEMKIN)
+    setup_done: bool = False  # the first-run setup wizard was finished (it is not shown again by itself)
 
-    paraview_exe: str = r"C:\Program Files\ParaView 6.1.0\bin\paraview.exe"
+    paraview_exe: str | None = None  # paraview.exe (default: the newest ParaView found in Program Files)
 
     def add_recent(self, path: str, keep: int = 12) -> None:
         self.recent_cases = [path, *[p for p in self.recent_cases if p.lower() != path.lower()][:keep - 1]]
