@@ -643,6 +643,11 @@ def mesh_quality_gate(case: Case) -> tuple[Gate, float | None]:
     if not rep.finished and not rep.checks:
         return Gate("mesh-quality", False, "error", "checkMesh did not finish", "The log is incomplete.",
                     "Run checkMesh again and look at the log for errors.", ev), rep.non_ortho_max
+    if rep.failed and not fails:
+        return Gate("mesh-quality", False, "error", f"checkMesh: failed {rep.failed} mesh check(s)",
+                    "checkMesh reports failed checks (see its log for the lines starting with ***).",
+                    "Open the checkMesh log (Raw) and AetherMesh's quality maps to locate the bad cells.", ev), \
+            rep.non_ortho_max
     if fails:
         return Gate("mesh-quality", False, "error", f"checkMesh failed {len(fails)} check(s)",
                     "; ".join(f"{c.name}: {c.message}" for c in fails)[:600],

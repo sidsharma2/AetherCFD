@@ -871,8 +871,11 @@ def plan_answers(case: Case | str | Path, stage: str, answers: dict, state: dict
         if qid == "fluid" and "nu" in answers:
             val = (val, False)  # an explicit nu wins over the fluid's typical value
         _apply_answer(case, f, fields, stage, q, val, gp, state.get("answers", {}))
-    if turb:
-        _turb_inlet(case, f, fields, turb, gp, state.get("answers", {}))
+    new_speed = {qid.split(":", 1)[1]: float(v) for qid, v in answers.items()
+                 if qid.startswith("inlet_U:") and qid in qs and _is_num(str(v))}
+    if turb or (new_speed and any(q.startswith("turb_") for q in qs)):
+        # inlet turbulence follows the inlet speed: a new speed rescales k, epsilon, omega at the same I and l
+        _turb_inlet(case, f, fields, turb, gp, state.get("answers", {}), new_speed)
     return gp
 
 
@@ -921,7 +924,7 @@ def _apply_answer(case: Case, f: CaseFacts, fields, stage: str, q: Question, val
             from aethercfd.templates.catalog import set_vector_text
 
             gp.edits.append(_edit(case, _field_rel(case, "U"), f"boundaryField/{patch}/value",
-                                  set_vector_text(cur, [float(f"{x:.6g}") for x in new])))
+                                  set_vector_text(cur, [f"{x:.6g}" for x in new])))
             gp.notes.append(f"{patch} |U| {mag:g} → {val:g} m/s")
         return
     if qid.startswith("outlet_p:"):
@@ -1019,8 +1022,10 @@ def _set_nu(case: Case, rel: str, nu: float, gp: GuidedPlan) -> None:
     gp.notes.append(f"ν = {nu:g} m²/s")
 
 
-def _turb_inlet(case: Case, f: CaseFacts, fields, given: dict[str, float], gp: GuidedPlan, stored: dict) -> None:
+def _turb_inlet(case: Case, f: CaseFacts, fields, given: dict[str, float], gp: GuidedPlan, stored: dict,
+                new_speed: dict[str, float] | None = None) -> None:
     """Intensity/length scale -> k, epsilon, omega, nuTilda at the inlets (and as the internal field)."""
+    new_speed = new_speed or {}
     c = _Ctx(case, f, fields, G.reference(case, stored, fields), stored)
     ti, tl = turbulence_inlet_defaults(c)
     if ti is None or tl is None:
@@ -1035,7 +1040,7 @@ def _turb_inlet(case: Case, f: CaseFacts, fields, given: dict[str, float], gp: G
 
     done_internal: set[tuple[str, str]] = set()
     for p, vec in _inlets(c):
-        U = math.sqrt(sum(x * x for x in vec))
+        U = new_speed.get(p.name, math.sqrt(sum(x * x for x in vec)))
         k, eps, om = turbulence_values(U, ti, tl)
         vals = {"k": k, "epsilon": eps, "omega": om, "nuTilda": math.sqrt(1.5) * U * ti / 100.0 * tl}
         for name, v in vals.items():
@@ -1045,18 +1050,20 @@ def _turb_inlet(case: Case, f: CaseFacts, fields, given: dict[str, float], gp: G
             rel = _field_rel(case, name)
             cur = ff.get(f"boundaryField/{p.name}/value")
             if cur is not None and not cur.startswith("$"):  # "$internalField" follows the internal value
-                new = set_scalar_text(cur, f"{v:.5g}") if G._uniform_scalar(cur) is not None else f"uniform {v:.5g}"
-                if new != cur:
+                old = G._uniform_scalar(cur)
+                if old is None or not math.isclose(old, v, rel_tol=1e-3):
+                    new = set_scalar_text(cur, f"{v:.5g}") if old is not None else f"uniform {v:.5g}"
                     gp.edits.append(_edit(case, rel, f"boundaryField/{p.name}/value", new))
             internal = ff.get("internalField")
             key = (rel, "internalField")
-            if internal is not None and G._uniform_scalar(internal) is not None and key not in done_internal:
+            old = G._uniform_scalar(internal) if internal is not None else None
+            if old is not None and key not in done_internal:
                 done_internal.add(key)
-                new = set_scalar_text(internal, f"{v:.5g}")
-                if new != internal:
-                    gp.edits.append(_edit(case, rel, "internalField", new))
+                if not math.isclose(old, v, rel_tol=1e-3):
+                    gp.edits.append(_edit(case, rel, "internalField", set_scalar_text(internal, f"{v:.5g}")))
     inl = _inlets(c)
-    k, eps, om = turbulence_values(math.sqrt(sum(x * x for x in inl[0][1])), ti, tl) if inl else (0, 0, 0)
+    k, eps, om = turbulence_values(new_speed.get(inl[0][0].name, math.sqrt(sum(x * x for x in inl[0][1]))), ti,
+                                   tl) if inl else (0, 0, 0)
     if any(e["file"].replace("\\", "/").rsplit("/", 1)[-1] in ("k", "epsilon", "omega", "nuTilda")
            for e in gp.edits):
         gp.notes.append(f"inlet turbulence I={ti:g} %, ℓ={tl:g} m (k={k:.4g}, ε={eps:.4g}, ω={om:.4g})")

@@ -229,8 +229,21 @@ class WorkflowPanel(Panel):
     def _assessed(self, res) -> None:
         self._busy = False
         stages, err = res if isinstance(res, tuple) else (res, None)
+        keep = self.current
+        self.tree.blockSignals(True)  # repopulating must not "select" the first row
+        try:
+            self._fill(stages, err)
+        finally:
+            self.tree.blockSignals(False)
+        if not self.stages:
+            return
+        cur = next((s for s in self.stages if s.status not in ("done", "na") and not s.optional), None)
+        self.select_stage(keep or (cur.id if cur else self.stages[0].id))
+
+    def _fill(self, stages, err) -> None:
         self.tree.clear()
         if err is not None or stages is None:
+            self.stages = []
             self.tree.addTopLevelItem(QTreeWidgetItem([f"Could not assess the case: {err}"]))
             return
         self.stages = stages
@@ -245,17 +258,16 @@ class WorkflowPanel(Panel):
             self.tree.addTopLevelItem(it)
         self.tree.resizeColumnToContents(0)
         done = sum(1 for s in stages if s.status in ("done", "na"))
-        need = [s for s in stages if not s.optional]
         cur = next((s for s in stages if s.status not in ("done", "na") and not s.optional), None)
         self.progress.setText(f"{done}/{len(stages)} stages done" + (f" · next: {cur.title}" if cur else " · complete"))
-        want = self.current or (cur.id if cur else need[0].id)
-        self.select_stage(want)
 
     def select_stage(self, sid: str) -> None:
         for i in range(self.tree.topLevelItemCount()):
             it = self.tree.topLevelItem(i)
             if it.data(0, Qt.ItemDataRole.UserRole) == sid:
+                self.tree.blockSignals(True)
                 self.tree.setCurrentItem(it)
+                self.tree.blockSignals(False)
                 self._show_stage(self.stage(sid))
                 return
 

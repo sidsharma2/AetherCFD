@@ -79,6 +79,9 @@ class DictView:
                     exact = m  # last wins
         if exact is not None:
             return exact, False
+        for e in reversed(patterns):  # the pattern entry itself, addressed by its own text: "(k|epsilon)"
+            if e.key.name == key:
+                return e, False
         for e in reversed(patterns):
             try:
                 if re.fullmatch(e.key.name, key):
