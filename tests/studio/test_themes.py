@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -129,3 +130,41 @@ def test_system_follows_windows_and_palette_offers_themes(window):
     item = next(it for it in window.palette._collect() if it.label == "Theme: Light")
     item.run()
     assert sv.theme.name == "light" and sv.theme.mode == "light"
+
+
+def _stale_colours(app, old) -> list[str]:
+    """Widgets whose style sheet or rich text still uses a colour that exists only in the ``old`` palette."""
+    new = LIGHT if old is DARK else DARK
+    only_old = {getattr(old, k).lower() for k in UI_COLORS} - {getattr(new, k).lower() for k in UI_COLORS}
+    bad = []
+    for w in app.allWidgets():
+        texts = [w.styleSheet()] + ([w.text()] if isinstance(w, QLabel) else [])
+        if any(c in s.lower() for s in texts for c in only_old):
+            bad.append(f"{type(w).__name__} {w.objectName()!r}")
+    return bad
+
+
+def test_wizard_and_copilot_follow_the_theme(window, qtbot, monkeypatch):
+    """Panels built by later features (first-run wizard, copilot provider picker) are re-tinted too."""
+    from aethercfd.copilot.provider import AuthStatus, CliInfo
+    from aethercfd.copilot.providers import PROVIDERS
+    from aethercfd.studio.dialogs.setup_wizard import SetupWizard
+    from aethercfd.studio.panels.copilot.panel import CopilotPanel
+
+    for p in PROVIDERS.values():  # no real CLI lookups
+        monkeypatch.setattr(p, "find", lambda configured=None: CliInfo(Path("cli.exe"), "1.0", "test"))
+        monkeypatch.setattr(p, "auth_status", lambda cli, timeout=30: AuthStatus(True, "test", "me@lab"))
+    sv, app = window.services, QApplication.instance()
+    wiz = SetupWizard(sv)
+    qtbot.addWidget(wiz)
+    cop = CopilotPanel(PanelContext(sv, "#main"))
+    qtbot.addWidget(cop)
+    qtbot.waitUntil(lambda: cop.cli is not None, timeout=10000)
+    cop._add("assistant", "Hello `p` here")
+    cop._render()
+    sv.set_theme("light")
+    assert _stale_colours(app, DARK) == []
+    assert LIGHT.ok in cop.view.toHtml() or LIGHT.text in cop.view.toHtml()
+    sv.set_theme("dark")
+    assert _stale_colours(app, LIGHT) == []
+    cop.dispose()
