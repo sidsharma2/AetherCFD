@@ -10,7 +10,7 @@ from pathlib import Path
 
 from aethercfd.core.settings import cache_dir
 
-DEFAULT_ROOTS = [r"D:\Research-Software\repos\CRECKMODELING", r"D:\OpenFOAM\SandiaDCRN\mechanisms"]
+DEFAULT_ROOTS: list[str] = []  # your own mechanism folders go in the mechanism_roots setting
 BUILTIN = [("gri30.yaml", "GRI-Mech 3.0 (natural gas, NOx; 53 species)"),
            ("h2o2.yaml", "Hydrogen/oxygen (10 species)"),
            ("air.yaml", "Air dissociation (no carbon)")]

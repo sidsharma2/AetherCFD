@@ -1,8 +1,9 @@
-"""Copilot panel: talk to Claude about the open case.
+"""Copilot panel: talk to an AI agent about the open case.
 
-Claude Code runs headless with the AetherCFD tools (aethercfd.copilot). Its words stream into the
-transcript; every tool call shows up as a line; anything that changes the case or runs OpenFOAM opens the
-approval dialog with the exact plan. The conversation is per case and resumes after a restart.
+The agent is a provider's CLI run headless with the AetherCFD tools (aethercfd.copilot): Claude Code by
+default, or OpenAI Codex (provider and model picker in the top bar, kept in the settings). Its words stream
+into the transcript; every tool call shows up as a line; anything that changes the case or runs OpenFOAM
+opens the approval dialog with the exact plan. The conversation is per case and resumes after a restart.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
 
 log = logging.getLogger(__name__)
-MODELS = [("Default model", None), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")]
+CREATE_NEW_CONSOLE = 0x00000010
 QUICK = [("Diagnose", "Look at this case and tell me what state it is in: setup, mesh quality, the latest "
           "run and anything that looks wrong. Evidence first, then a ranked list of problems."),
          ("Mesh check", "Assess the mesh quality of this case from the latest checkMesh (run it if there is "
@@ -265,14 +266,17 @@ class CopilotPanel(Panel):
     _event = Signal(object)  # (session generation, event)
     _exited = Signal(object)  # (session generation, exit code)
     _tool_activity = Signal(str, object, object, object)
-    _cli_ready = Signal(object, object)
+    _cli_ready = Signal(object)  # (provider id, cli, auth, models)
 
     def __init__(self, ctx: PanelContext):
         super().__init__(ctx)
+        from aethercfd.copilot.providers import PROVIDERS, get_provider
+
         self.sv = ctx.services
+        self.provider = get_provider(getattr(self.sv.settings, "copilot_provider", None))
         self.cli = None
         self.auth = None
-        self.copilot = None  # CopilotSession
+        self.copilot = None  # a CopilotSessionBase of self.provider
         self.bridge = None
         self.toolset = None
         self.items: list[dict] = []
@@ -284,20 +288,29 @@ class CopilotPanel(Panel):
         self._conv_state: Path | None = None  # copilot.json of the case the running conversation belongs to
         self._last_user_text = ""
         self._conv_case: str | None = None
+        self._conv_provider = self.provider  # the provider of the running conversation
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(4)
         top = QHBoxLayout()
         self.status = QLabel("Copilot")
         self.status.setStyleSheet(f"color: {T.text_dim};")
-        self.model = QComboBox(toolTip="Claude model for new conversations")
-        for label, val in MODELS:
-            self.model.addItem(label, val)
+        self.status.setMinimumWidth(40)
+        self.provider_box = QComboBox(toolTip="AI provider of the copilot (each signs in with its own CLI)")
+        for p in PROVIDERS.values():
+            self.provider_box.addItem(p.label, p.id)
+        self.provider_box.setCurrentIndex(max(0, self.provider_box.findData(self.provider.id)))
+        self.model = QComboBox(toolTip="Model for new conversations (type any model id the provider accepts)")
+        self.model.setEditable(True)
+        self.model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.model.setMinimumContentsLength(13)
+        self._fill_models(self.provider.default_models, getattr(self.sv.settings, "copilot_model", None))
         self.btn_new = QToolButton(icon=icon("msc.add"), toolTip="New conversation", autoRaise=True)
-        self.btn_stop = QToolButton(icon=icon("msc.debug-stop"), toolTip="Stop Claude's current answer",
+        self.btn_stop = QToolButton(icon=icon("msc.debug-stop"), toolTip="Stop the current answer",
                                     autoRaise=True)
         self.btn_stop.setEnabled(False)
         top.addWidget(self.status, 1)
+        top.addWidget(self.provider_box)
         top.addWidget(self.model)
         top.addWidget(self.btn_new)
         top.addWidget(self.btn_stop)
@@ -307,7 +320,7 @@ class CopilotPanel(Panel):
         bl.setContentsMargins(8, 6, 8, 6)
         self.banner_text = QLabel()
         self.banner_text.setWordWrap(True)
-        self.btn_login = QPushButton("Sign in to Claude")
+        self.btn_login = QPushButton(f"Sign in to {self.provider.label}")
         self.btn_recheck = QPushButton("Check again")
         bl.addWidget(self.banner_text)
         brow = QHBoxLayout()
@@ -345,6 +358,9 @@ class CopilotPanel(Panel):
         self.btn_stop.clicked.connect(self._interrupt)
         self.btn_login.clicked.connect(self._login)
         self.btn_recheck.clicked.connect(self._find_cli)
+        self.provider_box.currentIndexChanged.connect(self._provider_picked)
+        self.model.activated.connect(lambda _i: self._model_picked())
+        self.model.lineEdit().editingFinished.connect(self._model_picked)
         self._event.connect(self._on_event)
         self._exited.connect(self._on_exit)
         self._tool_activity.connect(self._on_tool_activity)
@@ -359,45 +375,112 @@ class CopilotPanel(Panel):
         self._find_cli()
         self._render()
 
-    # ------------------------------------------------------------------ Claude CLI
+    # ------------------------------------------------------------------ provider CLI
     def _find_cli(self) -> None:
-        self.status.setText("Looking for Claude Code…")
+        prov = self.provider
+        self.status.setText(f"Looking for {prov.product}…")
 
         def work():
-            from aethercfd.copilot.claude_cli import auth_status, find_claude
+            cli = prov.find(prov.configured_exe(self.sv.settings))
+            auth = prov.auth_status(cli) if cli else None
+            return prov.id, cli, auth, prov.models(cli)
 
-            cli = find_claude(getattr(self.sv.settings, "claude_exe", None))
-            return cli, (auth_status(cli) if cli else None)
+        self.sv.run_bg(work, lambda res: self._cli_ready.emit(res[0] or (prov.id, None, None, prov.default_models)))
 
-        self.sv.run_bg(work, lambda res: self._cli_ready.emit(*(res[0] or (None, None))))
-
-    @Slot(object, object)
-    def _on_cli(self, cli, auth) -> None:
+    @Slot(object)
+    def _on_cli(self, found) -> None:
+        pid, cli, auth, models = found
+        if pid != self.provider.id:
+            return  # the user switched provider while this one was being looked up
         self.cli, self.auth = cli, auth
+        if models:
+            self._fill_models(models, self._model_id())
+        self._show_auth()
+
+    def _show_auth(self) -> None:
+        prov, cli, auth = self.provider, self.cli, self.auth
+        self.btn_login.setText(f"Sign in to {prov.label}")
         if cli is None:
-            self.banner_text.setText("Claude Code was not found. Install it (claude.com/code) or open the Claude "
-                                     "desktop app once; then press Check again.")
+            self.banner_text.setText(prov.install_hint)
             self.btn_login.hide()
             self.banner.show()
-            self.status.setText("Copilot unavailable")
+            self.status.setText(f"Copilot unavailable ({prov.product} not found)")
             return
         if not auth or not auth.logged_in:
-            self.banner_text.setText(f"Claude Code {cli.version} is not signed in. Sign in once (your browser opens); "
-                                     "then press Check again.")
+            if auth is not None and auth.method == "config-error":
+                self.banner_text.setText(auth.detail)
+            else:
+                self.banner_text.setText(f"{prov.product} {cli.version} is not signed in. Sign in once (your browser "
+                                         "opens); then press Check again.")
             self.btn_login.show()
             self.banner.show()
             self.status.setText("Copilot: not signed in")
             return
         self.banner.hide()
-        self.status.setText(f"Claude Code {cli.version} · {auth.detail or auth.method}")
+        self.status.setText(f"{prov.product} {cli.version} · {auth.detail or auth.method}")
 
     def _login(self) -> None:
         if self.cli is None:
             return
-        from aethercfd.copilot.claude_cli import login_argv
+        subprocess.Popen(self.provider.login_argv(self.cli), creationflags=CREATE_NEW_CONSOLE)  # user sees prompts
+        self.sv.notify(f"Complete the {self.provider.label} sign-in in your browser, then press Check again")
 
-        subprocess.Popen(login_argv(self.cli), creationflags=0x00000010)  # CREATE_NEW_CONSOLE: user sees prompts
-        self.sv.notify("Complete the Claude sign-in in your browser, then press Check again")
+    # ------------------------------------------------------------------ provider / model picker
+    def _fill_models(self, models, current: str | None) -> None:
+        self.model.blockSignals(True)
+        self.model.clear()
+        for label, val in models:
+            self.model.addItem(label, val)
+        i = self.model.findData(current) if current else 0
+        if i >= 0:
+            self.model.setCurrentIndex(i)
+        else:  # a model id typed earlier that the list does not have
+            self.model.setEditText(current or "")
+        self.model.blockSignals(False)
+
+    def _model_id(self) -> str | None:
+        """The model for new conversations: the picked entry, or whatever id was typed (None = default)."""
+        text = self.model.currentText().strip()
+        i = self.model.findText(text)
+        if i >= 0:
+            return self.model.itemData(i)
+        return text or None
+
+    def _save_choice(self) -> None:
+        st = self.sv.settings
+        st.copilot_provider, st.copilot_model = self.provider.id, self._model_id()
+        try:
+            st.save()
+        except Exception:
+            log.warning("could not save the copilot provider/model", exc_info=True)
+
+    def _model_picked(self) -> None:
+        if self._model_id() != getattr(self.sv.settings, "copilot_model", None):
+            self._save_choice()
+
+    def _provider_picked(self, _index: int = 0) -> None:
+        from aethercfd.copilot.providers import get_provider
+
+        prov = get_provider(self.provider_box.currentData())
+        if prov.id == self.provider.id:
+            return
+        had_conversation = self.copilot is not None
+        self._stop_session()
+        self.provider, self.cli, self.auth = prov, None, None
+        self._fill_models(prov.default_models, None)
+        self._save_choice()
+        if had_conversation or self.items:
+            self._add("note", f"Switched to {prov.label}. Your next message starts a new conversation with it.")
+        self._find_cli()
+
+    def reload_provider(self) -> None:
+        """The settings changed elsewhere (the setup wizard): follow their provider."""
+        pid = getattr(self.sv.settings, "copilot_provider", None)
+        i = self.provider_box.findData(pid)
+        if i >= 0 and pid != self.provider.id:
+            self.provider_box.setCurrentIndex(i)  # -> _provider_picked
+        else:
+            self._find_cli()
 
     # ------------------------------------------------------------------ session
     def _state_file(self) -> Path | None:
@@ -407,7 +490,8 @@ class CopilotPanel(Panel):
         return Path(s.project.meta_dir) / "local" / "copilot.json"
 
     def _saved_session_id(self) -> str | None:
-        """The conversation saved for THIS case (one saved for another case is ignored)."""
+        """The conversation saved for THIS case with THIS provider (one for another case or provider is ignored;
+        files from before providers existed are Claude's)."""
         f = self._state_file()
         s = self.sv.session
         try:
@@ -415,9 +499,10 @@ class CopilotPanel(Panel):
         except (OSError, json.JSONDecodeError):
             return None
         same = s is not None and d.get("case") and Path(d["case"]).resolve() == Path(s.root).resolve()
-        return d.get("session_id") if same else None
+        return d.get("session_id") if same and d.get("provider", "claude") == self.provider.id else None
 
-    def _save_session_id(self, sid: str | None, state: Path | None = None, case: str | None = None) -> None:
+    def _save_session_id(self, sid: str | None, state: Path | None = None, case: str | None = None,
+                         provider: str | None = None) -> None:
         """Into the copilot.json of the case the conversation belongs to (``state``), never into a case that was
         opened while the reply was still arriving."""
         f = state or self._state_file()
@@ -429,8 +514,8 @@ class CopilotPanel(Panel):
             prev = {}
         owner = case or prev.get("case") or (str(self.sv.session.root) if self.sv.session else None)
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps({"session_id": sid, "case": owner, "updated": time.strftime("%Y-%m-%d %H:%M:%S")},
-                                indent=1), encoding="utf-8")
+        f.write_text(json.dumps({"session_id": sid, "case": owner, "provider": provider or self.provider.id,
+                                 "updated": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=1), encoding="utf-8")
 
     def _ensure_session(self, *, fresh: bool = False) -> bool:
         if self.copilot is not None and self.copilot.alive:
@@ -439,22 +524,22 @@ class CopilotPanel(Panel):
         if s is None:
             self.sv.notify("Open a case first", "warn")
             return False
+        prov = self.provider
         if self.cli is not None and not (self.auth and self.auth.logged_in):
             # signed in after the app started? the check at startup is stale: ask again now (about a second)
-            from aethercfd.copilot.claude_cli import auth_status
-
-            self._on_cli(self.cli, auth_status(self.cli, timeout=8))  # on the GUI thread: keep it short
+            self.auth = prov.auth_status(self.cli, timeout=8)  # on the GUI thread: keep it short
+            self._show_auth()
         if self.cli is None or not (self.auth and self.auth.logged_in):
             self._find_cli()
-            self._add("note", "Claude Code is not signed in yet: use Sign in above (or run `claude auth login`), "
-                              "then send again. Your message is still in the box.")
+            what = "was not found" if self.cli is None else "is not signed in yet"
+            self._add("note", f"{prov.product} {what}: see the note above (or run `{prov.login_hint}`), then send "
+                              "again. Your message is still in the box.")
             return False
         if not self.sv.ensure_project():
             return False
         from aethercfd.commands.executor import Executor
         from aethercfd.commands.registry import default_registry
         from aethercfd.copilot.bridge import BridgeServer
-        from aethercfd.copilot.session import CopilotSession
         from aethercfd.copilot.tools import ToolContext, ToolSet
 
         executor = Executor(default_registry(), s.context, self.broker)
@@ -467,10 +552,11 @@ class CopilotPanel(Panel):
         gen = self._gen
         self._conv_state = self._state_file()
         self._conv_case = str(s.root)
-        self.copilot = CopilotSession(self.cli, s.root, self.bridge, on_event=lambda ev: self._event.emit((gen, ev)),
-                                      on_exit=lambda code: self._exited.emit((gen, code)),
-                                      model=self.model.currentData(), resume=resume,
-                                      distro=s.settings.wsl.default_distro, wsl_path=s.case().wsl_path)
+        self._conv_provider = prov
+        self.copilot = prov.session(self.cli, s.root, self.bridge, on_event=lambda ev: self._event.emit((gen, ev)),
+                                    on_exit=lambda code: self._exited.emit((gen, code)),
+                                    model=self._model_id(), resume=resume,
+                                    distro=s.settings.wsl.default_distro, wsl_path=s.case().wsl_path)
         self.copilot.start()
         if resume:
             self._add("note", "Resumed the previous conversation for this case.")
@@ -494,7 +580,7 @@ class CopilotPanel(Panel):
     def _idle_status(self) -> str:
         a, c = self.auth, self.cli
         if a is not None and a.logged_in and c is not None:
-            return f"Claude Code {getattr(c, 'version', '')} · {a.detail}"
+            return f"{self.provider.product} {getattr(c, 'version', '')} · {a.detail or a.method}"
         return self.status.text()
 
     def _case_changed(self) -> None:
@@ -532,23 +618,28 @@ class CopilotPanel(Panel):
 
     def send(self, text: str, *, show_as: str = "user", show_text: str | None = None, fresh: bool = False) -> bool:
         if self._busy:
-            self.sv.notify("Claude is still answering; wait or press Stop", "warn")
+            self.sv.notify(f"{self._conv_provider.label} is still answering; wait or press Stop", "warn")
             return False
         try:
             ready = self._ensure_session(fresh=fresh)
         except Exception as exc:
             log.exception("copilot session failed to start")
             self.copilot = None
-            self._add("note", f"Claude could not start ({type(exc).__name__}: {exc}). Your message is still in the "
-                              "box; details are in studio.log.")
+            self._add("note", f"{self.provider.label} could not start ({type(exc).__name__}: {exc}). Your message is "
+                              "still in the box; details are in studio.log.")
             return False
         if not ready:
+            return False
+        try:
+            self.copilot.send(text)
+        except Exception as exc:
+            log.exception("copilot send failed")
+            self._add("note", f"{self.provider.label} did not take the message ({exc}). It is still in the box.")
             return False
         self._add(show_as, show_text if show_text is not None else text)
         if show_as == "user":
             self._last_user_text = text
             self.sv.copilot_last_request = text  # the hand-over after app_open_case passes it on
-        self.copilot.send(text)
         self._set_busy(True)
         return True
 
@@ -577,49 +668,53 @@ class CopilotPanel(Panel):
         gen, ev = item
         if gen != self._gen:
             return  # from a conversation that was stopped (new conversation, or the case changed)
-        t = ev.get("type")
-        if t == "stream_event":
-            e = ev.get("event") or {}
-            if e.get("type") == "message_start":
-                self._cur = self._add("assistant", "")
-            elif e.get("type") == "content_block_delta" and (e.get("delta") or {}).get("type") == "text_delta":
-                if self._cur is None:
-                    self._cur = self._add("assistant", "")
-                self.items[self._cur]["text"] += e["delta"]["text"]
-                self._render_timer.start()
-        elif t == "assistant":
-            msg = ev.get("message") or {}
-            text = "".join(b.get("text", "") for b in msg.get("content", []) if b.get("type") == "text")
+        who = self._conv_provider.label
+        t = ev.get("type")  # provider-neutral events (aethercfd.copilot.provider)
+        if t == "turn_start":
+            self._cur = self._add("assistant", "", who=who)
+        elif t == "text_delta":
             if self._cur is None:
-                self._cur = self._add("assistant", text)
+                self._cur = self._add("assistant", "", who=who)
+            self.items[self._cur]["text"] += ev.get("text", "")
+            self._render_timer.start()
+        elif t == "message":
+            text = ev.get("text", "")
+            if self._cur is None:
+                self._cur = self._add("assistant", text, who=who)
             elif text:
                 self.items[self._cur]["text"] = text
-            for b in msg.get("content", []):
-                if b.get("type") == "tool_use":
-                    name = b.get("name", "").removeprefix("mcp__aether__")
-                    self._tool_items[b.get("id", "")] = self._add("tool", _tool_summary(name, b.get("input") or {}),
-                                                                  status="…")
+                self._render_timer.start()
             self._cur = None
-        elif t == "user":
-            for b in (ev.get("message") or {}).get("content", []) if isinstance((ev.get("message") or {}).get(
-                    "content"), list) else []:
-                if b.get("type") == "tool_result":
-                    idx = self._tool_items.pop(b.get("tool_use_id", ""), None)
-                    if idx is not None:
-                        self.items[idx]["status"] = "error" if b.get("is_error") else "ok"
-                        self._render_timer.start()
+        elif t == "tool_call":
+            self._cur = None
+            self._tool_items[ev.get("id", "")] = self._add("tool", _tool_summary(ev.get("name", ""),
+                                                                                 ev.get("input") or {}), status="…")
+        elif t == "tool_result":
+            idx = self._tool_items.pop(ev.get("id", ""), None)
+            if idx is not None:
+                self.items[idx]["status"] = "error" if ev.get("is_error") else "ok"
+                self._render_timer.start()
+        elif t == "error":
+            if ev.get("message"):
+                self._add("note", f"{who}: {ev['message']}")
         elif t == "result":
             self._set_busy(False)
+            self._cur = None
             if ev.get("session_id"):
-                self._save_session_id(ev["session_id"], self._conv_state, self._conv_case)
+                self._save_session_id(ev["session_id"], self._conv_state, self._conv_case, self._conv_provider.id)
             secs = time.monotonic() - self._t_start
-            cost = self.copilot.cost_usd if self.copilot else 0.0
-            self.status.setText(f"Claude · {ev.get('num_turns', '?')} turns · {secs:.0f} s · est. ${cost:.2f}")
-            if ev.get("is_error") or ev.get("subtype") not in ("success", None):
-                self._add("note", f"Claude stopped: {ev.get('result') or ev.get('subtype')}")
-        elif t == "system" and ev.get("subtype") == "init":
-            bad = [m.get("name") for m in ev.get("mcp_servers", []) if m.get("status") != "connected"]
-            self.status.setText(f"Claude · {ev.get('model', '')}")
+            bits = [who, f"{ev.get('num_turns') or '?'} turns", f"{secs:.0f} s"]
+            if ev.get("cost_usd") is not None:
+                bits.append(f"est. ${ev['cost_usd']:.2f}")
+            elif ev.get("usage"):
+                u = ev["usage"]
+                bits.append(f"{_tokens(u.get('input_tokens', 0))} in / {_tokens(u.get('output_tokens', 0))} out tokens")
+            self.status.setText(" · ".join(bits))
+            if ev.get("is_error"):
+                self._add("note", f"{who} stopped: {ev.get('message') or 'error'}")
+        elif t == "init":
+            self.status.setText(f"{who} · {ev.get('model', '')}")
+            bad = ev.get("tools_failed") or []
             if bad:
                 self._add("note", f"AetherCFD tools did not connect ({', '.join(bad)}); see the copilot log.")
 
@@ -630,7 +725,7 @@ class CopilotPanel(Panel):
             return
         self._set_busy(False)
         if code not in (0, None):
-            self._add("note", f"Claude exited (code {code}). Your next message starts it again.")
+            self._add("note", f"{self._conv_provider.label} exited (code {code}). Your next message starts it again.")
         self.copilot = None
 
     @Slot(str, object, object, object)
@@ -649,7 +744,8 @@ class CopilotPanel(Panel):
         at_bottom = sb.value() >= sb.maximum() - 4
         parts = [f"<div style='color:{T.text};font-size:9.5pt'>"]
         if not self.items:
-            parts.append(f"<p style='color:{T.text_faint}'>Ask Claude about the open case. It can read every file "
+            parts.append(f"<p style='color:{T.text_faint}'>Ask {self.provider.label} about the open case. It can "
+                         "read every file "
                          "and log, check the mesh, and propose changes or runs. Each change or run is shown to "
                          "you as an exact plan to approve, and lands in the Command Journal.</p>")
         for it in self.items:
@@ -659,7 +755,8 @@ class CopilotPanel(Panel):
                              f"<div style='margin-left:8px'>{md_to_html(it['text'])}</div>")
             elif role == "assistant":
                 if it["text"].strip():
-                    parts.append(f"<p style='margin-top:8px;color:{T.ok};font-weight:600'>Claude</p>"
+                    parts.append(f"<p style='margin-top:8px;color:{T.ok};font-weight:600'>"
+                                 f"{html.escape(it.get('who', 'Claude'))}</p>"
                                  f"<div style='margin-left:8px'>{md_to_html(it['text'])}</div>")
             elif role == "tool":
                 st = it.get("status")
@@ -679,10 +776,10 @@ class CopilotPanel(Panel):
 
     # ------------------------------------------------------------------ panel API
     def save_state(self) -> dict:
-        return {"model": self.model.currentIndex()}
+        return {}  # provider and model live in the settings (copilot_provider / copilot_model)
 
     def restore_state(self, state: dict) -> None:
-        self.model.setCurrentIndex(int(state.get("model", 0)))
+        pass  # layouts saved before providers existed carry a model index: the settings win
 
     def dispose(self) -> None:
         self._stop_session()
@@ -698,6 +795,11 @@ def _tool_summary(name: str, args: dict) -> str:
     return f"{name}({', '.join(bits)})"
 
 
+def _tokens(n) -> str:
+    n = int(n or 0)
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
 PANELS = [PanelSpec("aether.copilot", "Copilot", "mdi6.robot-outline", "Assist", CopilotPanel,
                     default_area=Area.RIGHT, tab_group="assist",
-                    description="Claude, working on the open case with your approval")]
+                    description="Claude or Codex, working on the open case with your approval")]

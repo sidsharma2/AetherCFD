@@ -933,12 +933,15 @@ class ViewportPanel(Panel):
         script in the project's local folder sets it up; nothing is written into the case."""
         import subprocess
 
+        from aethercfd.firstrun.detect import find_paraview
+
         st = getattr(self.ctx.services, "settings", None)
-        exe = Path(getattr(st, "paraview_exe", "") or "")
+        exe = find_paraview(getattr(st, "paraview_exe", None))
         if self.case_root is None:
             return "no case is open"
-        if not exe.is_file():
-            msg = f"ParaView not found at {exe} (set paraview_exe in settings)"
+        if exe is None:
+            msg = ("ParaView was not found (install it from paraview.org/download, or set paraview_exe in "
+                   "settings / Help > Setup Wizard)")
             self.ctx.services.notify(msg, "warn")
             return msg
         field = self.field.currentText()

@@ -569,7 +569,7 @@ class AppPanelParams(BaseModel):
 
 class OpenCaseParams(BaseModel):
     path: str = Field(description="Absolute Windows path of an OpenFOAM case folder (contains system/controlDict), "
-                                  "e.g. D:/OpenFOAM/_aethercfd_scratch/revb1_probe/case_g2h_rs3")
+                                  "e.g. C:/Users/me/OpenFOAM/cavity")
 
 
 class ShowDiffParams(BaseModel):
