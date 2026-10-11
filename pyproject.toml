@@ -112,5 +112,6 @@ source_modules = [
     "aethercfd.runs",
     "aethercfd.commands",
     "aethercfd.project",
+    "aethercfd.services",
 ]
 forbidden_modules = ["PySide6", "PySide6QtAds", "pyvistaqt", "qtpy", "pyqtgraph", "aethercfd.studio"]

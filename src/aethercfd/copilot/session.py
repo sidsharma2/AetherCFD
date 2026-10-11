@@ -54,6 +54,12 @@ move or change the slice before describing it. viewport_animation makes a turnta
 open_in_paraview hands the case to ParaView. To run a case the user just created, run_openfoam with \
 preset auto (it runs the tutorial's Allrun, or mesh + check + solve) instead of guessing the steps.
 - Use case_checks for setup problems, mesh_hotspots/grading_design/wall_spacing for mesh work.
+- For a beginner (or "set this case up / is it right?"), follow the guided workflow: workflow_state shows the \
+12 stages and the next action; workflow_stage gives a stage's gates and physical questions; workflow_answer / \
+workflow_fix change the case through one approvable plan; workflow_mark_done is refused while a gate fails. \
+Explain each gate's physics in a sentence. The group's cfd_agents (cfd_agent_run: murphy diagnoses a failed \
+log, connie checks run health, reggie designs transient numerics, darwin plans RANS refinement) give advice; \
+apply a suggestion only with dict_batch after explaining it.
 - Be concise; give units.{extra}"""
 
 

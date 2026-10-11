@@ -140,32 +140,25 @@ class ChecksPanel(Panel):
         if not (0 <= row < len(self.findings)) or s is None or not self.sv.ensure_project():
             return
         f = self.findings[row]
-        from aethercfd.commands.base import USER, CommandPlan, Risk
+        from aethercfd.commands.base import USER
         from aethercfd.studio.widgets.approval import ApprovalDialog
 
-        plans = []
-        for e in f.edits:
-            params = {"file": str(s.root / e.file), "key": e.key, "value": e.value,
-                      "insert_if_missing": e.insert_if_missing}
-            try:
-                plans.append((params, s.executor.plan("dict.set", params, USER)))
-            except Exception as exc:
-                self.sv.notify(f"Cannot plan {e.key}: {exc}", "error")
-                return
-        combined = CommandPlan("checks.fix", {}, USER, Risk.EDIT, f"{f.fix_label} ({f.title})", rationale=f.why)
-        for _p, pl in plans:
-            combined.preconditions += pl.preconditions
-            combined.file_changes += pl.file_changes
-        dlg = ApprovalDialog(combined, self, who="AetherCFD checks")
+        # one dict.batch plan: edits of the same file are applied in order on the evolving text (separate
+        # dict.set plans of one file conflict: the second was planned against the original content)
+        params = {"edits": [{"file": str(s.root / e.file), "key": e.key, "value": e.value,
+                             "insert_if_missing": e.insert_if_missing} for e in f.edits],
+                  "summary": f"{f.fix_label} ({f.title})"}
+        try:
+            plan = s.executor.plan("dict.batch", params, USER, rationale=f.why)
+        except Exception as exc:
+            self.sv.notify(f"Cannot plan the fix: {exc}", "error")
+            return
+        dlg = ApprovalDialog(plan, self, who="AetherCFD checks")
         if dlg.exec() != ApprovalDialog.DialogCode.Accepted:
             return
-        bad = []
-        for params, pl in plans:
-            res = s.executor.execute("dict.set", params, USER, plan=pl, approved_hash=pl.plan_hash)
-            if not res.ok:
-                bad.append(res.message)
-        self.sv.notify("Fix applied (see the Command Journal)" if not bad else f"Fix partly failed: {bad[0]}",
-                       "info" if not bad else "error")
+        res = s.executor.execute("dict.batch", params, USER, plan=plan, approved_hash=plan.plan_hash)
+        self.sv.notify("Fix applied (see the Command Journal)" if res.ok else f"Fix failed: {res.message}",
+                       "info" if res.ok else "error")
         self._timer.start()
 
 

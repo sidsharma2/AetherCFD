@@ -848,8 +848,10 @@ class ToolSet:
         self.ctx = ctx
         from aethercfd.copilot.analysis_tools import ANALYSIS_TOOLS
         from aethercfd.copilot.mesh_tools import MESH_TOOLS
+        from aethercfd.copilot.workflow_tools import WORKFLOW_TOOLS
 
-        tools = [t for t in BASE_TOOLS + MESH_TOOLS + ANALYSIS_TOOLS if not (t.gui_only and ctx.ui is None)]             + list(extra or [])
+        tools = [t for t in BASE_TOOLS + MESH_TOOLS + ANALYSIS_TOOLS + WORKFLOW_TOOLS
+                 if not (t.gui_only and ctx.ui is None)] + list(extra or [])
         self.tools = {t.name: t for t in tools}
 
     def describe(self) -> list[dict]:
