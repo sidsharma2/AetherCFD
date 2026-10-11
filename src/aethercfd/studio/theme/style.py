@@ -1,12 +1,13 @@
-"""Apply the theme: Fusion + dark QPalette + token-generated QSS (+ QtAds overrides), fonts, icons."""
+"""Apply the theme: Fusion + QPalette + token-generated QSS (+ QtAds overrides), fonts, icons, pyqtgraph."""
 
 from __future__ import annotations
 
 import qtawesome as qta
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPalette
+from PySide6.QtCore import QRect, QSize
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication
 
-from aethercfd.studio.theme.tokens import T, Tokens
+from aethercfd.studio.theme.tokens import UI_COLORS, T, Tokens
 
 
 def _family(preferred: str, fallback: str) -> str:
@@ -27,19 +28,26 @@ def mono_font(pt: float | None = None) -> QFont:
     return f
 
 
-def palette(t: Tokens = T) -> QPalette:
+def palette(t: Tokens | None = None) -> QPalette:
+    t = t or T.tokens
     p = QPalette()
     c = QColor
+    on_accent = "#ffffff" if t.dark else t.text  # text on the selection colour (accent_soft)
     roles = {
         QPalette.ColorRole.Window: t.panel, QPalette.ColorRole.WindowText: t.text,
         QPalette.ColorRole.Base: t.base, QPalette.ColorRole.AlternateBase: t.alt,
         QPalette.ColorRole.ToolTipBase: t.raised, QPalette.ColorRole.ToolTipText: t.text,
         QPalette.ColorRole.Text: t.text, QPalette.ColorRole.Button: t.alt,
-        QPalette.ColorRole.ButtonText: t.text, QPalette.ColorRole.BrightText: "#ffffff",
-        QPalette.ColorRole.Highlight: t.accent_soft, QPalette.ColorRole.HighlightedText: "#ffffff",
-        QPalette.ColorRole.Link: t.accent, QPalette.ColorRole.PlaceholderText: t.text_faint,
-        QPalette.ColorRole.Mid: t.border, QPalette.ColorRole.Dark: t.base, QPalette.ColorRole.Light: t.raised,
+        QPalette.ColorRole.ButtonText: t.text, QPalette.ColorRole.BrightText: "#ffffff" if t.dark else "#000000",
+        QPalette.ColorRole.Highlight: t.accent_soft, QPalette.ColorRole.HighlightedText: on_accent,
+        QPalette.ColorRole.Link: t.accent, QPalette.ColorRole.LinkVisited: t.accent,
+        QPalette.ColorRole.PlaceholderText: t.text_faint,
+        QPalette.ColorRole.Mid: t.border, QPalette.ColorRole.Midlight: t.border_soft,
+        QPalette.ColorRole.Dark: t.base if t.dark else t.border, QPalette.ColorRole.Light: t.raised,
+        QPalette.ColorRole.Shadow: "#000000" if t.dark else t.border,
     }
+    if hasattr(QPalette.ColorRole, "Accent"):  # Qt >= 6.6
+        roles[QPalette.ColorRole.Accent] = t.accent
     for role, col in roles.items():
         p.setColor(role, c(col))
     for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText, QPalette.ColorRole.WindowText):
@@ -47,7 +55,8 @@ def palette(t: Tokens = T) -> QPalette:
     return p
 
 
-def qss(t: Tokens = T) -> str:
+def qss(t: Tokens | None = None) -> str:
+    t = t or T.tokens
     return f"""
 QWidget {{ color: {t.text}; }}
 QMainWindow, QDialog {{ background: {t.panel}; }}
@@ -111,17 +120,62 @@ ads--CAutoHideSideBar {{ background: {t.panel}; border: none; }}
 """
 
 
+# ---------------------------------------------------------------------------- icons
+def _token_for(color: str | None) -> str | None:
+    """The interface token a colour came from (``T.warn`` -> "warn"), so the icon follows the theme."""
+    if not color:
+        return None
+    c = color.lower()
+    return next((k for k in UI_COLORS if getattr(T, k).lower() == c), None)
+
+
+_ICONS: dict[tuple[str, str, str], QIcon] = {}  # one qtawesome icon per glyph + colours
+
+
+class _ThemedIconEngine(QIconEngine):
+    """A qtawesome glyph whose colour is a theme token, resolved each time Qt draws it: icons made
+    before a theme switch repaint in the new colours. Colours that are not tokens stay as given."""
+
+    def __init__(self, name: str, color: str, color_active: str):
+        super().__init__()
+        self.name, self.color, self.color_active = name, color, color_active
+
+    def _resolve(self, c: str) -> str:
+        return getattr(T, c[1:]) if c.startswith("@") else c
+
+    def _icon(self) -> QIcon:
+        key = (self.name, self._resolve(self.color), self._resolve(self.color_active))
+        ic = _ICONS.get(key)
+        if ic is None:
+            ic = _ICONS[key] = qta.icon(self.name, color=key[1], color_active=key[2])
+        return ic
+
+    def paint(self, painter, rect: QRect, mode, state) -> None:
+        if rect.isEmpty():
+            return
+        self._icon().paint(painter, rect, mode=mode, state=state)
+
+    def pixmap(self, size: QSize, mode, state) -> QPixmap:
+        if size.isEmpty():
+            return QPixmap()
+        return self._icon().pixmap(size, mode, state)
+
+    def clone(self) -> QIconEngine:
+        return _ThemedIconEngine(self.name, self.color, self.color_active)
+
+
 def icon(name: str, color: str | None = None) -> QIcon:
     try:
-        return qta.icon(name, color=color or T.text_dim, color_active=T.text)
+        qta.icon(name)  # unknown glyph names raise here, as before
     except Exception:
         return QIcon()
+    tok = _token_for(color) if color else "text_dim"
+    return QIcon(_ThemedIconEngine(name, f"@{tok}" if tok else str(color), "@text"))
 
 
 def _guard_empty_icon_pixmaps() -> None:
     """Qt asks icon engines for 0x0 pixmaps (e.g. tabs of hidden docks); qtawesome then paints into a null
     pixmap and Qt logs ~10 QPainter warnings each time (thousands per session). Return the empty pixmap."""
-    from PySide6.QtGui import QPixmap
     from qtawesome.iconic_font import CharIconEngine
 
     if getattr(CharIconEngine, "_aether_guarded", False):
@@ -137,9 +191,22 @@ def _guard_empty_icon_pixmaps() -> None:
     CharIconEngine._aether_guarded = True
 
 
+def plot_defaults() -> None:
+    """pyqtgraph's defaults for plots created from now on (existing ones are re-tinted by the manager)."""
+    import pyqtgraph as pg
+
+    pg.setConfigOptions(antialias=True, background=T.base, foreground=T.text_dim)
+
+
+def apply_tokens(app: QApplication) -> None:
+    """Palette, style sheet and plot defaults of the active tokens."""
+    app.setPalette(palette())
+    app.setStyleSheet(qss())
+    plot_defaults()
+
+
 def apply(app: QApplication) -> None:
     _guard_empty_icon_pixmaps()
     app.setStyle("Fusion")
-    app.setPalette(palette())
     app.setFont(ui_font())
-    app.setStyleSheet(qss())
+    apply_tokens(app)

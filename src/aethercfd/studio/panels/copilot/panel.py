@@ -779,6 +779,9 @@ class CopilotPanel(Panel):
             sb.setValue(sb.maximum())
 
     # ------------------------------------------------------------------ panel API
+    def on_theme_changed(self) -> None:
+        self._render()  # the chat HTML is built from the theme's colours
+
     def save_state(self) -> dict:
         return {}  # provider and model live in the settings (copilot_provider / copilot_model)
 

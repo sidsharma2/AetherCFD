@@ -62,6 +62,7 @@ class Settings(BaseModel):
     freecad_cmd: str | None = None  # FreeCADCmd.exe for CAD import (default: found automatically)
     cfd_agents_python: str | None = None  # python.exe of the cfd_agents environment (aethercfd.services.cfd_agents)
     cfd_agents_root: str | None = None  # folder that contains the cfd_agents package
+    theme: str = "system"  # system (follows Windows' app mode) | light | dark
     viewport_look: str = "studio"  # studio (AetherCFD's own look) | classic (ParaView-style, true cell values)
     recent_cases: list[str] = Field(default_factory=list)
     case_roots: list[str] = Field(default_factory=lambda: [str(default_case_root())])

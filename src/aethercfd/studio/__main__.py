@@ -49,6 +49,12 @@ def main(argv: list[str] | None = None) -> int:
 
     settings_existed = Settings.path().exists()  # a fresh install has none yet: the setup wizard explains
     services = AppServices()
+    try:  # before any window exists: everything is built in the chosen theme
+        services.theme.set_mode(services.settings.theme)
+    except ValueError:
+        logging.getLogger("aethercfd.studio").warning("unknown theme %r in settings: following the system",
+                                                      services.settings.theme)
+        services.theme.set_mode("system")
     _install_excepthook(services)
     register_builtin_panels(services.panels)
     win = MainWindow(services)

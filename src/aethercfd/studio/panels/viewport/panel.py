@@ -874,6 +874,19 @@ class ViewportPanel(Panel):
                                       and self.view_opts.get("base") != "hidden")
         self._update_hud()
 
+    def on_theme_changed(self) -> None:
+        """The Classic look follows the app theme (background, colour-bar text, axes labels); the Studio
+        look keeps its dark vignette and light text in both themes."""
+        try:
+            self.plotter.add_axes(color=T.text_dim)
+            if self.look == "studio":
+                self.plotter.hide_axes()
+            lk.apply_background(self.plotter.renderer, self.look)
+            lk.style_bar(self.scalar_bar, self.look)
+            self.plotter.render()
+        except Exception:
+            log.exception("viewport theme")
+
     def set_look(self, name: str) -> str:
         """'studio' (AetherCFD post-processing) or 'classic' (ParaView-style true cell colours)."""
         name = (name or "").lower()

@@ -14,13 +14,27 @@ from pathlib import Path
 
 import vtk
 
+from aethercfd.studio.theme.tokens import T
+
 LOOKS = ("studio", "classic")
 _FONT = Path(r"C:\Windows\Fonts\segoeui.ttf")
 _FONT_SEMI = Path(r"C:\Windows\Fonts\seguisb.ttf")
 # radial vignette: lighter at the centre, deep at the edges (reads as depth, keeps colours vivid)
 STUDIO_CENTRE = (0.155, 0.185, 0.255)
 STUDIO_EDGE = (0.030, 0.036, 0.058)
-CLASSIC_BG = (0.105, 0.11, 0.122)
+
+
+def _rgb(hex_color: str) -> tuple[float, float, float]:
+    return tuple(int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+
+
+def classic_bg() -> tuple[float, float, float]:
+    """The Classic look follows the app theme (dark grey / light grey); Studio stays dark in both."""
+    return _rgb(T.viewport_bg)
+
+
+def classic_text() -> tuple[float, float, float]:
+    return _rgb(T.viewport_text)
 
 # per-field colour maps for the Studio look (perceptual; diverging only where zero is meaningful)
 # none of them starts at black: on the dark Studio background a black low end makes the domain vanish
@@ -79,7 +93,7 @@ def style_bar(bar: vtk.vtkScalarBarActor, look: str) -> None:
         bar.UnconstrainedFontSizeOn()
         for tp, size in ((bar.GetLabelTextProperty(), 11), (bar.GetTitleTextProperty(), 12)):
             tp.SetFontFamilyToArial()
-            tp.SetColor(0.84, 0.84, 0.84)
+            tp.SetColor(*classic_text())
             tp.SetFontSize(size)
             tp.ItalicOff()
             tp.BoldOff()
@@ -123,7 +137,7 @@ def apply_background(renderer: vtk.vtkRenderer, look: str) -> None:
             renderer.SetBackground2(*STUDIO_CENTRE)
     else:
         renderer.GradientBackgroundOff()
-        renderer.SetBackground(*CLASSIC_BG)
+        renderer.SetBackground(*classic_bg())
 
 
 def surface_material(prop: vtk.vtkProperty, look: str, *, smooth: bool, flat_view: bool = False) -> None:

@@ -47,17 +47,17 @@ from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSp
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
 
-_STATUS = {  # status -> (icon, colour, label)
-    "done": ("msc.pass-filled", T.ok, "done"),
-    "ready": ("msc.circle-large-outline", T.info, "ready to mark done"),
-    "attention": ("msc.warning", T.warn, "review warnings"),
-    "error": ("msc.error", T.error, "needs a fix"),
-    "blocked": ("msc.lock", T.text_faint, "waiting for an earlier stage"),
-    "changed": ("msc.history", T.warn, "changed since marked done"),
-    "todo": ("msc.circle-large-outline", T.text_faint, "to do"),
-    "na": ("msc.circle-slash", T.text_faint, "not needed"),
+_STATUS = {  # status -> (icon, colour token, label): tokens so a theme switch re-tints
+    "done": ("msc.pass-filled", "ok", "done"),
+    "ready": ("msc.circle-large-outline", "info", "ready to mark done"),
+    "attention": ("msc.warning", "warn", "review warnings"),
+    "error": ("msc.error", "error", "needs a fix"),
+    "blocked": ("msc.lock", "text_faint", "waiting for an earlier stage"),
+    "changed": ("msc.history", "warn", "changed since marked done"),
+    "todo": ("msc.circle-large-outline", "text_faint", "to do"),
+    "na": ("msc.circle-slash", "text_faint", "not needed"),
 }
-_GATE = {"error": ("msc.error", T.error), "warn": ("msc.warning", T.warn), "info": ("msc.info", T.info)}
+_GATE = {"error": ("msc.error", "error"), "warn": ("msc.warning", "warn"), "info": ("msc.info", "info")}
 _RUN_PRESET = {"run.mesh": "mesh", "run.check": "check", "run.start": "auto"}
 
 
@@ -238,6 +238,10 @@ class WorkflowPanel(Panel):
         if s is not None:
             self._assessed((assess(s.root), None))
 
+    def on_theme_changed(self) -> None:
+        if self.stages:  # status icons are tinted pixmaps: rebuild them in the new palette
+            self._assessed((self.stages, None))
+
     def _assessed(self, res) -> None:
         self._busy = False
         stages, err = res if isinstance(res, tuple) else (res, None)
@@ -260,7 +264,8 @@ class WorkflowPanel(Panel):
             return
         self.stages = stages
         for st in stages:
-            ic, col, label = _STATUS.get(st.status, _STATUS["todo"])
+            ic, tok, label = _STATUS.get(st.status, _STATUS["todo"])
+            col = getattr(T, tok)
             it = QTreeWidgetItem([f"{st.index:>2}  {st.title}", label])
             it.setIcon(0, icon(ic, col))
             it.setForeground(1, QColor(col))
@@ -315,7 +320,8 @@ class WorkflowPanel(Panel):
             self.mark_btn.setEnabled(False)
             self.unmark_btn.setEnabled(False)
             return
-        _ic, col, label = _STATUS.get(st.status, _STATUS["todo"])
+        _ic, tok, label = _STATUS.get(st.status, _STATUS["todo"])
+        col = getattr(T, tok)
         self.title.setText(f"{st.index}. {st.title}")
         self.status.setText(label)
         self.status.setStyleSheet(f"color: {col};")
@@ -335,7 +341,8 @@ class WorkflowPanel(Panel):
                 it.setIcon(0, icon("msc.pass", T.ok))
                 it.setForeground(0, QColor(T.text_dim))
             else:
-                ic2, c2 = _GATE.get(gt.severity, _GATE["info"])
+                ic2, t2 = _GATE.get(gt.severity, _GATE["info"])
+                c2 = getattr(T, t2)
                 it = QTreeWidgetItem([gt.title + ("   [fix available]" if gt.edits else "")])
                 it.setIcon(0, icon(ic2, c2))
                 it.setForeground(0, QColor(c2))

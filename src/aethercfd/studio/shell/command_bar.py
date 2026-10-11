@@ -18,8 +18,9 @@ from aethercfd.studio.layout.recipes import PERSPECTIVES
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
 
-_RUN_COLOR = {"running": T.accent, "paused": T.warn, "finished": T.ok, "failed": T.error, "killed": T.warn,
-              "guard_stopped": T.error, "lost": T.warn, "staging": T.info, "syncing": T.info, "stopping": T.warn}
+_RUN_COLOR = {"running": "accent", "paused": "warn", "finished": "ok", "failed": "error", "killed": "warn",
+              "guard_stopped": "error", "lost": "warn", "staging": "info", "syncing": "info",
+              "stopping": "warn"}  # tokens
 
 
 class CommandBar(QToolBar):
@@ -123,6 +124,6 @@ class CommandBar(QToolBar):
         if s is None or str(payload.get("case", "")).lower() != str(s.root).lower():
             return
         state = str(payload.get("state", ""))
-        color = _RUN_COLOR.get(state, T.text_dim)
+        color = getattr(T, _RUN_COLOR.get(state, "text_dim"))
         self.run.setText(f"  {state.replace('_', ' ')}")
         self.run.setIcon(icon("msc.debug-start" if state != "running" else "msc.sync", color))

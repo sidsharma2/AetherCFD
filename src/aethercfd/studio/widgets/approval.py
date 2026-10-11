@@ -27,7 +27,7 @@ from aethercfd.commands.executor import Approval
 from aethercfd.studio.theme.style import mono_font
 from aethercfd.studio.theme.tokens import T
 
-_RISK_COLOR = {Risk.READ: T.text_dim, Risk.EDIT: T.info, Risk.EXECUTE: T.warn, Risk.DESTRUCTIVE: T.error}
+_RISK_COLOR = {Risk.READ: "text_dim", Risk.EDIT: "info", Risk.EXECUTE: "warn", Risk.DESTRUCTIVE: "error"}  # tokens
 
 
 class ApprovalDialog(QDialog):
@@ -40,7 +40,7 @@ class ApprovalDialog(QDialog):
         head.setWordWrap(True)
         head.setStyleSheet(f"font-size: 11pt; color: {T.text};")
         lay.addWidget(head)
-        color = _RISK_COLOR.get(plan.risk, T.text)
+        color = getattr(T, _RISK_COLOR.get(plan.risk, "text"))
         conf = f" · confidence {plan.confidence:.0%}" if plan.confidence is not None else ""
         risk = QLabel(f"<span style='color:{color}; font-weight:600'>{plan.risk.value.upper()}</span>{conf}")
         lay.addWidget(risk)

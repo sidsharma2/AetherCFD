@@ -26,7 +26,7 @@ from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSp
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
 
-_SEV = {"error": ("msc.error", T.error), "warn": ("msc.warning", T.warn), "info": ("msc.info", T.info)}
+_SEV = {"error": ("msc.error", "error"), "warn": ("msc.warning", "warn"), "info": ("msc.info", "info")}  # tokens
 
 
 class ChecksPanel(Panel):
@@ -107,8 +107,8 @@ class ChecksPanel(Panel):
         counts = {"error": 0, "warn": 0, "info": 0}
         for f in self.findings:
             counts[f.severity] = counts.get(f.severity, 0) + 1
-            ic, color = _SEV.get(f.severity, ("msc.info", T.text))
-            it = QListWidgetItem(icon(ic, color), f.title)
+            ic, tok = _SEV.get(f.severity, ("msc.info", "text"))
+            it = QListWidgetItem(icon(ic, getattr(T, tok)), f.title)
             it.setToolTip(f.why)
             self.list.addItem(it)
         fa = self.facts
@@ -129,7 +129,7 @@ class ChecksPanel(Panel):
         ev = "".join(f"<li><code>{_esc(e)}</code></li>" for e in f.evidence)
         fix = (f"<p><b>Fix:</b> {_esc(f.fix_label)}<br>" + "<br>".join(
             f"<code>{_esc(e.file)} › {_esc(e.key)} = {_esc(e.value)}</code>" for e in f.edits) + "</p>") if f.edits else ""
-        color = _SEV.get(f.severity, ("", T.text))[1]
+        color = getattr(T, _SEV.get(f.severity, ("", "text"))[1])
         self.text.setHtml(f"<p style='color:{color};font-weight:600'>{_esc(f.title)}</p><p>{_esc(f.why)}</p>"
                           f"<ul>{ev}</ul>{fix}")
         self.btn_fix.setEnabled(bool(f.edits))

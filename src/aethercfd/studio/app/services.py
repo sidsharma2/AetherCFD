@@ -67,6 +67,20 @@ class AppServices(QObject):
         self.copilot_handoff: dict | None = None  # set when the copilot opens a case: its chat continues there
         self.copilot_last_request = ""
         self.selection: dict | None = None
+        from aethercfd.studio.theme.manager import THEME
+
+        self.theme = THEME  # theme.changed(name) fires after a live Light/Dark switch
+
+    def set_theme(self, mode: str) -> str:
+        """'system' | 'light' | 'dark': switch live and remember it. Returns the theme now shown."""
+        name = self.theme.set_mode(mode)
+        if self.settings.theme != self.theme.mode:
+            self.settings.theme = self.theme.mode
+            try:
+                self.settings.save()
+            except Exception:
+                log.warning("could not save the theme setting", exc_info=True)
+        return name
 
     def set_active_viewport(self, vp) -> None:
         if vp is not self.active_viewport:

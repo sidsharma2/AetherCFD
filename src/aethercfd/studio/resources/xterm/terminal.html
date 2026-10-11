@@ -26,6 +26,12 @@
   term.open(document.getElementById('t'));
   fit.fit();
   window.term = term;
+  // the app pushes its theme (and pushes it again on a Light/Dark switch)
+  window.setTheme = (t, minContrast) => {
+    term.options.theme = t;
+    term.options.minimumContrastRatio = minContrast || 1;
+    document.body.style.background = t.background;
+  };
   new QWebChannel(qt.webChannelTransport, (ch) => {
     const bridge = ch.objects.bridge;
     bridge.output.connect((data) => term.write(data));
