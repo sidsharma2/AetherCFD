@@ -113,12 +113,16 @@ class _Monitor:
     stall: guards.StallGuard = field(default_factory=guards.StallGuard)
     last_sync: float = 0.0
     last_alive_check: float = 0.0
+    dead_replies: int = 0  # definite DEAD replies in a row (an unknown reply neither counts nor resets)
     sim_time: float | None = None
 
 
 class RunManager:
     POLL_S = 1.0
     SYNC_EVERY_S = 300.0
+    ALIVE_EVERY_S = 30.0
+    DEAD_RECHECK_S = 5.0  # after one DEAD, confirm this soon instead of waiting ALIVE_EVERY_S
+    DEAD_REPLIES_FOR_LOST = 2
 
     def __init__(self, project: Project, runner: WslRunner, *, settings: Settings | None = None,
                  bus: EventBus | None = None):
@@ -227,21 +231,23 @@ class RunManager:
         return res.ok, (res.stderr or res.stdout).strip()
 
     def is_alive(self, rec: RunRecord) -> bool | None:
-        """True/False if we could tell, None if the distro could not be queried."""
+        """True if the run's own process group is alive, False on a definite answer that it is not (DEAD, or the
+        pgid now belongs to another process), None when the reply says nothing."""
         if rec.pgid is None:
             return False
         try:
             res = self.runner.run_script(control_sh("alive", rec.run_dir_wsl, rec.pgid), timeout_s=30)
         except Exception:
             return None
-        out = res.stdout.split()
-        if out and out[0] == "DEAD":
-            return False
-        if not out or out[0] != "ALIVE":
-            # an empty or garbled reply (WSL busy, wsl.exe hiccup) says nothing about the run: never mark a healthy
-            # run "lost" on it (seen live: a 1M-cell run marked lost while all 8 ranks were computing)
+        reply = res.stdout.strip()
+        out = reply.split()
+        if not res.ok or "\n" in reply or not (reply == "DEAD" or (len(out) == 3 and out[0] == "ALIVE")):
+            # an empty, garbled or truncated reply (WSL busy, wsl.exe hiccup, timeout) says nothing about the run:
+            # never mark a healthy run "lost" on it (seen live: a 1M-cell run marked lost while all 8 ranks computed)
             return None
-        return len(out) >= 3 and out[1] == rec.start_jiffies and out[2] == rec.boot_id
+        if reply == "DEAD":
+            return False
+        return out[1] == rec.start_jiffies and out[2] == rec.boot_id
 
     # ------------------------------------------------------------------ registry of runs
     def runs(self) -> list[RunRecord]:
@@ -266,10 +272,16 @@ class RunManager:
         key = str(Path(case_root))
         return [r for r in self.runs() if r.case_root == key and RunState(r.state).active]
 
-    def reattach(self) -> list[RunRecord]:
-        """After an app restart: resume monitoring of runs that are still alive."""
+    def reattach(self, *, revive_lost: bool = True) -> list[RunRecord]:
+        """After an app restart: resume monitoring of runs that are still alive.
+
+        A run whose probe answers DEAD (or nothing) is monitored too: the monitor only declares it lost after
+        :attr:`DEAD_REPLIES_FOR_LOST` definite DEAD replies. With ``revive_lost``, a run already marked lost on this
+        WSL boot is re-opened when its own process group (pgid + start time + boot id) is verifiably alive.
+        """
         resumed = []
-        for rec in self.runs():
+        records = self.runs()
+        for rec in records:
             if not RunState(rec.state).active or rec.id in self._monitors:
                 continue
             if (Path(rec.run_dir) / "exit_code").exists():
@@ -277,12 +289,37 @@ class RunManager:
                 resumed.append(rec)
                 continue
             alive = self.is_alive(rec)
-            if alive:
-                self._start_monitor(rec)
+            self._start_monitor(rec, dead_replies=1 if alive is False else 0)
+            if alive is not False:
                 resumed.append(rec)
-            elif alive is False:
-                self._set_state(rec, RunState.LOST, stop_reason="process gone and no exit code (WSL restarted?)")
+        if revive_lost:
+            lost = [r for r in records if r.state == RunState.LOST.value and r.pgid is not None and r.boot_id
+                    and r.id not in self._monitors and not (Path(r.run_dir) / "exit_code").exists()]
+            boot = self._boot_id() if lost else None
+            resumed += [r for r in lost if r.boot_id == boot and self.revive(r)]
         return resumed
+
+    def _boot_id(self) -> str | None:
+        try:
+            res = self.runner.run_script("cat /proc/sys/kernel/random/boot_id\n", timeout_s=30)
+        except Exception:
+            return None
+        return (res.stdout.strip() or None) if res.ok else None
+
+    def revive(self, rec: RunRecord) -> bool:
+        """Re-open a run wrongly marked "lost" (e.g. by an unanswered probe under heavy load) and monitor it again.
+
+        Only when its own process group is verifiably alive: same pgid, process start time and boot id."""
+        if rec.state != RunState.LOST.value or rec.id in self._monitors or (Path(rec.run_dir) / "exit_code").exists():
+            return False
+        if self.is_alive(rec) is not True:
+            return False
+        log.warning("run %s was marked lost but its processes are alive: monitoring it again", rec.id)
+        rec.state, rec.stop_reason = RunState.RUNNING.value, None  # _set_state never re-activates a finished run
+        rec.save()
+        self._publish("run.state", rec, state=rec.state, revived=True)
+        self._start_monitor(rec)
+        return True
 
     def wait(self, run_id: str, timeout: float | None = None) -> RunRecord | None:
         m = self._monitors.get(run_id)
@@ -299,8 +336,10 @@ class RunManager:
                 m.thread.join(5)
 
     # ------------------------------------------------------------------ monitoring
-    def _start_monitor(self, rec: RunRecord) -> None:
-        m = _Monitor(rec)
+    def _start_monitor(self, rec: RunRecord, *, dead_replies: int = 0) -> None:
+        m = _Monitor(rec, dead_replies=dead_replies)
+        if dead_replies:
+            m.last_alive_check = time.monotonic() - self.ALIVE_EVERY_S + self.DEAD_RECHECK_S
         g = self.settings.guards
         m.growth = guards.LogGrowthGuard(warn_mb_s=g.log_warn_mb_per_s, stop_mb_s=g.log_stop_mb_per_s,
                                          hard_cap_bytes=int(g.log_hard_cap_gb * guards.GB))
@@ -407,17 +446,26 @@ class RunManager:
             if not code:  # `echo $rc > exit_code` creates the file before writing it: read it on the next poll
                 return False
             return self._finish(m, run_dir, int(code.split()[0]))
-        if now - m.last_alive_check > 30:
+        if now - m.last_alive_check > self.ALIVE_EVERY_S:
             m.last_alive_check = now
-            if self.is_alive(rec) is False:
-                time.sleep(1.0)
+            alive = self.is_alive(rec)
+            if alive is True:
+                m.dead_replies = 0
+            elif alive is None:
+                log.info("run %s: liveness probe got no usable reply; still monitoring", rec.id)
+            else:
+                m.dead_replies += 1
+            if m.dead_replies >= self.DEAD_REPLIES_FOR_LOST:
                 if exit_file.exists():
-                    return self._finish(m, run_dir, int(exit_file.read_text().strip() or "1"))
+                    return self._finish(m, run_dir, int((exit_file.read_text().strip() or "1").split()[0]))
                 if rec.stop_reason == "user: kill":
                     self._set_state(rec, RunState.KILLED, finished_at=datetime.now(UTC).isoformat(timespec="seconds"))
                 else:
                     self._set_state(rec, RunState.LOST, stop_reason="process disappeared without an exit code")
                 return True
+            if m.dead_replies:
+                # one DEAD is not enough to end a run: confirm it soon (the runner may be writing its exit code)
+                m.last_alive_check = now - self.ALIVE_EVERY_S + self.DEAD_RECHECK_S
         return False
 
     def _on_guard(self, m: _Monitor, v: guards.Verdict) -> None:
