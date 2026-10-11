@@ -29,6 +29,8 @@ datas = (collect_data_files("aethercfd", excludes=["**/node_modules/**", "**/__p
          + collect_data_files("cantera"))  # mechanisms (gri30.yaml, ...)
 # the PINN worker runs as a script in the separate PyTorch environment: ship it as a file, not bytecode
 datas.append((str(ROOT / "src" / "aethercfd" / "ml" / "pinn_worker.py"), "aethercfd/ml"))
+# run by the cfd_agents' own interpreter (aethercfd.services.cfd_agents): must exist as a .py file
+datas.append((str(ROOT / "src" / "aethercfd" / "services" / "cfd_agents" / "_runner.py"), "aethercfd/services/cfd_agents"))
 binaries = collect_dynamic_libs("winpty") + [(str(p), "winpty") for p in WINPTY.glob("*.exe")]
 
 # CUDA compute: CuPy + the CUDA runtime / NVRTC DLLs from the nvidia-* wheels, kept at the same relative

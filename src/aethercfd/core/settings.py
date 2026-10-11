@@ -60,6 +60,8 @@ class Settings(BaseModel):
     codex_exe: str | None = None  # OpenAI Codex CLI for the copilot (default: found automatically)
     ml_python: str | None = None  # python.exe of the PyTorch environment for PINNs (default: found automatically)
     freecad_cmd: str | None = None  # FreeCADCmd.exe for CAD import (default: found automatically)
+    cfd_agents_python: str | None = None  # python.exe of the cfd_agents environment (aethercfd.services.cfd_agents)
+    cfd_agents_root: str | None = None  # folder that contains the cfd_agents package
     viewport_look: str = "studio"  # studio (AetherCFD's own look) | classic (ParaView-style, true cell values)
     recent_cases: list[str] = Field(default_factory=list)
     case_roots: list[str] = Field(default_factory=lambda: [str(default_case_root())])

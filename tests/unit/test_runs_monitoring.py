@@ -182,3 +182,26 @@ def test_disk_memory_and_stall():
     s = StallGuard(window_s=60)
     assert s.sample(0, 1.0).level is Level.OK and s.sample(30, 1.0).level is Level.OK
     assert s.sample(90, 1.0).level is Level.REVIEW and s.sample(91, 1.1).level is Level.OK
+
+
+def test_an_empty_exit_code_file_is_read_again_not_taken_as_failure(tmp_path):
+    """The runner writes `echo $rc > exit_code`: the file exists (empty) for a moment before the code is in it."""
+    import time as _time
+
+    from aethercfd.runs.manager import RunManager, RunRecord, RunState, _Monitor
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    rec = RunRecord("r1", str(tmp_path), "/mnt/x", str(run_dir), "/mnt/x/run", "/tmp/run", {}, "in-place", "", [], 1,
+                    False, "now", state=RunState.RUNNING.value)
+    mgr = RunManager.__new__(RunManager)
+    mgr._monitors, mgr.bus = {}, None
+    mgr._publish = lambda *a, **k: None
+    finished = []
+    mgr._finish = lambda m, d, code: finished.append(code) or True
+    m = _Monitor(rec)
+    m.last_alive_check = _time.monotonic()
+    (run_dir / "exit_code").write_text("")
+    assert mgr._tick(m, run_dir) is False and finished == []
+    (run_dir / "exit_code").write_text("0\n")
+    assert mgr._tick(m, run_dir) is True and finished == [0]

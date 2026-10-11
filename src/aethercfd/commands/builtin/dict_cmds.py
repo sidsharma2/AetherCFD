@@ -18,10 +18,11 @@ from aethercfd.commands.base import (
     unified_diff,
 )
 from aethercfd.commands.executor import Context
-from aethercfd.core.textio import read_snapshot
+from aethercfd.core.textio import read_snapshot, sha256_bytes
 from aethercfd.foamdict.cst import FoamDocument
 from aethercfd.foamdict.edits import (
     EditError,
+    NotFound,
     TextEdit,
     apply_edits,
     insert_entry,
@@ -118,4 +119,106 @@ class DictRemove(Command):
                           lambda doc, nl: remove_entry(doc, params.key))
 
 
-COMMANDS = [DictSet(), DictInsert(), DictRemove()]
+def _insert_nested(doc: FoamDocument, parts: list[str], value: str, newline: str) -> list[TextEdit]:
+    """Insert parts[-1] = value, creating the missing parent sub-dictionaries ("a/b/c" into a file that has
+    no b yet becomes ``b { c value; }`` inside a)."""
+    from aethercfd.foamdict.semantic import DictView
+
+    view = DictView(doc)
+    depth = len(parts) - 1
+    while depth > 0 and view.dict_at(parts[:depth]) is None:
+        depth -= 1
+    text = value
+    for name in reversed(parts[depth + 1:]):
+        text = f"{{ {name} {text}; }}"
+    if depth == len(parts) - 1:
+        return insert_entry(doc, parts[:-1], parts[-1], value, newline=newline)
+    return insert_entry(doc, parts[:depth], parts[depth], text, newline=newline)
+
+
+class BatchEdit(BaseModel):
+    file: str
+    key: str  # keyword path, e.g. "boundaryField/inlet/value"
+    value: str | None = None  # raw OpenFOAM text; None removes the keyword
+    insert_if_missing: bool = False
+    allow_nonliteral: bool = False  # replace a $macro / #calc value with this literal
+
+
+class BatchParams(BaseModel):
+    edits: list[BatchEdit] = []
+    creates: dict[str, str] = {}  # absolute path -> text of a NEW file (refused if it exists)
+    replace: dict[str, str] = {}  # absolute path -> whole new text (e.g. the workflow sidecar state)
+    summary: str = ""
+
+
+class DictBatch(Command):
+    """Several dictionary edits (and new files) across files as ONE plan: one approval, one journal
+    entry, one revert. Edits to the same file are applied in order on the evolving text, so two edits
+    of one file never conflict with each other (as separate dict.set plans would)."""
+
+    spec = CommandSpec("dict.batch", BatchParams, Risk.EDIT, "Apply several dictionary edits as one change")
+
+    def plan(self, ctx: Context, params: BatchParams, actor: Actor) -> CommandPlan:  # type: ignore[override]
+        n = len(params.edits) + len(params.creates)
+        plan = CommandPlan(self.spec.name, params.model_dump(), actor, self.spec.risk,
+                           params.summary or f"{n} dictionary edit(s)")
+        by_file: dict[str, list[BatchEdit]] = {}
+        for e in params.edits:
+            by_file.setdefault(str(Path(e.file)), []).append(e)
+        for file, edits in by_file.items():
+            path = Path(file)
+            if not path.is_file():
+                plan.preconditions.append(CheckResult(False, f"{path} does not exist"))
+                continue
+            snap = read_snapshot(path)
+            text = snap.text
+            for e in edits:
+                doc: FoamDocument = parse(text)
+                if not doc.ok:
+                    d = next(x for x in doc.diagnostics if x.severity == "error")
+                    plan.preconditions.append(CheckResult(False, f"{path.name} has a syntax error at line "
+                                                                 f"{doc.line_col(d.start)[0]} ({d.message})"))
+                    break
+                try:
+                    if e.value is None:
+                        tedits = remove_entry(doc, e.key)
+                    else:
+                        try:
+                            tedits = set_value(doc, e.key, e.value, allow_nonliteral=e.allow_nonliteral)
+                        except NotFound:
+                            if not e.insert_if_missing:
+                                raise
+                            tedits = _insert_nested(doc, [p for p in e.key.split("/") if p], e.value, snap.newline)
+                except EditError as exc:
+                    plan.preconditions.append(CheckResult(False, f"{path.name}: {exc}"))
+                    break
+                text = apply_edits(text, tedits)
+            after = snap.encode(text)
+            if after == snap.encode():
+                continue
+            if (m := _GENERATED.search(snap.text[:3000])) is not None:
+                plan.consequences.append(f"{path.name} says '{m.group(0).strip()[:80]}': regenerating it will "
+                                         "overwrite this change")
+            plan.file_changes.append(FileChange(path, snap.sha256, after, unified_diff(path, snap.text, text),
+                                                snap.encode()))
+        for file, text in params.creates.items():
+            path = Path(file)
+            if path.exists():
+                plan.preconditions.append(CheckResult(False, f"{path} already exists"))
+                continue
+            plan.file_changes.append(FileChange(path, None, text.encode("utf-8"), unified_diff(path, "", text)))
+        for file, text in params.replace.items():
+            path = Path(file)
+            before = path.read_bytes() if path.is_file() else None
+            after = text.encode("utf-8")
+            if before == after:
+                continue
+            old = before.decode("utf-8", errors="replace") if before is not None else ""
+            plan.file_changes.append(FileChange(path, sha256_bytes(before) if before is not None else None, after,
+                                                unified_diff(path, old, text), before))
+        if not plan.file_changes and not plan.blocked:
+            plan.consequences.append("no change")
+        return plan
+
+
+COMMANDS = [DictSet(), DictInsert(), DictRemove(), DictBatch()]

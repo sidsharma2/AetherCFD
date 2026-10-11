@@ -118,6 +118,7 @@ source_modules = [
     "aethercfd.runs",
     "aethercfd.commands",
     "aethercfd.project",
+    "aethercfd.services",
     "aethercfd.copilot",
     "aethercfd.firstrun",
 ]
