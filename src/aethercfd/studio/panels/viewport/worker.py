@@ -212,9 +212,10 @@ class VtkWorker(QObject):
         elif req.get("steady"):
             reason = "a steady run: its saved times are iterations, not physical time"
         if reason:
-            out = pl.stage_streamlines({**spec, "type": "streamlines"}, internal, None, patches=patches)
+            out = pl.stage_streamlines({**spec, "type": "streamlines"}, internal, None, "magnitude",
+                                       patches=patches)
             out.notes.insert(0, f"{reason}; showing streamlines (the paths of the steady flow) instead")
-            out.label = out.label.replace("streamlines", "streamlines (not pathlines)")
+            out.label += " (streamlines, not pathlines)"
             return out
         if times[0] == 0.0 and len(times) > 2:
             times = times[1:]  # the initial field is not a flow yet

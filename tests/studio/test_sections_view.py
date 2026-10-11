@@ -192,6 +192,11 @@ def test_flow_paths_controls(vp, qtbot):
     _drawn(qtbot, v)
     info = next(i for k, i in v.stage_info.items() if k.startswith("stage:flow"))
     assert info["label"].startswith("pathlines U (2 saved times"), info  # icoFoam: transient, 2 saved times
+    v._steady = True  # a steady run: its saved times are iterations, so streamlines, said so
+    v.request_load()
+    _drawn(qtbot, v)
+    info = next(i for k, i in v.stage_info.items() if k.startswith("stage:flow"))
+    assert "not pathlines" in info["label"] and "steady run" in info["notes"][0], info
     assert a.flow_paths(clear=True) == "flow paths removed" and not any(s.get("flow") for s in v.stages)
 
 
@@ -237,7 +242,7 @@ def test_cht_probe_tip_section_and_dilution_paths(qtbot, tmp_path, monkeypatch):
     v, sv, a = _real(qtbot, CHT, tmp_path, monkeypatch)
     dirs = _report(tmp_path)
     try:
-        assert v.show_field("U", None, None, "smooth").startswith("showing")
+        assert v.show_field("U", smoothing="smooth").startswith("showing")
         _drawn(qtbot, v)
         assert "DILUTION_AIR_INLET" in [p.split("/")[-1] for p in v.inlet_paths()]
         msg = a.section("plane", through="probe tip", axis="z", show={"contours": True})
@@ -278,7 +283,7 @@ def test_decomposed_probe_ortho_sections_smooth_vs_cells(qtbot, tmp_path, monkey
     try:
         assert v.show_field("T").startswith("showing")
         _drawn(qtbot, v)
-        a.add_stage("contour", {"field": "T", "n": 4}, "smooth")
+        a.add_stage("contour", {"field": "T", "n": 4}, smoothing="smooth")
         msg = a.section("ortho3", show={"contours": True})
         assert "three orthogonal" in msg
         _drawn(qtbot, v)
