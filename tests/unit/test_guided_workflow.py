@@ -118,7 +118,7 @@ def test_twelve_stages_in_order_with_dependencies(tmp_path):
 def test_reference_quantities_and_physics_questions(tmp_path):
     root = _case(tmp_path, "esi_pitzDaily")
     ref = G.reference(load_case(root))
-    assert ref.U == pytest.approx(10.0) and ref.nu == pytest.approx(1e-5)
+    assert pytest.approx(10.0) == ref.U and ref.nu == pytest.approx(1e-5)
     assert ref.mach == pytest.approx(10 / (1.4 * 287.05 * 293.15) ** 0.5, rel=1e-6)
     ph = _stage(root, "physics")
     q = {x.id: x for x in ph.questions}
@@ -135,7 +135,7 @@ def test_inlet_turbulence_defaults_reproduce_the_tutorial(tmp_path):
     assert q["outlet_p:outlet"].value == 0.0
     assert q["turb_intensity"].value == pytest.approx(5.0, rel=1e-3)
     assert q["turb_length"].value == pytest.approx(0.00254, rel=1e-2)
-    k, eps, om = guided.turbulence_values(10.0, 5.0, q["turb_length"].value)
+    k, eps, _om = guided.turbulence_values(10.0, 5.0, q["turb_length"].value)
     assert k == pytest.approx(0.375) and eps == pytest.approx(14.855, rel=2e-3)
 
 
@@ -348,7 +348,7 @@ def test_yplus_estimate_from_the_mesh(tmp_path):
 
 def test_run_gate_reads_the_solver_log(tmp_path):
     root = _case(tmp_path, "of14_cavity")
-    g, s = G.run_gate(load_case(root))
+    _g, s = G.run_gate(load_case(root))
     assert s is not None and s.steps > 0
     st = _stage(root, "validation")
     assert any(x.id == "convergence" for x in st.gates)

@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from aethercfd.services.cfd_agents import CATALOG, CfdAgents, explain_import_error, reggie_suggestions
+from aethercfd.services.cfd_agents import (
+    CATALOG,
+    CfdAgents,
+    explain_import_error,
+    reggie_suggestions,
+)
 
 FAKE = Path(__file__).resolve().parents[1] / "fixtures" / "fake_cfd_agents"
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "cases"
