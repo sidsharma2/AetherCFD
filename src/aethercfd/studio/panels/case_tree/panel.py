@@ -112,16 +112,25 @@ class CaseTreePanel(Panel):
             if p.name in _HIDDEN or p in times or p in procs:
                 continue
             self.model.appendRow(self._item(p, is_dir=p.is_dir()))
+        # a decomposed run's results live in processor*/ until reconstructPar (CaseModel.processor_times)
+        ptimes = []
+        if procs and procs[0].is_dir():
+            with contextlib.suppress(OSError):
+                ptimes = [q.name for q in procs[0].iterdir() if q.is_dir() and is_time_dir(q.name)]
         if times:
-            grp = QStandardItem(f"Results  ({len(times)} time folders, latest {times[-1].name})")
+            names = {t.name for t in times}
+            extra = [t for t in ptimes if t not in names]
+            latest = max([t.name for t in times] + ptimes, key=float)
+            n = len(times) + len(extra)
+            grp = QStandardItem(f"Results  ({n} time folder{'s' if n != 1 else ''}"
+                                + (f", {len(extra)} only in processor*/" if extra else "") + f", latest {latest})")
             grp.setIcon(icon("mdi6.timeline-clock-outline", T.accent))
             grp.setEditable(False)
             for t in reversed(times):
                 grp.appendRow(self._item(t, is_dir=True))
             self.model.insertRow(0, [grp, QStandardItem("")])
         if procs:
-            pt = sorted((q.name for q in procs[0].iterdir() if q.is_dir() and is_time_dir(q.name)), key=float)                 if procs[0].is_dir() else []
-            res = [t for t in pt if float(t) > 0]
+            res = [t for t in sorted(ptimes, key=float) if float(t) > 0]
             grp = QStandardItem(f"Decomposed  ({len(procs)} processor folders"
                                 + (f"; results {res[0]} … {res[-1]}, latest {res[-1]}" if len(res) > 1 else
                                    f"; result {res[0]}" if res else "") + ")")

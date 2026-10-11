@@ -137,6 +137,8 @@ class PythonConsolePanel(Panel):
         names = "case, data, session, do, np, plt, show" if s is not None else "np, plt, show (open a case for more)"
         self.state.setText(f"Python · {Path(s.root).name if s else 'no case'}")
         self._print(f"Python console · names: {names}", T.text_faint)
+        if self.console.data_note:  # multi-region case: say which region data reads (example: "regions")
+            self._print(f"multi-region case · {self.console.data_note}", T.text_faint)
 
     # ------------------------------------------------------------------ running
     def run_input(self, *, force: bool) -> bool:

@@ -6,7 +6,8 @@ Names available in the console:
     np, plt   numpy and matplotlib (figures appear inline with show())          Path
 
 ``do`` runs the same journalled commands as the GUI (actor "script"): edits land in the Command Journal and
-can be reverted there.
+can be reverted there. On a multi-region (CHT) case ``data`` is the fluid region; ``data.regions()`` lists
+them and ``data.for_region("solid")`` reads another.
 """
 
 from __future__ import annotations
@@ -33,6 +34,13 @@ EXAMPLES = {
                 "order = np.argsort(c[on_axis, 0])\n"
                 "plt.plot(c[on_axis, 0][order] * 1e3, np.linalg.norm(f['U'][on_axis], axis=1)[order])\n"
                 "plt.xlabel('x [mm]'); plt.ylabel('|U| [m/s]'); show()"),
+    "regions": ("# multi-region (CHT) case: data is the fluid region; read the others one at a time\n"
+                "print(data.regions(), '-> data is', repr(data.region))\n"
+                "for r in data.regions():\n"
+                "    d = data.for_region(r)\n"
+                "    if 'T' in d.field_names():\n"
+                "        T = d.fields(names=['T'])['T']\n"
+                "        print(f'{r:24s} {len(T):>9,} cells  T {T.min():.1f} .. {T.max():.1f}')"),
     "edit": ("# a journalled edit (revert it in the Command Journal):\n"
              "# do('dict.set', file=str(case.root / 'system/controlDict'), key='endTime', value='1200')"),
 }
@@ -71,6 +79,7 @@ class Console:
         self._images: list[str] = []
         self._count = itertools.count(1)
         self.ns: dict = {"__name__": "__console__", "Path": Path}
+        self.data_note = ""  # how ``data`` reads a multi-region case (for the startup line)
         self._setup()
         self.interp = _Interpreter(self.ns)
 
@@ -92,7 +101,15 @@ class Console:
 
             self.ns["session"] = s
             self.ns["case"] = s.case()
-            self.ns["data"] = CaseData(s.root)
+            data = CaseData(s.root)
+            regions = data.regions()
+            if regions:  # one region at a time: fields and cell ids differ per region
+                data = data.for_region(data.default_region())
+                others = [r for r in regions if r != data.region]
+                self.data_note = (f"data = region {data.region!r} of {len(regions)} ({', '.join(regions)}); "
+                                  f"data.for_region({others[0]!r}) reads another" if others else
+                                  f"data = region {data.region!r}")
+            self.ns["data"] = data
             self.ns["do"] = lambda name, **params: s.do(name, **params)
 
     def _show(self, fig=None) -> str:

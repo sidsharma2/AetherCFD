@@ -6,6 +6,8 @@
     c = data.centres()                # cell centres (n, 3), same order
     data.residuals()                  # residual history parsed from the newest solver log
     data.mesh(), data.quality()       # polyMesh and checkMesh-exact quality
+    data.regions()                    # multi-region (CHT) case: ['fluid', 'solid', ...]; [] otherwise
+    fl = data.for_region("fluid")     # ... read one region at a time (CaseData(root, "fluid") is the same)
 
 Decomposed runs are read from the processor folders and put back into the global OpenFOAM cell order with
 cellProcAddressing, so arrays from any time line up with ``mesh()`` and with each other.
@@ -13,9 +15,33 @@ cellProcAddressing, so arrays from any time line up with ``mesh()`` and with eac
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
+
+
+def pick_region(root: str | Path, regions: list[str]) -> str:
+    """Default region of a multi-region case (see CaseData.default_region); "" when ``regions`` is empty."""
+    if not regions:
+        return ""
+    root = Path(root)
+    for f in (root / "constant" / "regionProperties", root / "system" / "regionProperties"):
+        try:
+            text = re.sub(r"//[^\n]*|/\*.*?\*/", " ", f.read_text(encoding="utf-8", errors="replace"), flags=re.S)
+        except OSError:
+            continue
+        m = re.search(r"\bfluid\s*\(([^)]*)\)", text)
+        for name in m.group(1).split() if m else []:
+            if name in regions:
+                return name
+    for r in regions:
+        if any(k in r.lower() for k in ("fluid", "gas", "air", "water", "flow")):
+            return r
+    for r in regions:
+        if any((t / r / "U").is_file() for base in (root, root / "processor0") for t in base.glob("[0-9]*")):
+            return r
+    return regions[0]
 
 
 class CaseData:
@@ -41,11 +67,29 @@ class CaseData:
         return list(self._results().refresh().times)
 
     def field_names(self) -> list[str]:
-        return list(self._results().meta.cell_arrays)
+        """Cell fields; with a region, that region's only (a CHT solid has e.g. T and p, no U)."""
+        r = self._results()
+        if not self.region:
+            return list(r.meta.cell_arrays)
+        disk = r.fields_on_disk(self.region)
+        return [n for n in r.meta.cell_arrays if n in disk] + [n for n in disk if n not in r.meta.cell_arrays]
 
     def regions(self) -> list[str]:
         """Region names of a multi-region (e.g. CHT) case; [] for a single-region case."""
+        if not any(p.is_dir() for base in (self.root, self.root / "processor0") for p in base.glob("constant/*/polyMesh")):
+            return []  # no region meshes on disk: skip opening the reader
         return list(self._results().meta.regions)
+
+    def default_region(self) -> str:
+        """The region analysis opens on: the first fluid region of regionProperties, else one named like a
+        fluid, else one with a velocity field, else the first; "" for a single-region case."""
+        return pick_region(self.root, self.regions())
+
+    def for_region(self, name: str) -> CaseData:
+        """The same case seen through one region of a multi-region case (shares the open reader)."""
+        d = CaseData(self.root, name)
+        d._reader, d._decomposed = self._reader, self._decomposed
+        return d
 
     def _internal(self, time, names):
         from aethercfd.results.foam_reader import iter_leaves, region_of
@@ -54,7 +98,8 @@ class CaseData:
         meshes = [m for m in r.meta.internal_meshes if region_of(m) == self.region]
         if not meshes and r.meta.regions and not self.region:
             # never append the regions' meshes: fields differ per region and cell ids would mix
-            raise ValueError(f"multi-region case (regions: {', '.join(r.meta.regions)}): choose a region")
+            raise ValueError(f"multi-region case (regions: {', '.join(r.meta.regions)}): choose a region, e.g. "
+                             f"CaseData(root, {pick_region(self.root, r.meta.regions)!r})")
         if self.region and not meshes:
             raise ValueError(f"no region {self.region!r} (regions: {', '.join(r.meta.regions) or 'none'})")
         ds = r.read(time, fields=names, patches=meshes or None)

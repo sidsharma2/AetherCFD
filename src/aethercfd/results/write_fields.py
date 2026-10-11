@@ -26,9 +26,9 @@ def _patches(mesh_dir: Path) -> list[tuple[str, str]]:
     return [(p.name, p.type) for p in read_patches(mesh_dir / "boundary")]
 
 
-def _dimensions(case: Path, time: str, like: str | None) -> str:
+def _dimensions(case: Path, time: str, like: str | None, region: str = "") -> str:
     if like:
-        for base in (case / time, case / "processor0" / time):
+        for base in (case / time / region, case / "processor0" / time / region):
             f = base / like
             if f.is_file():
                 m = re.search(rb"dimensions\s*(\[[^\]]*\])", f.read_bytes()[:4000])
@@ -62,24 +62,26 @@ def _text(name: str, values: np.ndarray, patches: list[tuple[str, str]], dims: s
 
 def field_files(case: str | Path, time: str, fields: dict[str, np.ndarray], *, like: str | None = None,
                 region: str = "") -> dict[str, str]:
-    """{relative path: file text} for each named global cell array (OpenFOAM cell order)."""
+    """{relative path: file text} for each named global cell array (OpenFOAM cell order); with ``region``,
+    the arrays are that region's and go to <time>/<region>/."""
     case = Path(case)
     reg = Path(region) if region else Path()
+    loc = f"{time}/{region}" if region else f"{time}"
     procs = sorted((p for p in case.glob("processor*") if p.name[9:].isdigit()), key=lambda p: int(p.name[9:]))
     reconstructed = (case / time).is_dir()
     out: dict[str, str] = {}
     for name, vals in fields.items():
         vals = np.asarray(vals, dtype=np.float64)
         vals = vals.reshape(len(vals), 3) if vals.ndim == 2 else vals.ravel()  # (n, 3) -> volVectorField
-        dims = _dimensions(case, time, like)
+        dims = _dimensions(case, time, like, region)
         if reconstructed or not procs:
             mesh = case / "constant" / reg / "polyMesh"
-            out[str(Path(time) / reg / name)] = _text(name, vals, _patches(mesh), dims, f"{time}")
+            out[str(Path(time) / reg / name)] = _text(name, vals, _patches(mesh), dims, loc)
             continue
         from aethercfd.mesh.polymesh import _read_list
 
         for p in procs:
             pm = p / "constant" / reg / "polyMesh"
             addr = _read_list(pm / "cellProcAddressing", "labels")[0]
-            out[str(Path(p.name) / time / reg / name)] = _text(name, vals[addr], _patches(pm), dims, f"{time}")
+            out[str(Path(p.name) / time / reg / name)] = _text(name, vals[addr], _patches(pm), dims, loc)
     return out

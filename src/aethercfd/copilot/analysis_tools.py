@@ -5,9 +5,28 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from aethercfd.copilot.tools import Justified, Tool, ToolContext, ToolError, _clip
+
+
+def _region_field():
+    return Field("", description="region of a multi-region (CHT) case, e.g. fluid: required there, empty otherwise")
+
+
+def _case_data(ctx: ToolContext, region: str):
+    """CaseData of the case (of ``region``); a multi-region case without a region is a clear error."""
+    from aethercfd.results.casedata import CaseData
+
+    data = CaseData(ctx.root)
+    regs = data.regions()
+    if regs and not region:
+        raise ToolError(f"multi-region case: pass region, one of {', '.join(regs)} (the fluid region is "
+                        f"{data.default_region()!r}); fields and cells differ per region")
+    if region and region not in regs:
+        raise ToolError(f"no region {region!r}: " + (f"the case's regions are {', '.join(regs)}" if regs else
+                                                     "the case has a single region (leave region empty)"))
+    return data.for_region(region) if region else data
 
 
 class DiffParams(BaseModel):
@@ -39,13 +58,13 @@ class ModesParams(BaseModel):
     n_modes: int = Field(6, ge=1, le=50)
     delays: int = Field(1, ge=1, le=50, description="DMD time delays (> 1 for structures oscillating in place)")
     first_time: float | None = Field(None, description="ignore times before this (e.g. a start-up transient)")
+    region: str = _region_field()
 
 
 def modal_analysis(ctx: ToolContext, p: ModesParams) -> dict:
-    from aethercfd.results.casedata import CaseData
     from aethercfd.results.modes import dmd, pod
 
-    data = CaseData(ctx.root)
+    data = _case_data(ctx, p.region)
     times = [t for t in data.times() if t > 0 and (p.first_time is None or t >= p.first_time)]
     if len(times) < 3:
         raise ToolError(f"only {len(times)} saved time(s) after 0: modal analysis needs at least 3 (write more often)")
@@ -78,11 +97,11 @@ class MeasParams(BaseModel):
     field: str
     time: float | None = Field(None, description="result time (default latest)")
     length_unit: str = Field("m", description="unit of x, y, z in the CSV: m | mm | cm")
+    region: str = _region_field()
 
 
 def _meas_sim(ctx: ToolContext, p: MeasParams):
     from aethercfd.assim.measurements import load_measurements
-    from aethercfd.results.casedata import CaseData
 
     try:
         m = load_measurements(ctx.path(p.csv), length_unit=p.length_unit)
@@ -90,14 +109,15 @@ def _meas_sim(ctx: ToolContext, p: MeasParams):
         raise ToolError(str(exc)) from None
     if p.field not in m.values:
         raise ToolError(f"{p.csv} has no column {p.field!r} (has {sorted(m.values)})")
-    data = CaseData(ctx.root)
+    data = _case_data(ctx, p.region)
     times = data.times()
     if p.time is None and not times:
         raise ToolError("the case has no saved results")
     t = p.time if p.time is not None else times[-1]
     f = data.fields(t, [p.field])
     if p.field not in f:
-        raise ToolError(f"the simulation has no field {p.field!r} at t = {t:g}")
+        raise ToolError(f"the simulation has no field {p.field!r} at t = {t:g}"
+                        + (f" in region {p.region} (it has {', '.join(data.field_names())})" if p.region else ""))
     v = f[p.field]
     return m, data, t, data.centres(t), (v if v.ndim == 1 else np.linalg.norm(v, axis=1))
 
@@ -108,6 +128,8 @@ def compare_measurements(ctx: ToolContext, p: MeasParams) -> dict:
     m, _data, t, c, v = _meas_sim(ctx, p)
     rep = compare(m, {p.field: v}, c)
     rep["time"] = t
+    if p.region:
+        rep["region"] = p.region
     return rep
 
 
@@ -135,11 +157,14 @@ def assimilate_measurements(ctx: ToolContext, p: AssimParams) -> dict:
            "residual_rms": float(np.sqrt(np.mean(a.residual ** 2))), "cells_corrected": a.touched_cells,
            "max_abs_correction": float(np.abs(a.correction).max()),
            "posterior_std_range": [float(a.posterior_std.min()), float(a.posterior_std.max())], "notes": a.notes}
+    if p.region:
+        out["region"] = p.region
     if p.write:
         tname = next((d for d in (f"{t:g}", str(t)) if (ctx.root / d).is_dir() or
                       (ctx.root / "processor0" / d).is_dir()), f"{t:g}")
         files = field_files(ctx.root, tname, {f"{p.field}Assim": a.analysis, f"{p.field}AssimCorr": a.correction,
-                                               f"{p.field}AssimStd": a.posterior_std}, like=p.field)
+                                               f"{p.field}AssimStd": a.posterior_std}, like=p.field,
+                            region=p.region)
         out["write"] = ctx.execute("files.write", {"root": str(ctx.root), "files": files}, p)
     return out
 
@@ -218,16 +243,25 @@ class PinnParams(Justified):
     n_data: int = Field(40, ge=3, description="random CFD cells used as data (ignored with csv)")
     csv: str = Field("", description="measurements CSV in the case to use as data instead")
     csv_unit: str = Field("m", description="length unit of the CSV coordinates: m | mm | cm | in")
-    region: list[float] = Field(default_factory=list, description="xmin ymin zmin xmax ymax zmax [m] (empty: all)")
+    box: list[float] = Field(default_factory=list, description="xmin ymin zmin xmax ymax zmax [m] (empty: all)")
+    region: str = _region_field()
     epochs: int = Field(3000, ge=100, le=100000)
     lbfgs: int = Field(400, ge=0, le=20000)
     wait_min: float = Field(20, gt=0, le=240)
     write: bool = Field(False, description="write <field>Pinn and <field>PinnErr fields (approval)")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _old_box(cls, v):
+        if isinstance(v, dict) and isinstance(v.get("region"), list | tuple):  # region used to be the box
+            v = {**v, "box": v.get("box") or v["region"], "region": ""}
+        return v
+
 
 def pinn_train(ctx: ToolContext, p: PinnParams) -> dict:
     from aethercfd.ml.pinn import build_job, parse_region, start, wait
 
+    data = _case_data(ctx, p.region)
     pts = vals = None
     if p.csv:
         from aethercfd.assim.measurements import load_measurements
@@ -240,13 +274,13 @@ def pinn_train(ctx: ToolContext, p: PinnParams) -> dict:
             raise ToolError(f"{p.csv} has no column {p.field!r}")
         pts, vals = m.points, m.values[p.field]
     try:
-        region = parse_region(p.region)
+        box = parse_region(p.box)
     except ValueError as exc:
         raise ToolError(str(exc)) from None
     params = {"epochs_adam": p.epochs, "lbfgs_steps": p.lbfgs, ("diffusivity" if p.physics == "ad" else "nu"):
               p.coefficient}
     try:
-        job = build_job(ctx.root, physics=p.physics, field=p.field, region=region, n_data=p.n_data,
+        job = build_job(ctx.root, physics=p.physics, field=p.field, box=box, region=p.region, n_data=p.n_data,
                         data_points=pts, data_values=vals, **params)
         jd = start(job, ml_python=getattr(ctx.session.settings, "ml_python", None),
                    job_dir=ctx.root / ".aethercfd" / "local" / "pinn" / "copilot")
@@ -260,11 +294,12 @@ def pinn_train(ctx: ToolContext, p: PinnParams) -> dict:
         return {"ok": False, "error": res.get("error"), "log": res.get("log", "")[-1500:]}
     out = {k: res.get(k) for k in ("device", "gpu", "seconds", "final_data_loss", "final_pde_loss",
                                    "rmse_over_std_vs_cfd", "n_data", "n_colloc", "n_eval")} | {"names": res["names"]}
+    if p.region:
+        out["region"] = p.region
     if p.write:
-        from aethercfd.results.casedata import CaseData
         from aethercfd.results.write_fields import field_files
 
-        data, t = CaseData(ctx.root), job.params["time"]
+        t = job.params["time"]
         name = job.names[0] if job.physics != "ns" else "U"
         if job.physics == "ns":
             base = data.fields(t, ["U"])["U"]
@@ -278,7 +313,8 @@ def pinn_train(ctx: ToolContext, p: PinnParams) -> dict:
             pred[res["eval_cells"]] = res["y_eval"][:, 0]
         tname = next((d for d in (f"{t:g}", str(t)) if (ctx.root / d).is_dir()
                       or (ctx.root / "processor0" / d).is_dir()), f"{t:g}")
-        files = field_files(ctx.root, tname, {f"{name}Pinn": pred, f"{name}PinnErr": pred - base}, like=name)
+        files = field_files(ctx.root, tname, {f"{name}Pinn": pred, f"{name}PinnErr": pred - base}, like=name,
+                            region=p.region)
         out["write"] = ctx.execute("files.write", {"root": str(ctx.root), "files": files}, p)
     return out
 

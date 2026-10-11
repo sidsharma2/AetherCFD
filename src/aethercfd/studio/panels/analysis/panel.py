@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
+from aethercfd.studio.widgets.region_picker import RegionPicker
 
 
 class AnalysisPanel(Panel):
@@ -42,12 +43,16 @@ class AnalysisPanel(Panel):
         self.m_busy = False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
+        self.region = RegionPicker()  # multi-region (CHT) case: which region every tab reads
+        self.region.changed.connect(lambda _r: self._on_region())
+        lay.addWidget(self.region)
         self.tabs = QTabWidget()
         lay.addWidget(self.tabs, 1)
         self._build_modes()
         self._build_surrogate()
         self._build_pinn()
         self.sv.case_changed.connect(lambda _s: self._on_case())
+        self.region.reload(self.sv.session.root if self.sv.session else None)
         self._fields()
         self._pinn_fields()
 
@@ -61,6 +66,14 @@ class AnalysisPanel(Panel):
         self.p_write.setEnabled(False)
         self.p_compare.setEnabled(False)
         self.p_go.setEnabled(not self.p_status.text().startswith("PyTorch environment not found"))
+        self.region.reload(self.sv.session.root if self.sv.session else None)
+        self._fields()
+        self._pinn_fields()
+
+    def _on_region(self) -> None:
+        """Modes of one region cannot be written into another: analyse again; the field lists follow."""
+        self.last = None
+        self.m_write.setEnabled(False)
         self._fields()
         self._pinn_fields()
 
@@ -108,15 +121,15 @@ class AnalysisPanel(Panel):
         from aethercfd.results.casedata import CaseData
 
         try:
-            self.m_field.addItems(CaseData(s.root).field_names())
+            self.m_field.addItems(CaseData(s.root, self.region.region()).field_names())
         except Exception as exc:
             self.m_out.setText(f"could not read the fields: {exc}")
 
     @staticmethod
-    def _snapshots(root, name: str, comp: str):
+    def _snapshots(root, name: str, comp: str, region: str = ""):
         from aethercfd.results.casedata import CaseData
 
-        data = CaseData(root)
+        data = CaseData(root, region)
         ts, X = data.snapshots(name)
         if X.ndim == 3:
             X = np.linalg.norm(X, axis=2) if comp == "magnitude" else X[:, :, "xyz".index(comp)]
@@ -133,9 +146,11 @@ class AnalysisPanel(Panel):
             return False
         method, n, delays = self.m_method.currentText(), self.m_n.value(), self.m_delays.value()
         name, root, comp = self.m_field.currentText(), self.sv.session.root, self.m_comp.currentText()
+        region = self.region.region()
+        where = f" (region {html.escape(region)})" if region else ""
 
         def work():
-            data, ts, X = self._snapshots(root, name, comp)
+            data, ts, X = self._snapshots(root, name, comp, region)
             need = 2 if method == "POD" else 3
             if len(ts) < need:
                 raise ValueError(f"{method} needs at least {need} saved times with {name}; this case has {len(ts)}")
@@ -158,13 +173,13 @@ class AnalysisPanel(Panel):
                 return
             ts, r = value
             self.m_plot.clear()
-            self.last = (method, ts, r, name, root)
+            self.last = (method, ts, r, name, root, region)
             if method == "POD":
                 self.m_plot.addItem(pg.BarGraphItem(x=np.arange(1, len(r.energy) + 1), height=100 * r.energy,
                                                     width=0.6, brush=T.accent))
                 self.m_plot.setLabel("left", "energy [%]")
                 self.m_plot.setLabel("bottom", "mode")
-                self.m_out.setHtml(f"POD of <b>{html.escape(name)}</b> over {len(ts)} saved times ({r.backend}): "
+                self.m_out.setHtml(f"POD of <b>{html.escape(name)}</b>{where} over {len(ts)} saved times ({r.backend}): "
                                    f"{r.modes_for(0.9)} mode(s) hold 90 %, {r.modes_for(0.99)} hold 99 % of the "
                                    "fluctuation energy." + "".join(f"<br>{html.escape(x)}" for x in r.notes))
             else:
@@ -175,7 +190,7 @@ class AnalysisPanel(Panel):
                 o = np.argsort(-r.growth_rate)
                 rows = "".join(f"<tr><td>{i + 1}</td><td>{r.growth_rate[k]:.4g}</td><td>{abs(r.frequency[k]):.4g}"
                                f"</td><td>{r.amplitudes[k]:.3g}</td></tr>" for i, k in enumerate(o[:8]))
-                self.m_out.setHtml(f"DMD of <b>{html.escape(name)}</b> over {len(ts)} snapshots (Δt {dt:g}, "
+                self.m_out.setHtml(f"DMD of <b>{html.escape(name)}</b>{where} over {len(ts)} snapshots (Δt {dt:g}, "
                                    f"{r.backend}). Growth > 0 grows.<table cellspacing=6><tr><th>#</th><th>growth</th>"
                                    f"<th>frequency</th><th>amplitude</th></tr>{rows}</table>"
                                    + "".join(f"<br>{html.escape(x)}" for x in r.notes))
@@ -192,7 +207,7 @@ class AnalysisPanel(Panel):
 
         if self.last is None or not self.sv.ensure_project():
             return
-        kind, ts, r, name, root = self.last
+        kind, ts, r, name, root, region = self.last
         s = self.sv.session
         if s is None or s.root != root:
             self.sv.notify("The modes belong to another case: analyse this one first", "warn")
@@ -203,9 +218,10 @@ class AnalysisPanel(Panel):
         if not ((Path(s.root) / t).is_dir() or (Path(s.root) / "processor0" / t).is_dir()):
             t = str(ts[-1])
         files = field_files(s.root, t, {f"{name}{kind}{i + 1}": np.asarray(modes[i]).reshape(-1)[:modes.shape[1]]
-                                        for i in range(k)})
+                                        for i in range(k)}, region=region)
         res = s.executor.execute("files.write", {"root": str(s.root), "files": files}, USER)
-        self.sv.notify(f"Wrote {k} {kind} mode fields at t = {t}" if res.ok else f"Not written: {res.message}",
+        where = f" in region {region}" if region else ""
+        self.sv.notify(f"Wrote {k} {kind} mode fields at t = {t}{where}" if res.ok else f"Not written: {res.message}",
                        "info" if res.ok else "error")
 
     # ------------------------------------------------------------------ surrogate
@@ -302,7 +318,7 @@ class AnalysisPanel(Panel):
                                                      "kinematic viscosity ν [m²/s]")
         self.p_ndata = QSpinBox(minimum=3, maximum=100000, value=40)
         self.p_csv = QLineEdit(placeholderText="(optional) measurements CSV instead of random CFD cells")
-        self.p_region = QLineEdit(placeholderText="(optional) region: xmin ymin zmin xmax ymax zmax [m]")
+        self.p_region = QLineEdit(placeholderText="(optional) box: xmin ymin zmin xmax ymax zmax [m]")
         self.p_epochs = QSpinBox(minimum=100, maximum=200000, value=4000, singleStep=500)
         self.p_lbfgs = QSpinBox(minimum=0, maximum=20000, value=500, singleStep=100)
         f.addRow("Physics", self.p_phys)
@@ -316,7 +332,7 @@ class AnalysisPanel(Panel):
         csv_row.addWidget(self.p_csv, 1)
         csv_row.addWidget(self.p_unit)
         f.addRow("Measurements", csv_row)
-        f.addRow("Region", self.p_region)
+        f.addRow("Box", self.p_region)
         f.addRow("Adam steps", self.p_epochs)
         f.addRow("L-BFGS steps", self.p_lbfgs)
         lay.addLayout(f)
@@ -379,7 +395,7 @@ class AnalysisPanel(Panel):
         phys = self.p_phys.currentData()
         field = self.p_field.currentText()
         try:
-            region = parse_region(self.p_region.text())
+            box = parse_region(self.p_region.text())
         except ValueError as exc:
             self.p_out.setText(str(exc))
             return
@@ -387,6 +403,7 @@ class AnalysisPanel(Panel):
         params = {"epochs_adam": self.p_epochs.value(), "lbfgs_steps": self.p_lbfgs.value()}
         params["diffusivity" if phys == "ad" else "nu"] = coef
         csv_path, csv_unit = self.p_csv.text().strip(), self.p_unit.currentText()
+        region = self.region.region()
         self.p_go.setEnabled(False)
         self.p_write.setEnabled(False)
         self.p_out.setText("preparing the job (reading the case)…")
@@ -401,7 +418,7 @@ class AnalysisPanel(Panel):
                 if field not in m.values:
                     raise ValueError(f"{Path(csv_path).name} has no column {field!r}")
                 pts, vals = m.points, m.values[field]
-            job = build_job(s.root, physics=phys, field=field, region=region, n_data=self.p_ndata.value(),
+            job = build_job(s.root, physics=phys, field=field, box=box, region=region, n_data=self.p_ndata.value(),
                             data_points=pts, data_values=vals, **params)
             jd = start(job, ml_python=ml_py, job_dir=Path(s.root) / ".aethercfd" / "local" / "pinn" / "last"
                        if s.project else None)
@@ -418,7 +435,7 @@ class AnalysisPanel(Panel):
                 return  # the case changed while the job was being prepared
             self.p_job = value
             self.p_out.setText(f"training on {len(value[0].x_data)} data points, {len(value[0].x_colloc)} physics "
-                               f"points, {len(value[0].x_eval)} cells…")
+                               f"points, {len(value[0].x_eval)} cells" + (f" of region {region}" if region else "") + "…")
             self.p_timer.start()
 
         self.sv.run_bg(work, done)
@@ -476,8 +493,8 @@ class AnalysisPanel(Panel):
         job, _jd = self.p_job
         res, s = self.p_result, self.sv.session
         cells, y, t = res["eval_cells"], res["y_eval"], job.params["time"]
-        axes = job.params["axes"]
-        data = CaseData(s.root)
+        axes, region = job.params["axes"], job.params.get("region", "")
+        data = CaseData(s.root, region)
         out = {}
         if job.physics == "ns":
             base = data.fields(t, ["U"])["U"].copy()
@@ -494,7 +511,7 @@ class AnalysisPanel(Panel):
             out[f"{name}Pinn"], out[f"{name}PinnErr"] = pred, pred - base
         tname = next((d for d in (f"{t:g}", str(t)) if (Path(s.root) / d).is_dir()
                       or (Path(s.root) / "processor0" / d).is_dir()), f"{t:g}")
-        files = field_files(s.root, tname, out, like=job.names[0] if job.physics != "ns" else "U")
+        files = field_files(s.root, tname, out, like=job.names[0] if job.physics != "ns" else "U", region=region)
         r = s.executor.execute("files.write", {"root": str(s.root), "files": files}, USER)
         self.sv.notify(f"Wrote {', '.join(out)} at t = {tname}" if r.ok else f"Not written: {r.message}",
                        "info" if r.ok else "error")

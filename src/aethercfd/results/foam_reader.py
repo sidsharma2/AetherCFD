@@ -83,18 +83,20 @@ class FoamResults:
         cells = [r.GetCellArrayName(i) for i in range(r.GetNumberOfCellArrays())]
         # the reader lists only the fields of ONE time folder; a field written at other times (a derived field
         # such as TPinn, or one switched on mid-run) would be invisible: add every volume field on disk
-        cells += [n for n in self._fields_on_disk() if n not in cells]
+        cells += [n for n in self.fields_on_disk() if n not in cells]
         self.meta = ResultsMeta(times, patches, cells,
                                 [r.GetPointArrayName(i) for i in range(r.GetNumberOfPointArrays())], regions)
         return self.meta
 
-    def _fields_on_disk(self) -> list[str]:
+    def fields_on_disk(self, region: str = "") -> list[str]:
+        """Volume fields saved in any time folder (of ``region``: <time>/<region>/), from the file headers."""
         from aethercfd.case.model import is_time_dir
 
         base = self.case_root / "processor0" if self.reader.GetCaseType() == 0 else self.case_root
         names: dict[str, None] = {}
         try:
-            dirs = [d for d in base.iterdir() if d.is_dir() and is_time_dir(d.name)]
+            dirs = [d / region if region else d for d in base.iterdir() if d.is_dir() and is_time_dir(d.name)]
+            dirs = [d for d in dirs if d.is_dir()]
         except OSError:
             return []
         for d in dirs:
@@ -112,7 +114,7 @@ class FoamResults:
                     gz = f.suffix == ".gz"
                     try:
                         with (gzip.open(f, "rb") if gz else open(f, "rb")) as fh:  # header only: fields can be GBs
-                            head = fh.read(600)
+                            head = fh.read(2048)  # the OpenFOAM banner alone is ~570 bytes
                     except (OSError, EOFError):
                         continue
                     if b"class" in head and b"vol" in head.split(b"class", 1)[1][:40]:

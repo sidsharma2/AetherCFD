@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
+from aethercfd.studio.widgets.region_picker import RegionPicker
 from aethercfd.studio.widgets.spin import dspin
 
 
@@ -37,9 +38,12 @@ class MeasurementsPanel(Panel):
         super().__init__(ctx)
         self.sv = ctx.services
         self.meas = None
-        self.last = None  # (time, field, centres, sim values, Assimilation)
+        self.last = None  # (time, field, Assimilation, region)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
+        self.region = RegionPicker()  # multi-region (CHT) case: the region the measurements are compared with
+        self.region.changed.connect(lambda _r: self._on_region())
+        lay.addWidget(self.region)
         row = QHBoxLayout()
         self.csv = QLineEdit(placeholderText="measurements CSV: x, y, z, <field>[, <field>_std]")
         b = QPushButton(icon("msc.folder-opened"), "")
@@ -83,19 +87,25 @@ class MeasurementsPanel(Panel):
         self.plot.setLabel("left", "simulated")
         lay.addWidget(self.plot, 1)
         self.sv.case_changed.connect(lambda _s: self._on_case())
+        self.region.reload(self.sv.session.root if self.sv.session else None)
         self._times()
 
     def _on_case(self) -> None:
         # an assimilated field belongs to the mesh it was computed on: never write it into another case
         self.last = None
         self.write.setEnabled(False)
+        self.region.reload(self.sv.session.root if self.sv.session else None)
         self._times()
+
+    def _on_region(self) -> None:
+        self.last = None  # ... nor into another region
+        self.write.setEnabled(False)
 
     def _data(self):
         from aethercfd.results.casedata import CaseData
 
         s = self.sv.session
-        return CaseData(s.root) if s is not None else None
+        return CaseData(s.root, self.region.region()) if s is not None else None
 
     def _times(self) -> None:
         self.time.clear()
@@ -134,9 +144,14 @@ class MeasurementsPanel(Panel):
         name, t = self.field.currentText(), self.time.currentData()
         f = d.fields(t, [name])
         if name not in f:
-            raise ValueError(f"the simulation has no field {name!r} at t = {t:g}")
+            raise ValueError(f"the simulation has no field {name!r} at t = {t:g}"
+                             + (f" in region {d.region}" if d.region else ""))
         v = f[name]
         return t, name, d.centres(t), (v if v.ndim == 1 else np.linalg.norm(v, axis=1))
+
+    def _where(self) -> str:
+        r = self.region.region()
+        return f" (region {html.escape(r)})" if r else ""
 
     def compare(self) -> dict | None:
         from aethercfd.assim.measurements import compare
@@ -157,11 +172,12 @@ class MeasurementsPanel(Panel):
         st = rep["fields"][name]
         notes = "".join(f"<br><span style='color:{T.warn}'>{html.escape(n)}</span>" for n in rep.get("notes", []))
         if not st.get("n"):
-            self.out.setHtml(f"<b>{name}</b> at t = {t:g}: no point has both a measured value and a simulated one"
+            self.out.setHtml(f"<b>{name}</b>{self._where()} at t = {t:g}: no point has both a measured value and a "
+                             "simulated one"
                              + notes)
             self.plot.clear()
             return rep
-        self.out.setHtml(f"<b>{name}</b> at t = {t:g}: {st['n']} points, bias <b>{st['bias']:.4g}</b>, RMSE "
+        self.out.setHtml(f"<b>{name}</b>{self._where()} at t = {t:g}: {st['n']} points, bias <b>{st['bias']:.4g}</b>, RMSE "
                          f"<b>{st['rmse']:.4g}</b> ({100 * st['relative_rmse']:.1f} %), max |error| "
                          f"{st['max_abs_error']:.4g}, R² {st['r2'] if st['r2'] is None else round(st['r2'], 3)}"
                          f"<br><span style='color:{T.text_dim}'>simulated = value of the cell containing each point "
@@ -197,9 +213,9 @@ class MeasurementsPanel(Panel):
         except Exception as exc:
             self.out.setText(f"<span style='color:{T.error}'>{html.escape(f'{type(exc).__name__}: {exc}')}</span>")
             return None
-        self.last = (t, name, a)
+        self.last = (t, name, a, self.region.region())
         self.write.setEnabled(True)
-        self.out.setHtml(f"<b>Assimilated {name}</b> at t = {t:g}: innovation RMS "
+        self.out.setHtml(f"<b>Assimilated {name}</b>{self._where()} at t = {t:g}: innovation RMS "
                          f"{np.sqrt(np.mean(a.innovation ** 2)):.4g} → residual RMS "
                          f"{np.sqrt(np.mean(a.residual ** 2)):.4g}; {a.touched_cells:,} cells corrected (max |Δ| "
                          f"{np.abs(a.correction).max():.4g}); posterior std {a.posterior_std.min():.3g}…"
@@ -213,14 +229,15 @@ class MeasurementsPanel(Panel):
 
         if self.last is None or not self.sv.ensure_project():
             return
-        t, name, a = self.last
+        t, name, a, region = self.last
         s = self.sv.session
         tname = next((d for d in [f"{t:g}", str(t)] if (Path(s.root) / d).is_dir() or
                       (Path(s.root) / "processor0" / d).is_dir()), f"{t:g}")
         files = field_files(s.root, tname, {f"{name}Assim": a.analysis, f"{name}AssimCorr": a.correction,
-                                            f"{name}AssimStd": a.posterior_std}, like=name)
+                                            f"{name}AssimStd": a.posterior_std}, like=name, region=region)
         res = s.executor.execute("files.write", {"root": str(s.root), "files": files}, USER)
-        self.sv.notify(f"Wrote {name}Assim, {name}AssimCorr, {name}AssimStd at t = {tname} (Command Journal can "
+        self.sv.notify(f"Wrote {name}Assim, {name}AssimCorr, {name}AssimStd at t = {tname}"
+                       + (f" in region {region}" if region else "") + " (Command Journal can "
                        "revert)" if res.ok else f"Not written: {res.message}", "info" if res.ok else "error")
 
 

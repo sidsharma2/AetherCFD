@@ -248,12 +248,32 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
                     (_ for _ in ()).throw(AssertionError("missing field not reported")))
 
             # -------------------------------------------------------- analysis: modes, surrogate, PINN status
+            from aethercfd.results.casedata import CaseData
+
             an = sw.panel("aether.analysis")
+            regions = CaseData(root).regions()
+            region = CaseData(root).default_region()  # multi-region (CHT): the fluid region; "" otherwise
+            if regions:
+                def picker(p):
+                    got = [p.region.combo.itemText(i) for i in range(p.region.combo.count())]
+                    if p.region.isHidden() or got != regions or p.region.region() != region:
+                        _fail(f"region picker: hidden={p.region.isHidden()} items={got} current={p.region.region()!r}"
+                              f" (expected {regions}, {region!r})")
+                    return f"regions {got}; on {region!r}"
+
+                sw.step("analysis: region picker opens on the fluid region",
+                        lambda: picker(an) + f"; fields {[an.m_field.itemText(i) for i in range(an.m_field.count())]}")
             if any(an.m_field.itemText(i) == "p" for i in range(an.m_field.count())):
                 an.m_field.setCurrentText("p")
+
+            def pod_done():
+                text = an.m_out.toPlainText()
+                if not text.startswith("POD of") or (region and f"(region {region})" not in text):
+                    _fail(text)
+                return text[:300]
+
             sw.step("analysis: POD of saved times", lambda: an.analyse() or _fail(an.m_out.toPlainText()), timeout=900,
-                    until=lambda: not an.m_busy,
-                    detail=lambda: an.m_out.toPlainText()[:300])
+                    until=lambda: not an.m_busy, detail=pod_done)
             an.m_method.setCurrentText("DMD")
             sw.step("analysis: DMD of saved times", lambda: an.analyse() or _fail(an.m_out.toPlainText()), timeout=900,
                     until=lambda: not an.m_busy,
@@ -265,14 +285,13 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
 
             # -------------------------------------------------------- measurements (synthetic probe file)
             ms = sw.panel("aether.measurements")
+            if regions:
+                sw.step("measurements: region picker opens on the fluid region", lambda: picker(ms))
 
             def make_csv():
                 import numpy as np
 
-                from aethercfd.results.casedata import CaseData
-
-                regs = CaseData(root).regions()
-                d = CaseData(root, regs[0]) if regs else CaseData(root)
+                d = CaseData(root, region)
                 f0 = "T" if "T" in d.field_names() else "p"
                 t = float(latest)
                 c, v = d.centres(t), d.fields(t, [f0])[f0]
@@ -285,20 +304,20 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
                 return f0
 
             f0 = sw.step("measurements: load CSV", make_csv, timeout=300) or "p"
-            from aethercfd.results.casedata import CaseData
 
-            multi = bool(CaseData(root).regions())
+            def on_region(text: str) -> str:
+                # a multi-region case is read on the chosen (fluid) region and says so
+                return text[:300] if not region or f"(region {region})" in text else _fail(text)
 
-            def region_limit(text: str) -> str:
-                # multi-region cases: these panels have no region picker yet and must SAY so (known limitation)
-                return text[:200] if "choose a region" in text else _fail(text)
+            def meas_compare():
+                rep = ms.compare()
+                if rep is None or not rep["fields"].get(f0, {}).get("n"):
+                    _fail(ms.out.toPlainText())
+                return on_region(ms.out.toPlainText())
 
-            sw.step("measurements: compare", lambda: (ms.compare() or (region_limit(ms.out.toPlainText()) if multi else
-                                                      _fail(ms.out.toPlainText()))) and ms.out.toPlainText()[:300],
-                    timeout=300)
-            sw.step("measurements: assimilate", lambda: (ms.assimilate() or (region_limit(ms.out.toPlainText()) if multi
-                                                                             else _fail(ms.out.toPlainText())))
-                    and ms.out.toPlainText()[:300], timeout=300)
+            sw.step("measurements: compare", meas_compare, timeout=300)
+            sw.step("measurements: assimilate", lambda: (ms.assimilate() or _fail(ms.out.toPlainText()))
+                    and on_region(ms.out.toPlainText()), timeout=300)
 
             # -------------------------------------------------------- PINN: a tiny training run (nothing written)
             if "available" not in an.p_status.text() and "PyTorch " in an.p_status.text():
@@ -310,10 +329,15 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
                 an.p_ndata.setValue(60)
                 sw.step("analysis: tiny PINN (data only)", an.train_pinn, timeout=600,
                         until=lambda: an.p_go.isEnabled() and an.p_timer.isActive() is False
-                        and any(k in an.p_out.toPlainText() for k in ("done on", "rror", "choose a region")),
+                        and any(k in an.p_out.toPlainText() for k in ("done on", "rror")),
                         detail=lambda: an.p_out.toPlainText()[:300])
-                if "done on" not in an.p_out.toPlainText() and not (multi and "choose a region" in an.p_out.toPlainText()):
-                    sw.steps[-1].update(ok=False, error=an.p_out.toPlainText()[:400])
+                job = an.p_job[0] if an.p_job else None
+                if "done on" not in an.p_out.toPlainText() or job is None or job.params.get("region", "") != region:
+                    sw.steps[-1].update(ok=False, error=f"{an.p_out.toPlainText()[:400]} (job region "
+                                                        f"{job.params.get('region') if job else None!r}, "
+                                                        f"expected {region!r})")
+                elif region:
+                    sw.steps[-1]["detail"] = f"region {region}: {sw.steps[-1].get('detail', '')}"[:600]
 
             # -------------------------------------------------------- edge cases: bad input must give a message
             def surrogate(table):

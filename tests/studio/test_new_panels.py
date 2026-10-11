@@ -105,8 +105,9 @@ def test_analysis_panel_modes_and_surrogate(sv, qtbot):
     p.m_field.setCurrentText("p")
     assert p.analyse()  # runs in the background
     qtbot.waitUntil(lambda: not p.m_busy, timeout=60000)
-    kind, _ts, r, name, _root = p.last
+    kind, _ts, r, name, _root, region = p.last
     assert kind == "POD" and name == "p" and r.energy[0] > 0.99  # uniform fields over time: one mode
+    assert region == "" and p.region.isHidden()  # single-region case: no region picker
     assert p.m_write.isEnabled()
     gp = p.fit_surrogate()
     assert gp is not None and "Next run" in p.s_out.toPlainText()
@@ -148,6 +149,83 @@ def test_analysis_on_a_case_without_results(tmp_path, qtbot, monkeypatch):
         assert p.analyse()
         qtbot.waitUntil(lambda: not p.m_busy, timeout=30000)
     assert "no saved time" in p.m_out.toPlainText() or "No field" in p.m_out.toPlainText()
+
+
+@pytest.fixture
+def cht(tmp_path, monkeypatch):
+    from tests.unit.test_regions import two_region_case
+
+    monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path / "cfg"))
+    s = AppServices()
+    s.open_case(two_region_case(tmp_path), create_project=True)
+    return s
+
+
+def test_analysis_modes_on_a_region(cht, qtbot):
+    p = AnalysisPanel(PanelContext(cht, "#main"))
+    qtbot.addWidget(p)
+    combo = p.region.combo
+    assert not p.region.isHidden() and [combo.itemText(i) for i in range(combo.count())] == ["a", "b"]
+    assert p.region.region() == "b"  # the fluid of regionProperties
+    fields = lambda w: sorted(w.itemText(i) for i in range(w.count()))  # noqa: E731
+    assert fields(p.m_field) == ["U", "p"] and fields(p.p_field) == ["U", "p"]
+    combo.setCurrentText("a")  # the solid: its own fields
+    assert fields(p.m_field) == ["T", "p"] and fields(p.p_field) == ["T", "p"]
+    p.m_field.setCurrentText("p")
+    assert p.analyse()
+    qtbot.waitUntil(lambda: not p.m_busy, timeout=60000)
+    assert "(region a)" in p.m_out.toPlainText()
+    kind, ts, _r, name, _root, region = p.last
+    assert (kind, ts, name, region) == ("POD", [0.1, 0.2, 0.3], "p", "a")
+    p.write_modes()
+    root = Path(cht.session.root)
+    assert (root / "0.3" / "a" / "pPOD1").is_file() and not (root / "0.3" / "pPOD1").exists()
+    combo.setCurrentText("b")  # modes of "a" can no longer be written
+    assert p.last is None and not p.m_write.isEnabled()
+    p._on_case()
+    assert p.region.region() == "b" and not p.region.isHidden()
+
+
+def test_measurements_on_a_region(cht, qtbot, tmp_path):
+    p = MeasurementsPanel(PanelContext(cht, "#main"))
+    qtbot.addWidget(p)
+    assert not p.region.isHidden() and p.region.region() == "b"
+    f = tmp_path / "m.csv"
+    with f.open("w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["x", "y", "z", "p"])
+        w.writerows([[0.02 + 0.06 * i / 9, 0.05, 0.005, 6.0] for i in range(10)])
+    p.csv.setText(str(f))
+    p.load()
+    assert p.compare()["fields"]["p"]["bias"] == pytest.approx(-2.0)  # region b at 0.3: p = 4
+    assert "(region b)" in p.out.toPlainText()
+    p.region.combo.setCurrentText("a")
+    assert p.compare()["fields"]["p"]["bias"] == pytest.approx(34.0)  # region a: p = 40
+    p.sigma_b.setValue(50.0)
+    p.length.setValue(0.02)
+    assert p.assimilate() is not None
+    p.write_fields()
+    root = Path(cht.session.root)
+    assert (root / "0.3" / "a" / "pAssim").is_file() and not (root / "0.3" / "b" / "pAssim").exists()
+
+
+def test_case_files_count_processor_times(tmp_path, qtbot, monkeypatch):
+    from aethercfd.studio.panels.case_tree.panel import CaseTreePanel
+
+    monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path / "cfg"))
+    case = tmp_path / "dec"
+    shutil.copytree(FIX, case)
+    for t in ("0", "100", "200"):
+        (case / "processor0" / t).mkdir(parents=True)
+        (case / "processor1" / t).mkdir(parents=True)
+    s = AppServices()
+    s.open_case(case, create_project=True)
+    p = CaseTreePanel(PanelContext(s, "#main"))
+    qtbot.addWidget(p)
+    p.set_root(case)
+    rows = [p.model.item(i).text() for i in range(p.model.rowCount())]
+    assert any(r.startswith("Results  (3 time folders, 2 only in processor*/, latest 200)") for r in rows), rows
+    assert any(r.startswith("Decomposed  (2 processor folders; results 100 … 200, latest 200)") for r in rows), rows
 
 
 def test_empty_icon_pixmaps_do_not_paint(qtbot):

@@ -117,9 +117,9 @@ def test_fields_on_disk_reads_headers_only(tmp_path, monkeypatch):
     reads = []
     real = Path.read_bytes
     monkeypatch.setattr(Path, "read_bytes", lambda self: reads.append(self) or real(self))
-    assert sorted(r._fields_on_disk()) == ["T", "k"]
+    assert sorted(r.fields_on_disk()) == ["T", "k"]
     assert not reads  # never the whole file
-    assert sorted(r._fields_on_disk()) == ["T", "k"]  # cached by folder mtime
+    assert sorted(r.fields_on_disk()) == ["T", "k"]  # cached by folder mtime
 
 
 # ---------------------------------------------------------------- PINN worker lifecycle

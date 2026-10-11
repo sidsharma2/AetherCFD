@@ -6,12 +6,13 @@ problem can never take the GUI down. Typical uses:
 
 - reconstruct a field from sparse probes with the flow physics as a prior (``ad``: a temperature or
   mixture fraction carried by the CFD velocity; ``ns``: an incompressible flow from a few velocity probes);
-- a smooth, differentiable surrogate of a CFD field over a region (``data``), e.g. for sensitivities.
+- a smooth, differentiable surrogate of a CFD field over a box (``data``), e.g. for sensitivities.
 
-    job = build_job(case, physics="ad", field="T", region=bbox, n_data=40, diffusivity=2e-5)
+    job = build_job(case, physics="ad", field="T", box=bbox, n_data=40, diffusivity=2e-5)
+    job = build_job(cht_case, physics="data", field="T", region="fluid")   # one region of a CHT case
     jd = start(job)             # returns the job folder; training runs in the background
     progress(jd)                # last loss values, done?
-    res = load(jd)              # predictions on the region's cells, fit errors, device, seconds
+    res = load(jd)              # predictions on the box's cells, fit errors, device, seconds
 """
 
 from __future__ import annotations
@@ -76,17 +77,21 @@ class PinnJob:
 
 
 def build_job(case: str | Path, *, physics: str, field: str, time: float | None = None,
-              region: tuple[list[float], list[float]] | None = None, n_data: int = 50, n_colloc: int = 8000,
+              box: tuple[list[float], list[float]] | None = None, region: str = "", n_data: int = 50,
+              n_colloc: int = 8000,
               data_points: np.ndarray | None = None, data_values: np.ndarray | None = None,
               max_eval: int = 200_000, seed: int = 0, diffusivity_field: str | None = None,
               prandtl: float = 0.71, **params) -> PinnJob:
-    """From the open case: the cells inside ``region`` (min, max corners; default all) are evaluated; data
-    are ``n_data`` random cells of the CFD ``field`` (or given measurement points/values); collocation
-    points are cell centres. ns uses field "U" (+ "p"), ad uses ``field`` with the CFD velocity."""
+    """From the open case (``region`` of a multi-region case): the cells inside ``box`` (min, max corners;
+    default all) are evaluated; data are ``n_data`` random cells of the CFD ``field`` (or given measurement
+    points/values); collocation points are cell centres. ns uses field "U" (+ "p"), ad uses ``field`` with
+    the CFD velocity."""
     from aethercfd.results.casedata import CaseData
 
+    if region is not None and not isinstance(region, str):  # the old keyword: region=(lo, hi) was the box
+        box, region = region, ""
     rng = np.random.default_rng(seed)
-    data = CaseData(case)
+    data = CaseData(case, region or "")
     if time is None:
         saved = [x for x in data.times() if x > 0]
         if not saved:  # only the initial conditions: nothing a network could learn the flow from
@@ -96,11 +101,11 @@ def build_job(case: str | Path, *, physics: str, field: str, time: float | None 
     f = data.fields(t, names)
     c = data.centres(t)
     sel = np.arange(len(c))
-    if region is not None:
-        lo, hi = np.asarray(region[0], float), np.asarray(region[1], float)
+    if box is not None:
+        lo, hi = np.asarray(box[0], float), np.asarray(box[1], float)
         sel = np.flatnonzero(np.all((c >= lo) & (c <= hi), axis=1))
         if sel.size == 0:
-            raise ValueError("no cells inside the region")
+            raise ValueError("no cells inside the box (region)")
     dim = 3
     if np.ptp(c[sel], axis=0).min() < 1e-12 * max(np.ptp(c[sel], axis=0).max(), 1e-30):
         dim = 2  # a one-cell-thick (2-D) case: drop the empty direction
@@ -147,6 +152,7 @@ def build_job(case: str | Path, *, physics: str, field: str, time: float | None 
             job.params["d_range"] = [float(D[sel].min()), float(D[sel].max())]
     job.params["axes"] = [int(a) for a in axes]
     job.params["time"] = t
+    job.params["region"] = data.region
     job._truth = Y[ev]  # CFD values at the evaluation cells (for the error report)
     return job
 
