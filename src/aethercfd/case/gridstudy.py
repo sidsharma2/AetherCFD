@@ -473,6 +473,32 @@ def run_params(case_root: Path) -> list[dict]:
     return out
 
 
+def continue_params(case_root: Path, *, extra: int | None = None) -> list[tuple[dict, dict]]:
+    """For every study level (not the medium case) that finished without converging iteratively:
+    (dict.batch params that make it continue from its latest time for ``extra`` more iterations, default its
+    own endTime again, with startFrom latestTime; run.start params that solve it). A plain re-run would
+    start from startTime again and throw the iterations away."""
+    from aethercfd.case.gates import _dict_value
+
+    out = []
+    for s in level_states(case_root):
+        if s.name == "medium" or not s.finished or s.converged is not False or not s.latest_time:
+            continue
+        level = load_case(s.root)
+        end = _dict_value(level, "system/controlDict", "endTime")
+        try:
+            n = int(extra or float(end or 1000))
+        except ValueError:
+            n = 1000
+        new_end = float(s.latest_time) + n
+        cd = str(Path(s.root) / "system" / "controlDict")
+        edits = {"edits": [{"file": cd, "key": "startFrom", "value": "latestTime"},
+                           {"file": cd, "key": "endTime", "value": f"{new_end:g}"}],
+                 "summary": f"Grid study: continue {s.name} from {s.latest_time} to {new_end:g} (not converged)"}
+        out.append((edits, {"case": s.root, "preset": "solve"}))
+    return out
+
+
 # ============================================================================ the gate
 @dataclass
 class StudyVerdict:

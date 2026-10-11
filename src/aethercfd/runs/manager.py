@@ -399,7 +399,10 @@ class RunManager:
         # 5) finished?
         exit_file = run_dir / "exit_code"
         if exit_file.exists():
-            return self._finish(m, run_dir, int((exit_file.read_text().strip() or "1").split()[0]))
+            code = exit_file.read_text().strip()
+            if not code:  # `echo $rc > exit_code` creates the file before writing it: read it on the next poll
+                return False
+            return self._finish(m, run_dir, int(code.split()[0]))
         if now - m.last_alive_check > 30:
             m.last_alive_check = now
             if self.is_alive(rec) is False:

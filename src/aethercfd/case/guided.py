@@ -797,8 +797,9 @@ def _validation(c: _Ctx):
                            "Copies the case into grid_study/coarse and grid_study/fine with blockMeshDict cell counts "
                            "scaled by 1/r and r; this case is the medium mesh. Shown as one plan to approve."))
     else:
-        acts.append(Action("grid.run", "Grid study: run the coarse and fine levels",
-                           "mesh + check + solve for each level that has not run yet, through the run manager"))
+        acts.append(Action("grid.run", "Grid study: run (or continue) the coarse and fine levels",
+                           "mesh + check + solve for each level that has not run yet; a level that ran without "
+                           "converging is continued from its latest time (startFrom latestTime, approved edit)"))
         acts.append(Action("grid.evaluate", "Grid study: evaluate (Richardson extrapolation, GCI)",
                            "Reads the three levels' results; the record is journalled in the project"))
     acts += [Action("agent.connie", "Connie: run-health review of the telemetry",

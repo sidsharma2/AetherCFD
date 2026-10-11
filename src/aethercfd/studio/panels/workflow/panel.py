@@ -678,7 +678,13 @@ class WorkflowPanel(Panel):
         if s is None or not self.sv.ensure_project():
             return False
         queue = []
-        for params in gridstudy.run_params(s.root):
+        todo = gridstudy.run_params(s.root)
+        if not todo:  # every level ran: continue the ones that did not converge (journalled endTime/startFrom edit)
+            for edits, params in gridstudy.continue_params(s.root):
+                if not self._batch(edits, who="AetherCFD grid study"):
+                    return False
+                todo.append(params)
+        for params in todo:
             plan = s.executor.plan("run.start", params, USER)
             if plan.blocked:
                 QMessageBox.warning(self, "Cannot run the grid study", "\n".join(c.message for c in plan.blocked))

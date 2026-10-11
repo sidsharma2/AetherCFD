@@ -161,6 +161,9 @@ class GridCreateParams(Justified):
 class GridRunParams(Justified):
     wait: bool = Field(True, description="Wait for each level's run to finish (up to timeout_min each)")
     timeout_min: float = Field(60.0, gt=0, le=24 * 60)
+    continue_unconverged: bool = Field(True, description="When every level has run: continue the levels that did "
+                                                          "not converge iteratively (startFrom latestTime, endTime "
+                                                          "extended; approved edit) and solve them")
 
 
 def grid_study_status(ctx: ToolContext, _p: NoParams) -> dict:
@@ -195,9 +198,17 @@ def grid_study_run(ctx: ToolContext, p: GridRunParams) -> dict:
     from aethercfd.runs.manager import RunState
 
     todo = gridstudy.run_params(ctx.root)
-    if not todo:
-        return {"ok": True, "message": "every level has run; evaluate the study"}
     results = []
+    if not todo and p.continue_unconverged:
+        for edits, params in gridstudy.continue_params(ctx.root):
+            out = ctx.execute("dict.batch", edits, p)
+            results.append({"level": params["case"], "continue": out.get("summary"), "ok": out.get("ok")})
+            if not out.get("ok"):
+                return {"ok": False, "runs": results}
+            todo.append(params)
+    if not todo:
+        return {"ok": True, "message": "every level has run (and converged, or continue_unconverged is false); "
+                                       "evaluate the study", "runs": results}
     for params in todo:
         out = ctx.execute("run.start", params, p)
         results.append({"level": params["case"], **{k: out.get(k) for k in ("ok", "message", "data")}})
