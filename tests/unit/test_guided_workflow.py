@@ -360,3 +360,10 @@ def test_overview_for_the_copilot(tmp_path):
     assert ov["current_stage"] == "domain"  # geometry is not needed; domain has an open question (L)
     assert len(ov["stages"]) == 12 and ov["reference"]["U"] == 10.0
     json.dumps(ov)
+
+
+def test_monitors_ask_only_for_fields_the_model_creates(tmp_path):
+    root = _case(tmp_path, "esi_pitzDaily")  # kEpsilon, but 0/omega and 0/nuTilda exist
+    gp = guided.plan_answers(root, "run", {"monitoring": True})
+    body = next(e["value"] for e in gp.edits if e["key"] == "functions/aetherFieldMinMax")
+    assert "fields (U p k epsilon nut)" in body and "omega" not in body and "nuTilda" not in body

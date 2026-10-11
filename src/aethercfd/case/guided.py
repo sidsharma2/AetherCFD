@@ -1240,10 +1240,14 @@ def _set_schemes(case: Case, f: CaseFacts, fields, profile: str, gp: GuidedPlan)
 
 
 def _add_monitors(case: Case, f: CaseFacts, fields, gp: GuidedPlan) -> None:
-    names = [n for n in ("U", "p", "p_rgh", "T", "k", "epsilon", "omega", "nut", "nuTilda") if n in fields]
+    # only fields the solver actually creates: a 0/omega left in a k-epsilon case is never read, and a function
+    # object asking for it prints "Field omega not found" at every write
+    model = set(TURB_FIELDS.get(f.turbulence or "", []))
+    names = [n for n in ("U", "p", "p_rgh", "T", "k", "epsilon", "omega", "nut", "nuTilda")
+             if n in fields and (n in model or n in ("U", "p", "p_rgh") or (n == "T" and f.compressible))]
     esi = (case.fork_guess.family if case.fork_guess else "") == "esi" or bool(case.application)
     fl = f"({' '.join(names)})"
-    solved = "(" + " ".join(n for n in names if n not in ("nut", "T") or n == "T") + ")"
+    solved = "(" + " ".join(n for n in names if n != "nut") + ")"
     objs = {"aetherFieldMinMax": f"{{ type fieldMinMax; libs (fieldFunctionObjects); fields {fl}; mode magnitude; "
                                  "writeControl timeStep; writeInterval 1; log false; }",
             "aetherResiduals": (f"{{ type solverInfo; libs (utilityFunctionObjects); fields {solved}; "
