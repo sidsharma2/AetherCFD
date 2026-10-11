@@ -255,6 +255,12 @@ Items new in this branch are marked *(new)*.
   * `test_editor_sync::test_typing_updates_document_and_undo_restores` passes on its own (flaky).
   * `test_postpro_view` errors.
   * The PINN tests skip in a worktree because the `.ml-env` is looked up next to the checkout.
+* On this branch: **334 passed, 1 failed, 3 skipped**. The failure is the same WSL-dependent
+  `test_run_scripts` test; it runs `C:\Windows\system32\bash.exe`, i.e. the default distro.
+* `python -m aethercfd.studio gui_run_bfs --sweep`: 88/88 steps pass, including two new Workflow steps.
+* A fresh pitzDaily (ESI v2306) was walked through every stage with real runs: blockMesh + checkMesh, then
+  simpleFoam with the guided monitoring function objects. The walk reached every applicable stage "done",
+  with one honest warning: kEpsilon wall functions at a mean y+ of 9–15, in the buffer layer.
 * This branch adds 37 tests (guided workflow, gates, `dict.batch`, copilot workflow tools, the cfd_agents
   adapter against a fake package in a real subprocess, the Workflow panel).
 
