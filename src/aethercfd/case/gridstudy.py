@@ -432,9 +432,8 @@ def evaluate(case_root: Path) -> dict:
     vol = _volume(case_root)
     cells = (by["fine"].cells, by["medium"].cells, by["coarse"].cells)
     results = [gci(k, (q["fine"][k], q["medium"][k], q["coarse"][k]), cells, dim, vol) for k in shared]
-    from aethercfd.case.guided import fingerprint
-
     from aethercfd.case.gates import yplus_from_results
+    from aethercfd.case.guided import fingerprint
 
     lv = [asdict(s) for s in states]
     for d in lv:  # wall y+ per level: with wall functions it must stay in the log layer on every mesh
