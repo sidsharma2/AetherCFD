@@ -5,19 +5,26 @@ commands; dictionaries stay byte-for-byte yours; the case on disk is the source 
 to you as a copilot that can see, explain and change the case — every change and run is shown as an exact
 plan you approve, and lands in the Command Journal.
 
+**New to AetherCFD, or setting it up on another PC?** Start with [INSTALL.md](INSTALL.md) (release zip or
+source, WSL + OpenFOAM, the first-run setup wizard, the copilot sign-in).
+
 ## Launch
 
 - **Start menu / Desktop: "AetherCFD Studio"** (the packaged app,
   `%LOCALAPPDATA%\Programs\AetherCFD\AetherCFD.exe`). Update it with `uv run python packaging/build.py`
-  then `uv run python packaging/install.py`.
+  then `uv run python packaging/install.py`; the build also writes the shareable
+  `build/AetherCFD-<version>-win64.zip`.
 - From the source tree: `uv run aethercfd-studio [case]` (add `--reset-layout` to ignore saved layouts),
   or double-click `AetherCFD Studio.cmd`.
 - Headless: `aethercfd-cli doctor --probe`, `open`, `run`, `runs`, `control`, `set`, and
-  `aethercfd-cli copilot <case> "<question>" --approve none|edits|all` (packaged; from source:
+  `aethercfd-cli copilot <case> "<question>" --approve none|edits|all [--provider claude|codex]` (packaged; from source:
   `uv run aethercfd copilot ...`).
 
-**First-time copilot sign-in:** the copilot uses the Claude Code CLI that the Claude desktop app ships.
-Sign in once from the Copilot panel ("Sign in to Claude"), or run `claude.exe auth login`.
+**Copilot providers and sign-in:** the copilot runs through Claude Code (default; the Claude desktop app
+ships it) or the OpenAI Codex CLI; pick the provider and model in the Copilot panel's top bar (settings
+`copilot_provider`, `copilot_model`). Sign in once from the panel ("Sign in to Claude" / "Sign in to
+Codex"), or run `claude auth login` / `codex login`. Either way the AI only gets the AetherCFD tools:
+its own shell and file-writing tools are off, and every edit or run goes through the approval dialog.
 
 **GPU:** the app renders on the discrete NVIDIA GPU automatically (setting `gpu = "high-performance"`;
 `integrated` / `system` to change). CUDA compute (CuPy) is used when available (the very first GPU stage after an install compiles its kernels, about a minute; they are cached); everything falls back to
@@ -58,7 +65,8 @@ shows what was detected.
   `$FOAM_USER_LIBBIN` inside WSL.
 - `%APPDATA%\AetherCFD\` — settings and layouts. `%LOCALAPPDATA%\AetherCFD\Cache\` — fork/capability
   cache, converted mechanisms, `studio.log`, crash logs.
-- Runs execute in the `LMAE-OpenFOAM` WSL distro: in place under `/mnt/d/...` when the path is safe,
+- Runs execute in the WSL distro chosen in the setup wizard (`wsl.default_distro`): in place under
+  `/mnt/<drive>/...` when the path is safe,
   otherwise from a staged ext4 copy that syncs results back.
 
 ## Safety rails

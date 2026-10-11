@@ -39,14 +39,12 @@ Items new in this branch are marked *(new)*.
    Nothing pretends to provide them, with three exceptions where the UI hints at features that do not
    exist (palette keywords `lambda2` and `path`, and `--sweep`, which is a GUI test rather than a
    parameter sweep).
-5. **Sharing is held back by machine-specific defaults.** There are hard-coded `D:\` paths:
-   * mechanism roots, which cannot be overridden: the panel asks for a `mechanism_roots` setting that
-     does not exist;
-   * the disk-space check is fixed to `D:\`;
-   * plot style and pvbatch paths;
-   * the cfd_agents default paths.
-
-   On main the copilot is Claude-only. Multi-provider support is in progress on its own branch.
+5. **Sharing is much better since PR #1** (merged here): a first-run setup wizard, a `mechanism_roots`
+   setting, no hard-coded plot-style/ParaView paths, and a Codex provider next to Claude. What remains:
+   * the status-bar disk check is still fixed to `D:\` (`studio/shell/main_window.py`);
+   * the cfd_agents adapter falls back to the group's `D:\` locations. They are only used if they exist;
+     otherwise the app explains and names the `cfd_agents_python` / `cfd_agents_root` settings. The setup
+     wizard does not ask for them yet.
 6. **Bugs found and fixed in this branch:**
    * The Checks panel's multi-edit fixes conflicted whenever two edits touched one file (e.g. pMinFactor +
      pMaxFactor). Each `dict.set` was planned against the original text, so the second one always failed
@@ -106,7 +104,7 @@ Items new in this branch are marked *(new)*.
 | Train ML models | **Partial** | `pinn_train`, `surrogate_runs` (GP) | — |
 | Divergence remedies | **Partial** | `solver_progress`, DMD growth modes, Murphy diagnosis *(new)* | — |
 | Never silent; rationale, consequence, confidence, files shown | **Done** | `CommandPlan` and the executor refuse agent plans without a rationale and confidence; the approval dialog shows diff, risk and consequences; `tests/unit/test_commands.py` | Consequences come from the command code, not from the model's own prediction |
-| Works with other AI providers | **Partial** | On main: Claude Code CLI only (`copilot/claude_cli.py`) | Another branch is adding providers |
+| Works with other AI providers | **Done** (PR #1) | `copilot/providers.py`: Claude Code and OpenAI Codex (`codex_cli.py`, `codex_session.py`) behind one provider interface; setting `copilot_provider` | — |
 
 ## 5. Physics Graph / Simulation DAG
 
@@ -151,7 +149,7 @@ Items new in this branch are marked *(new)*.
 | Requirement | Status | Evidence | Gap |
 |---|---|---|---|
 | Cantera calculations and model advice | **Done** | `combustion/calc.py` (Z_st, T_ad, flame speed, ignition delay, flamelets, regime), `advisor.py`; tests | — |
-| Mechanisms | **Partial** | GRI, h2o2, CRECK found under hard-coded `D:\` roots | Roots cannot be changed: the panel reads a `mechanism_roots` setting that `Settings` does not define |
+| Mechanisms | **Done** | GRI, h2o2, built-ins plus the folders in the `mechanism_roots` setting (PR #1) | — |
 | Repository browser and indexer; adapter-writing agent | **Missing** | — | — |
 
 ## 10. Geometry
@@ -191,7 +189,7 @@ Items new in this branch are marked *(new)*.
 |---|---|---|---|
 | Physical time, wall time, Δt, Co max, continuity, residuals, ETA | **Done** | `studio/panels/run/panels.py`, `runs/logparse.py` | ETA ignores startTime, so it is wrong after a restart |
 | CFL distribution, forces/moments, mass/energy/species balance, min/max of fields, mesh motion, chemistry stiffness | **Missing / Partial** | Min/max are parsed (copilot only) | — |
-| GPU/CPU utilisation, VRAM, disk throughput, checkpoint status | **Missing / Partial** | RAM and free disk in the status bar (the disk check is hard-coded to `D:\`) | — |
+| GPU/CPU utilisation, VRAM, disk throughput, checkpoint status | **Missing / Partial** | RAM and free disk in the status bar (the disk check is still fixed to `D:\`) | — |
 | Click an anomaly and ask "why?"; highlight cells/log lines | **Partial** | Solver Log jumps to the first error; the copilot's "Why did it fail?" button; Murphy *(new)* in the Run stage | No anomaly → question link from the plots |
 
 ## 14. Verification and validation
@@ -246,7 +244,7 @@ Items new in this branch are marked *(new)*.
 | Guided, step-by-step workflow, done correctly | **Done** *(new)* | See 1 and 14 | See the roadmap |
 | Robust and easy for beginners and AI agents | **Partial** | The guided path plus gates; copilot `workflow_*` tools drive the same path | Help texts are short; no tutorial walkthrough mode |
 | Shareable with other students | **Partial** | Packaged exe, per-user settings | Hard-coded `D:\` defaults (mechanisms, plot style, pvbatch, disk check, case roots, cfd_agents); WSL distro name assumed |
-| Works with other AI providers | **Partial** | Claude only on main | In progress on another branch |
+| Works with other AI providers | **Done** (PR #1) | Claude Code and Codex providers | — |
 
 ## Test-suite status at audit time
 
@@ -288,10 +286,9 @@ reach the long-term vision.
 6. **Reproduce / branch a run from provenance.json.** Copy the inputs as recorded into a sibling case and
    re-run with the same fork. Also record compiler, Python packages, seeds and ML model/dataset hashes.
 7. **Shareability.**
-   * Remove hard-coded `D:\` defaults: add a `mechanism_roots` setting, a disk check on the case/WSL
-     drive, discovered pvbatch/plot-style paths.
-   * A first-run setup page (distro, case roots, cfd_agents interpreter).
-   * Finish multi-provider support.
+   * Check free disk on the case's drive and the WSL VHD, not `D:\`.
+   * Add the cfd_agents interpreter/root to the first-run setup wizard (PR #1 covers distro, case roots,
+     providers and mechanisms).
    * Rebuild the packaged app: the spec now ships the cfd_agents `_runner.py` (like `pinn_worker.py`), but the
      installed exe predates this branch.
 8. **Templates.** Premixed flame (e.g. a laminar flame tube), compressible nozzle, MRF mixer, plus a

@@ -96,6 +96,19 @@ class Sweep:
         with contextlib.suppress(Exception):
             self.win.grab().save(str(self.out / f"sweep_{name}.png"))
 
+    def view_shot(self, name: str, vp) -> None:
+        """A 3D viewport's own picture (sweep_view_<name>.png), its tab brought to the front first: with every
+        panel open the viewport a step drove is often a tab behind another one, so a window grab misses it."""
+        with contextlib.suppress(Exception):
+            dock = next((d for n, d in self.sv.host.docks().items() if self.sv.host.panel(n) is vp), None)
+            if dock is not None:
+                dock.toggleView(True)
+                dock.setAsCurrentTab()
+                dock.raise_()
+            _pump(self.app, 0.5)
+            vp.plotter.render()
+            vp.plotter.screenshot(str(self.out / f"sweep_view_{name}.png"))
+
 
 def run_sweep(app: QApplication, win, out: Path) -> int:
     out.mkdir(parents=True, exist_ok=True)
@@ -226,6 +239,7 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
                     timeout=600, until=lambda: all(f"stage:{st['id']}" in vp.stage_info for st in vp.stages),
                     detail=lambda: str(vp.stage_info))
             sw.shot("viewport")
+            sw.view_shot("stages", vp)
             from aethercfd.studio.app.automation import AppAutomation
 
             fields = [vp.field.itemText(i) for i in range(vp.field.count())]
@@ -250,6 +264,24 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
                     detail=lambda: f"slice={vp.slice_on.isChecked()} axis={vp.slice_axis.currentText()}; "
                                    f"{vp.info.text()[-100:]}")
             sw.shot("showcase")
+            sw.view_shot("showcase", vp)
+            if vp.regions():  # multi-region (CHT): the solids alone, as the copilot shows "T in the solids"
+                solids = [r for r in vp.regions() if vp.region_kinds.get(r) == "solid"]
+
+                def solids_only():
+                    shown = {vp.block_regions.get(k.split("~")[0]) for k in vp.actors if not k.startswith("stage:")}
+                    if vp.region_sel != solids or not shown or not shown <= set(solids):
+                        _fail(f"shown {sorted(map(str, shown))}, selected {vp.region_sel}, solids {solids}")
+                    return f"{sorted(shown)}; range {vp.range}; {vp.info.text()[-80:]}"
+
+                if solids:
+                    sw.step("viewport: showcase of the solids only", lambda: auto.showcase("solids"), timeout=400,
+                            until=lambda: getattr(vp, "drawn_gen", -1) == vp.gen and not vp._showcase_pending
+                            and vp.region_sel == solids, detail=solids_only)
+                    sw.shot("showcase_solids")
+                    sw.view_shot("showcase_solids", vp)
+                sw.step("viewport: all regions again", lambda: auto.viewport_regions("all")["result"], timeout=300,
+                        until=lambda: getattr(vp, "drawn_gen", -1) == vp.gen and vp.region_sel is None)
             gif = sw.out / "sweep_turntable.gif"
             sw.step("turntable animation (GIF)", lambda: vp.record_animation("turntable", str(gif), frames=12, fps=12)
                     if Path(vp.record_animation("turntable", str(gif), frames=12, fps=12)).is_file() else

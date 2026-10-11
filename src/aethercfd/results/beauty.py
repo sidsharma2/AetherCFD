@@ -133,11 +133,14 @@ class Scene:
 
 
 def find_pvbatch(paraview_exe: str | None = None) -> Path | None:
+    from aethercfd.firstrun.detect import find_paraview
+
     cands = []
     if paraview_exe:
         cands.append(Path(paraview_exe).with_name("pvbatch.exe"))
-    cands += sorted(Path("C:/Program Files").glob("ParaView */bin/pvbatch.exe"), reverse=True)
-    cands += sorted(Path("D:/Research-Software/tools/paraview").glob("*/bin/pvbatch.exe"), reverse=True)
+    found = find_paraview(paraview_exe)  # the setting, PARAVIEW_EXE, or the newest install in Program Files
+    if found is not None:
+        cands.append(found.with_name("pvbatch.exe"))
     return next((c for c in cands if c.exists()), None)
 
 

@@ -1,11 +1,14 @@
-"""Install the packaged build (dist/AetherCFD) as a per-user Windows application.
+"""Install the packaged build as a per-user Windows application.
 
-    uv run python packaging/install.py            # after packaging/build.py
+    uv run python packaging/install.py            # in the source tree, after packaging/build.py
+    python install.py                             # in an unzipped release (AetherCFD-<version>-win64.zip)
 
-- copies dist/AetherCFD to %LOCALAPPDATA%\\Programs\\AetherCFD (the previous install is kept as
-  AetherCFD.previous until the next install)
+- copies the app folder (dist/AetherCFD in the source tree, or the AetherCFD folder next to this script in a
+  release) to %LOCALAPPDATA%\\Programs\\AetherCFD (the previous install is kept as AetherCFD.previous until
+  the next install)
 - creates "AetherCFD Studio" shortcuts in the Start menu and on the Desktop
-No admin rights, no registry writes. Refuses while the installed app is running.
+No admin rights, no registry writes. Refuses while the installed app is running. Without Python, the
+release's "Install AetherCFD.cmd" does the same.
 """
 
 from __future__ import annotations
@@ -16,8 +19,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-DIST = ROOT / "dist" / "AetherCFD"
+HERE = Path(__file__).resolve().parent
+
+
+def _find_dist() -> Path:
+    for d in (HERE / "AetherCFD", HERE.parent / "dist" / "AetherCFD"):  # release zip | source tree
+        if (d / "AetherCFD.exe").is_file():
+            return d
+    return HERE.parent / "dist" / "AetherCFD"
+
+
+DIST = _find_dist()
 TARGET = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "AetherCFD"
 NAME = "AetherCFD Studio"
 
@@ -45,7 +57,8 @@ def _folder(name: str) -> Path:
 def main() -> int:
     exe_src = DIST / "AetherCFD.exe"
     if not exe_src.is_file():
-        print(f"no build at {DIST}; run packaging/build.py first", file=sys.stderr)
+        print(f"no build at {DIST}: in the source tree run packaging/build.py first; in a release, keep install.py "
+              "next to the AetherCFD folder", file=sys.stderr)
         return 1
     if _running_from(TARGET):
         print("AetherCFD is running from the install folder; close it and run again", file=sys.stderr)

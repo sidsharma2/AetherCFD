@@ -235,8 +235,12 @@ class RunManager:
         except Exception:
             return None
         out = res.stdout.split()
-        if not out or out[0] != "ALIVE":
+        if out and out[0] == "DEAD":
             return False
+        if not out or out[0] != "ALIVE":
+            # an empty or garbled reply (WSL busy, wsl.exe hiccup) says nothing about the run: never mark a healthy
+            # run "lost" on it (seen live: a 1M-cell run marked lost while all 8 ranks were computing)
+            return None
         return len(out) >= 3 and out[1] == rec.start_jiffies and out[2] == rec.boot_id
 
     # ------------------------------------------------------------------ registry of runs

@@ -123,6 +123,12 @@ def _doctor_backend(probe: bool) -> int:
     for d in distros:
         tag = "allowed" if d.name in allowed else "-"
         print(f"  {d.name:<16} {d.state:<10} WSL{d.version}{'  (default)' if d.default else ''}   [{tag}]")
+    if not distros:
+        print("  [ERR] WSL has no Linux distro: `wsl --install -d Ubuntu-22.04`, then install OpenFOAM (INSTALL.md)")
+    if not allowed:
+        print("  [ERR] no distro is chosen for AetherCFD yet: run Help > Setup Wizard in the app "
+              "(or set wsl.default_distro and wsl.allowed_distros in settings.toml)")
+        return 1
     failures = 0
     for name in allowed:
         info = next((d for d in distros if d.name == name), None)

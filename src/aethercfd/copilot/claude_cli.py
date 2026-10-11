@@ -10,31 +10,15 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
-NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+from aethercfd.copilot.provider import NO_WINDOW, AuthStatus, CliInfo, version_key
 
-
-@dataclass
-class ClaudeCli:
-    exe: Path
-    version: str
-    source: str  # setting | path | native | npm | desktop-app
-
-
-@dataclass
-class AuthStatus:
-    logged_in: bool
-    method: str = "none"
-    detail: str = ""
-
-
-def _version_key(v: str) -> tuple[int, ...]:
-    return tuple(int(x) for x in re.findall(r"\d+", v)[:4]) or (0,)
+ClaudeCli = CliInfo  # the name the rest of the app (and older tests) use
+_version_key = version_key
+__all__ = ["NO_WINDOW", "AuthStatus", "ClaudeCli", "auth_status", "candidates", "find_claude", "login_argv"]
 
 
 def candidates(configured: str | None = None) -> list[tuple[Path, str]]:
