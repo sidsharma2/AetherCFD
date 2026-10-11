@@ -1,10 +1,11 @@
-"""CopilotSession: one Claude Code conversation about one case (no Qt here).
+"""ClaudeSession: one Claude Code conversation about one case (no Qt here).
 
 Claude Code runs headless (``claude -p``) with stream-json in both directions, so the conversation stays
 open and every token, tool call and result streams to the UI as an event. It may only use the AetherCFD
 MCP tools (changes and runs go through the user's approval and the journal) plus its read-only
 Read/Grep/Glob tools; Bash/Edit/Write are disabled. The Claude session id is kept per case so a
-conversation can be resumed after restarting AetherCFD.
+conversation can be resumed after restarting AetherCFD. Claude's stream-json events are translated into the
+provider-neutral events of :mod:`aethercfd.copilot.provider` (:func:`normalize_claude`).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from aethercfd.copilot.bridge import BridgeServer
 from aethercfd.copilot.claude_cli import NO_WINDOW, ClaudeCli
+from aethercfd.copilot.provider import MCP_SERVER, CopilotSessionBase, result_event
 from aethercfd.core.runtime import module_argv
 from aethercfd.core.settings import cache_dir
 
@@ -59,15 +61,73 @@ the user wants to see the mesh. viewport_bookmark / viewport_quad / viewport_lin
 views and a field profile along a line. viewport_animation makes a turntable or time sweep; \
 open_in_paraview hands the case to ParaView. To run a case the user just created, run_openfoam with \
 preset auto (it runs the tutorial's Allrun, or mesh + check + solve) instead of guessing the steps.
+- Multi-region (CHT) cases (case_overview lists the regions): the viewport draws every region at once, and the \
+fluid hides the solids. For "the temperature in the solids" call show_field(field='T', regions='solids', \
+slice_axis=...) or viewport_showcase(regions='solids') in one go: only those regions are drawn, sliced through \
+their own middle and framed. regions takes 'solids', 'fluid', 'all', a region name or a list; \
+viewport_regions lists the regions (fluid/solid) and what is shown. add_view_stage works on the shown regions \
+only (or pass regions). A solid region has no U or p_rgh: show T there.
 - Use case_checks for setup problems, mesh_hotspots/grading_design/wall_spacing for mesh work.
 - Be concise; give units.{extra}"""
 
 
-class CopilotSession:
+# the sentence about Claude's own read-only file tools, replaced for providers that have none
+CLAUDE_FILE_TOOLS = ", or your Read/Grep/Glob tools (files outside the case are readable that way too)"
+
+
+def system_prompt(case: Path | str, distro: str, wsl_path: str, extra_prompt: str = "", *,
+                  file_tools: str | None = None) -> str:
+    """The copilot's instructions, the same for every provider. ``file_tools`` replaces the Claude-specific
+    mention of Read/Grep/Glob (e.g. "" for a provider whose only file access is the aether tools)."""
+    extra = f"\n- {extra_prompt}" if extra_prompt else ""
+    text = SYSTEM_PROMPT.format(case=case, distro=distro or "?", wsl_path=wsl_path or "?", extra=extra)
+    return text if file_tools is None else text.replace(CLAUDE_FILE_TOOLS, file_tools)
+
+
+def normalize_claude(ev: dict) -> list[dict]:
+    """One Claude Code stream-json event -> the provider-neutral events (see aethercfd.copilot.provider)."""
+    t = ev.get("type")
+    if t == "stream_event":
+        e = ev.get("event") or {}
+        if e.get("type") == "message_start":
+            return [{"type": "turn_start"}]
+        delta = e.get("delta") or {}
+        if e.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
+            return [{"type": "text_delta", "text": delta.get("text", "")}]
+        return []
+    if t == "assistant":
+        blocks = (ev.get("message") or {}).get("content") or []
+        out = [{"type": "message", "text": "".join(b.get("text", "") for b in blocks if b.get("type") == "text")}]
+        for b in blocks:
+            if b.get("type") == "tool_use":
+                out.append({"type": "tool_call", "id": b.get("id", ""),
+                            "name": b.get("name", "").removeprefix(f"mcp__{MCP_SERVER}__"),
+                            "input": b.get("input") or {}})
+        return out
+    if t == "user":
+        content = (ev.get("message") or {}).get("content")
+        return [{"type": "tool_result", "id": b.get("tool_use_id", ""), "is_error": bool(b.get("is_error"))}
+                for b in (content if isinstance(content, list) else []) if b.get("type") == "tool_result"]
+    if t == "result":
+        failed = bool(ev.get("is_error")) or ev.get("subtype") not in ("success", None)
+        cost = ev.get("total_cost_usd")
+        usage = ev.get("usage") or None
+        return [result_event(session_id=ev.get("session_id"), num_turns=ev.get("num_turns"),
+                             cost_usd=float(cost) if isinstance(cost, (int, float)) else None,
+                             usage={"input_tokens": usage.get("input_tokens", 0),
+                                    "output_tokens": usage.get("output_tokens", 0)} if usage else None,
+                             is_error=failed, message=str(ev.get("result") or ev.get("subtype") or ""))]
+    if t == "system" and ev.get("subtype") == "init":
+        return [{"type": "init", "model": ev.get("model", ""), "session_id": ev.get("session_id"),
+                 "tools_failed": [m.get("name") for m in ev.get("mcp_servers", []) if m.get("status") != "connected"]}]
+    return []
+
+
+class ClaudeSession(CopilotSessionBase):
     def __init__(self, cli: ClaudeCli, case_root: Path, bridge: BridgeServer, *,
                  on_event: Callable[[dict], None], on_exit: Callable[[int], None] | None = None,
                  model: str | None = None, resume: str | None = None, allow_web: bool = False,
-                 distro: str = "LMAE-OpenFOAM", wsl_path: str = "", extra_prompt: str = ""):
+                 distro: str = "", wsl_path: str = "", extra_prompt: str = ""):
         self.cli = cli
         self.case_root = Path(case_root)
         self.bridge = bridge
@@ -88,7 +148,7 @@ class CopilotSession:
     # ------------------------------------------------------------------ lifecycle
     def mcp_config_path(self) -> Path:
         argv = module_argv("aethercfd.copilot.mcp_server")
-        cfg = {"mcpServers": {"aether": {"type": "stdio", "command": argv[0], "args": argv[1:],
+        cfg = {"mcpServers": {MCP_SERVER: {"type": "stdio", "command": argv[0], "args": argv[1:],
                                          "env": {"AETHER_BRIDGE": self.bridge.endpoint,
                                                  "AETHER_TOKEN": self.bridge.token}}}}
         d = cache_dir() / "copilot"
@@ -98,11 +158,9 @@ class CopilotSession:
         return p
 
     def argv(self) -> list[str]:
-        allowed = ["mcp__aether", "Read", "Grep", "Glob"] + (["WebSearch", "WebFetch"] if self.allow_web else [])
+        allowed = [f"mcp__{MCP_SERVER}", "Read", "Grep", "Glob"] + (["WebSearch", "WebFetch"] if self.allow_web else [])
         denied = ["Bash", "Edit", "Write", "NotebookEdit"] + ([] if self.allow_web else ["WebSearch", "WebFetch"])
-        extra = f"\n- {self.extra_prompt}" if self.extra_prompt else ""
-        prompt = SYSTEM_PROMPT.format(case=self.case_root, distro=self.distro, wsl_path=self.wsl_path or "?",
-                                      extra=extra)
+        prompt = system_prompt(self.case_root, self.distro, self.wsl_path, self.extra_prompt)
         a = [str(self.cli.exe), "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
              "--include-partial-messages", "--mcp-config", str(self.mcp_config_path()), "--strict-mcp-config",
              "--allowedTools", ",".join(allowed), "--disallowedTools", ",".join(denied),
@@ -139,10 +197,11 @@ class CopilotSession:
                 self.session_id = ev["session_id"]
             if ev.get("type") == "result" and isinstance(ev.get("total_cost_usd"), (int, float)):
                 self.cost_usd = float(ev["total_cost_usd"])
-            try:
-                self.on_event(ev)
-            except Exception:
-                log.exception("copilot event handler failed")
+            for out in normalize_claude(ev):
+                try:
+                    self.on_event(out)
+                except Exception:
+                    log.exception("copilot event handler failed")
         code = self.proc.wait()
         self._err.close()
         if self.on_exit:
@@ -174,6 +233,9 @@ class CopilotSession:
             self.proc.wait(timeout)
         except (OSError, subprocess.TimeoutExpired):
             self.proc.terminate()
+
+
+CopilotSession = ClaudeSession  # the older name
 
 
 def text_of(ev: dict) -> str:

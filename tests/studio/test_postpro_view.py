@@ -83,8 +83,9 @@ def test_showcase_animation_and_paraview(vp, qtbot, monkeypatch, tmp_path):
     assert Image.open(done[0]).n_frames == v.time.count()
     launched = []
     monkeypatch.setattr("subprocess.Popen", lambda argv, **kw: launched.append(argv))
-    pv = Path(sv.settings.paraview_exe)
-    if not pv.is_file():
+    from aethercfd.firstrun.detect import find_paraview
+
+    if find_paraview(sv.settings.paraview_exe) is None:  # no ParaView on this PC: any program stands in
         sv.settings.paraview_exe = str(shutil.which("cmd") or "C:/Windows/System32/cmd.exe")
     assert v.open_in_paraview().startswith("opening")
     script = Path(launched[0][1].split("=", 1)[1])

@@ -103,6 +103,19 @@ class Sweep:
         with contextlib.suppress(Exception):
             self.win.grab().save(str(self.out / f"sweep_{name}.png"))
 
+    def view_shot(self, name: str, vp) -> None:
+        """A 3D viewport's own picture (sweep_view_<name>.png), its tab brought to the front first: with every
+        panel open the viewport a step drove is often a tab behind another one, so a window grab misses it."""
+        with contextlib.suppress(Exception):
+            dock = next((d for n, d in self.sv.host.docks().items() if self.sv.host.panel(n) is vp), None)
+            if dock is not None:
+                dock.toggleView(True)
+                dock.setAsCurrentTab()
+                dock.raise_()
+            _pump(self.app, 0.5)
+            vp.plotter.render()
+            vp.plotter.screenshot(str(self.out / f"sweep_view_{name}.png"))
+
 
 def run_sweep(app: QApplication, win, out: Path) -> int:
     out.mkdir(parents=True, exist_ok=True)
@@ -219,6 +232,7 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
                     timeout=600, until=lambda: all(f"stage:{st['id']}" in vp.stage_info for st in vp.stages),
                     detail=lambda: str(vp.stage_info))
             sw.shot("viewport")
+            sw.view_shot("stages", vp)
             from aethercfd.studio.app.automation import AppAutomation
 
             fields = [vp.field.itemText(i) for i in range(vp.field.count())]
@@ -243,6 +257,24 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
                     detail=lambda: f"slice={vp.slice_on.isChecked()} axis={vp.slice_axis.currentText()}; "
                                    f"{vp.info.text()[-100:]}")
             sw.shot("showcase")
+            sw.view_shot("showcase", vp)
+            if vp.regions():  # multi-region (CHT): the solids alone, as the copilot shows "T in the solids"
+                solids = [r for r in vp.regions() if vp.region_kinds.get(r) == "solid"]
+
+                def solids_only():
+                    shown = {vp.block_regions.get(k.split("~")[0]) for k in vp.actors if not k.startswith("stage:")}
+                    if vp.region_sel != solids or not shown or not shown <= set(solids):
+                        _fail(f"shown {sorted(map(str, shown))}, selected {vp.region_sel}, solids {solids}")
+                    return f"{sorted(shown)}; range {vp.range}; {vp.info.text()[-80:]}"
+
+                if solids:
+                    sw.step("viewport: showcase of the solids only", lambda: auto.showcase("solids"), timeout=400,
+                            until=lambda: getattr(vp, "drawn_gen", -1) == vp.gen and not vp._showcase_pending
+                            and vp.region_sel == solids, detail=solids_only)
+                    sw.shot("showcase_solids")
+                    sw.view_shot("showcase_solids", vp)
+                sw.step("viewport: all regions again", lambda: auto.viewport_regions("all")["result"], timeout=300,
+                        until=lambda: getattr(vp, "drawn_gen", -1) == vp.gen and vp.region_sel is None)
 
             # -------------------------------------------------------- Smooth / Cells, sections, views, flow paths
             def drawn():
@@ -258,10 +290,12 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
             sw.step("sections: three orthogonal planes with contours", lambda: auto.section(
                 "ortho3", show={"contours": True}), timeout=400, until=drawn, detail=lambda: stage_ok("stage:sec"))
             sw.shot("sections_smooth")
+            sw.view_shot("sections_smooth", vp)
             sw.step("smoothing: cells with mesh edges", lambda: auto.viewport_smoothing("cells", True), timeout=400,
                     until=drawn, detail=lambda: f"{vp.smoothing}; bar '{vp.scalar_bar.GetTitle()}'; "
                                                 f"{stage_ok('stage:sec')}")
             sw.shot("sections_cells")
+            sw.view_shot("sections_cells", vp)
             sw.step("smoothing: back to the look's default", lambda: auto.viewport_smoothing("auto"), timeout=400,
                     until=drawn, detail=lambda: vp.smoothing if vp.smoothing == "smooth" else _fail(vp.smoothing))
             sw.step("sections: slice stack", lambda: auto.section("stack", n=4), timeout=400, until=drawn,
@@ -293,12 +327,14 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
             sw.step("cut-away in a glass shell", lambda: auto.cutaway(sx_axis(vp)), timeout=400, until=drawn,
                     detail=lambda: stage_ok("stage:cut"))
             sw.shot("cutaway")
+            sw.view_shot("cutaway", vp)
             sw.step("remove sections", lambda: auto.section("mid-z", clear=True), timeout=400, until=drawn)
             inlets = vp.inlet_paths()
             sw.step(f"flow paths {'from the inlets' if inlets else 'from a plane'}", lambda: auto.flow_paths(
                 "inlets" if inlets else "plane", color_by="residence_time"), timeout=600, until=drawn,
                 detail=lambda: stage_ok("stage:flow") + f"; bar '{vp.scalar_bar.GetTitle()}'")
             sw.shot("flow_paths")
+            sw.view_shot("flow_paths", vp)
             sw.step("pathlines through the saved times", lambda: vp.set_pathlines(True), timeout=900, until=drawn,
                     detail=lambda: stage_ok("stage:flow"))
             sw.step("remove flow paths", lambda: auto.flow_paths(clear=True), timeout=400, until=drawn)
@@ -311,6 +347,7 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
             sw.step("delete a saved view", lambda: auto.bookmark("delete", "sweep view"))
             sw.step("quad view on", lambda: auto.quad(True), detail=lambda: f"{len(vp._quad or [])} extra views")
             sw.shot("quad_view")
+            sw.view_shot("quad_view", vp)
             sw.step("quad view off", lambda: auto.quad(False))
             gif = sw.out / "sweep_turntable.gif"
             sw.step("turntable animation (GIF)", lambda: vp.record_animation("turntable", str(gif), frames=12, fps=12)

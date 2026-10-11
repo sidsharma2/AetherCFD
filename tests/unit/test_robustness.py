@@ -182,3 +182,20 @@ def test_region_names_from_the_vtk_reader():
     # the top-level mesh of a CHT case (often the unsplit original, no fields) must not overlap the regions
     assert m.internal_meshes == ["/fluid/internalMesh", "/solid/internalMesh"]
     assert ResultsMeta(patches=["internalMesh", "patch/inlet"]).internal_meshes == ["internalMesh"]
+
+
+def test_pod_and_dmd_agree_on_cpu_and_gpu():
+    from aethercfd.results.modes import GPU_POD_MIN_VALUES, _linalg_backend, dmd, pod
+
+    if _linalg_backend("cuda")[1] != "cuda":
+        pytest.skip("no CUDA linear algebra on this machine")
+    rng = np.random.default_rng(1)
+    t = np.arange(12)[:, None]
+    X = np.sin(0.4 * t) * rng.random(5000) + 0.3 * np.cos(1.1 * t) * rng.random(5000) + 0.01 * rng.random((12, 5000))
+    a, b = pod(X, n_modes=3, backend="cpu"), pod(X, n_modes=3, backend="cuda")
+    assert b.backend == "cuda" and np.allclose(a.energy, b.energy, rtol=1e-8)
+    da, db = dmd(X, dt=1.0, rank=4, backend="cpu"), dmd(X, dt=1.0, rank=4, backend="cuda")
+    assert np.allclose(np.sort(np.abs(da.eigenvalues)), np.sort(np.abs(db.eigenvalues)), rtol=1e-6)
+    # auto: small fields and DMD stay on the CPU (measured faster there); large POD goes to the GPU
+    assert pod(X, n_modes=2).backend == "cpu" and dmd(X, dt=1.0, rank=2).backend == "cpu"
+    assert GPU_POD_MIN_VALUES >= 1_000_000

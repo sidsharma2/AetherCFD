@@ -13,20 +13,26 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 from vtk.util import numpy_support as nps
 
 from aethercfd.results.foam_reader import FoamResults, iter_leaves, region_of
+from aethercfd.results.pipeline import surface
 
 log = logging.getLogger(__name__)
 
 
+def _bounds(datasets) -> list[float]:
+    b = [np.inf, -np.inf] * 3
+    for ds in datasets:
+        if ds.GetNumberOfPoints() == 0:
+            continue
+        db = ds.GetBounds()
+        for k in range(3):
+            b[2 * k] = min(b[2 * k], db[2 * k])
+            b[2 * k + 1] = max(b[2 * k + 1], db[2 * k + 1])
+    return b if b[0] <= b[1] else [0.0, 0.0] * 3
+
+
 def _geometry(ds) -> vtk.vtkPolyData:
-    """Outer surface of a volume mesh (cell data preserved), or the polydata itself."""
-    if ds.IsA("vtkPolyData"):
-        return ds
-    f = vtk.vtkGeometryFilter()
-    f.SetInputData(ds)
-    f.Update()
-    out = vtk.vtkPolyData()
-    out.ShallowCopy(f.GetOutput())
-    return out
+    """Outer surface of a volume mesh (cell data preserved, every face wound outward), or the polydata itself."""
+    return surface(ds)
 
 
 def _slice(ds, origin, normal) -> vtk.vtkPolyData:
@@ -252,7 +258,7 @@ class VtkWorker(QObject):
     def _remember(self, key, value):
         cache = self.__dict__.setdefault("_geo_cache", {})
         cache[key] = value
-        while len(cache) > 12:  # a few cases / slices; oldest first out
+        while len(cache) > 16:  # a few cases / slices / region shells; oldest first out
             cache.pop(next(iter(cache)))
         return value
 
@@ -332,14 +338,19 @@ class VtkWorker(QObject):
             available = set(r.meta.cell_arrays or r.refresh().cell_arrays)
             want = ({field} if field else set()) | (pl.fields_needed(stages) & available)
             patches = req.get("patches")
-            shown = set(patches or [])
             show_internal = req.get("show_internal", True)
+            shown_regions = req.get("regions")  # multi-region case: the regions shown (None = all)
+            if shown_regions is not None and patches is not None:
+                patches = [p for p in patches if region_of(p) in shown_regions]
+            shown = set(patches or [])
             extra = pl.patches_needed(stages)
             if extra:  # inlet seeds, a plane through a patch: read those patches too (never drawn for it)
                 listed = r.meta.patches or r.refresh().patches
                 extra = {p for p in listed if p in extra or p.split("/")[-1] in extra}
-            if stages and patches is not None:
-                patches = list(dict.fromkeys([*patches, *r.meta.internal_meshes, *sorted(extra)]))
+            if stages and patches is not None:  # stages run on the shown regions' internal meshes
+                patches = list(dict.fromkeys([*patches, *(p for p in r.meta.internal_meshes
+                                                          if shown_regions is None or region_of(p) in shown_regions),
+                                              *sorted(extra)]))
             extra_keys = {_patch_key(p): p for p in extra}
             shown_keys = {_patch_key(p) for p in shown}
             # smooth + something cut through the volume: the reader interpolates the fields to the mesh points
@@ -348,6 +359,7 @@ class VtkWorker(QObject):
             vol_points = smooth and bool(req.get("slice") or stages)
             mb = r.read(req.get("time"), fields=sorted(want), patches=patches, cell_to_point=vol_points)
             blocks: dict[str, vtk.vtkPolyData] = {}
+            block_regions: dict[str, str] = {}  # block -> its region (per-region depth offsets in the view)
             internal, internal_paths = [], []
             patch_polys: dict[str, vtk.vtkPolyData] = {}  # reader patch name -> surface (seeds, planes)
             for path, ds in iter_leaves(mb):
@@ -365,19 +377,34 @@ class VtkWorker(QObject):
                         patch_polys[extra_keys[key]] = _geometry(ds)
                     if key not in extra_keys or key in shown_keys:
                         blocks[path] = _geometry(ds)
+                block_regions[path] = region_of(path)
             sl = req.get("slice")
-            want_shell = (bool(req.get("shell")) and bool(sl)) or (req.get("look") == "studio" and any(
-                s.get("section") or s.get("cutaway") for s in stages))
-            if internal and want_shell:  # Studio: the domain as a faint glass shell around the slice/sections
-                for i, ds in enumerate(internal):
-                    key = (req["case"], i, ds.GetNumberOfPoints(), ds.GetNumberOfCells())
+            want_shell = req.get("look") == "studio" and any(s.get("section") or s.get("cutaway") for s in stages)
+            if internal and want_shell:  # Studio: the domain as a faint glass shell around sections / a cut-away
+                for i, (path, ds) in enumerate(zip(internal_paths, internal, strict=True)):
+                    key = (req["case"], path, ds.GetNumberOfPoints(), ds.GetNumberOfCells())
                     shell = self._cached(("shell", key))
                     if shell is None:
                         shell = self._remember(("shell", key), _geometry(ds))
                     blocks[f"shell:{i}"] = shell
+                    block_regions[f"shell:{i}"] = region_of(path)
             if sl and internal:
-                for i, ds in enumerate(internal):
-                    blocks[f"slice{i}"] = _slice(ds, sl["origin"], sl["normal"])
+                origin = sl.get("origin")
+                if origin is None:  # a fraction along the axis of the shown regions' extent (never stale)
+                    b = _bounds(internal)
+                    ax, frac = int(sl.get("axis", 2)), float(sl.get("frac", 0.5))
+                    origin = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2]
+                    origin[ax] = b[2 * ax] + frac * (b[2 * ax + 1] - b[2 * ax])
+                for i, (path, ds) in enumerate(zip(internal_paths, internal, strict=True)):
+                    blocks[f"slice{i}"] = _slice(ds, origin, sl["normal"])
+                    block_regions[f"slice{i}"] = region_of(path)
+                    if req.get("shell"):  # Studio: the domain as a faint glass shell around the slice
+                        key = (req["case"], path, ds.GetNumberOfPoints(), ds.GetNumberOfCells())
+                        shell = self._cached(("shell", key))
+                        if shell is None:
+                            shell = self._remember(("shell", key), _geometry(ds))
+                        blocks[f"shell:{i}"] = shell
+                        block_regions[f"shell:{i}"] = region_of(path)
             stage_info: dict[str, dict] = {}
             if stages and internal:
                 case = Path(req["case"])
@@ -464,6 +491,7 @@ class VtkWorker(QObject):
                 "blocks": blocks, "scalar": scalar, "range": (lo, hi) if lo <= hi else None,
                 "time": req.get("time"), "bounds": bounds if bounds[0] <= bounds[1] else None, "n_cells": n_cells,
                 "components": n_comp, "stage_info": stage_info, "overlays": overlays,
+                "block_regions": block_regions,
                 "smoothed": smooth and scalar is not None, "smoothing": "smooth" if smooth else "cells",
                 "seconds": time.perf_counter() - t0})
         except Exception as exc:
