@@ -1,11 +1,14 @@
-"""Build and smoke-test the packaged app.
+"""Build and smoke-test the packaged app, then zip it for sharing.
 
-    uv run python packaging/build.py [--skip-build]
+    uv run python packaging/build.py [--skip-build] [--no-zip]
+    uv run python packaging/build.py --zip-only        # just zip the existing dist/AetherCFD
     uv run python packaging/install.py
 
 Checks on the built dist/AetherCFD: the CLI runs `doctor`, the GUI completes a --smoke run on the
 fixture case (perspectives, editor, viewport, terminal) and `--run-module` works (plot export, with
-matplotlib in a child process of the windowed exe).
+matplotlib in a child process of the windowed exe). When the checks pass, the release zip
+build/AetherCFD-<version>-win64.zip is written: the app folder, both installers (install.py and
+"Install AetherCFD.cmd", which needs no Python) and INSTALL.md for the person you give it to.
 """
 
 from __future__ import annotations
@@ -14,11 +17,43 @@ import json
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist" / "AetherCFD"
 NO_WINDOW = 0x08000000
+RELEASE_EXTRAS = {"install.py": ROOT / "packaging" / "install.py",
+                  "Install AetherCFD.cmd": ROOT / "packaging" / "Install AetherCFD.cmd",
+                  "INSTALL.md": ROOT / "INSTALL.md"}
+
+
+def version() -> str:
+    sys.path.insert(0, str(ROOT / "src"))
+    from aethercfd import __version__
+
+    return __version__
+
+
+def make_zip(dist: Path = DIST, out_dir: Path = ROOT / "build", ver: str | None = None,
+             extras: dict[str, Path] | None = None) -> Path:
+    """AetherCFD-<version>-win64.zip: AetherCFD/ (the app), the installers and INSTALL.md at the top level."""
+    if not (dist / "AetherCFD.exe").is_file():
+        raise FileNotFoundError(f"no packaged app in {dist}; run packaging/build.py first")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"AetherCFD-{ver or version()}-win64.zip"
+    tmp = out.with_suffix(".zip.part")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for f in sorted(dist.rglob("*")):
+            if f.is_file():
+                z.write(f, f"AetherCFD/{f.relative_to(dist).as_posix()}")
+        for name, src in (RELEASE_EXTRAS if extras is None else extras).items():
+            data = src.read_bytes()
+            if name.lower().endswith(".cmd"):  # cmd.exe wants CRLF; git may have stored it with LF
+                data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+            z.writestr(name, data)
+    tmp.replace(out)
+    return out
 
 
 def build() -> None:
@@ -96,6 +131,13 @@ def check() -> int:
 
 
 if __name__ == "__main__":
+    if "--zip-only" in sys.argv:
+        print(f"release zip {make_zip()}")
+        sys.exit(0)
     if "--skip-build" not in sys.argv:
         build()
-    sys.exit(check())
+    code = check()
+    if code == 0 and "--no-zip" not in sys.argv:
+        z = make_zip()
+        print(f"release zip {z} ({z.stat().st_size / 2**20:.0f} MB): give it with INSTALL.md (inside)")
+    sys.exit(code)

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from aethercfd.core.paths import openfoam_path_safety, win_to_wsl
+from aethercfd.core.settings import default_case_root
 from aethercfd.studio.theme.tokens import T
 from aethercfd.templates.catalog import QUESTIONS, TEMPLATES, Template, rank
 
@@ -218,7 +219,7 @@ class _WherePage(QWizardPage):
         self.setTitle("Where should the case go?")
         lay = QFormLayout(self)
         roots = list(getattr(wiz.sv.settings, "case_roots", []) or [])
-        self.parent_dir = QLineEdit(str(roots[0]) if roots else r"D:\OpenFOAM")
+        self.parent_dir = QLineEdit(str(roots[0]) if roots else str(default_case_root()))
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse)
         row = QHBoxLayout()

@@ -32,7 +32,7 @@ class BuildResult:
     library: str | None = None
 
 
-def parse_diagnostics(output: str, src_dir_wsl: str, distro: str = "LMAE-OpenFOAM") -> list[Diagnostic]:
+def parse_diagnostics(output: str, src_dir_wsl: str, distro: str = "") -> list[Diagnostic]:
     out = []
     for m in _DIAG.finditer(output):
         f = m.group("file")
@@ -66,7 +66,7 @@ def build(runner, fork: ForkProfile, src_dir: Path, target: str = "libso", *, cl
     if m:
         userlib = re.search(r"AETHER_USERLIB=(\S+)", out)
         lib = f"{userlib.group(1) if userlib else '$FOAM_USER_LIBBIN'}/{m.group(1)}.so"
-    diags = parse_diagnostics(out, d, getattr(runner, "distro", "LMAE-OpenFOAM"))
+    diags = parse_diagnostics(out, d, getattr(runner, "distro", ""))
     return BuildResult(r.ok and not any(x.severity == "error" for x in diags), r.returncode, out, diags, lib)
 
 

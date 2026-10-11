@@ -4,7 +4,7 @@ version = "0.1.0.dev0"
 description = "AetherCFD Studio: a desktop workbench that drives OpenFOAM without hiding it"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-authors = [{ name = "Varun", email = "varunvvsm@gmail.com" }]
+authors = [{ name = "AetherCFD Studio authors" }]
 dependencies = [
     # --- headless core (must never import Qt) ---
     "pydantic>=2.8,<3",
@@ -112,5 +112,7 @@ source_modules = [
     "aethercfd.runs",
     "aethercfd.commands",
     "aethercfd.project",
+    "aethercfd.copilot",
+    "aethercfd.firstrun",
 ]
 forbidden_modules = ["PySide6", "PySide6QtAds", "pyvistaqt", "qtpy", "pyqtgraph", "aethercfd.studio"]

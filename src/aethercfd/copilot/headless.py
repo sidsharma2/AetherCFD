@@ -1,4 +1,5 @@
-"""Headless copilot: one prompt, streamed to the console (``aethercfd-cli copilot <case> "<prompt>"``).
+"""Headless copilot: one prompt, streamed to the console (``aethercfd-cli copilot <case> "<prompt>"
+[--provider claude|codex]``).
 
 Approvals are a policy instead of a dialog -- every plan is printed in full either way:
   none   only reads (every change/run is declined, Claude is told so)
@@ -19,8 +20,7 @@ from aethercfd.commands.base import CommandPlan, Risk
 from aethercfd.commands.executor import Approval, Executor
 from aethercfd.commands.registry import default_registry
 from aethercfd.copilot.bridge import BridgeServer
-from aethercfd.copilot.claude_cli import auth_status, find_claude
-from aethercfd.copilot.session import CopilotSession, text_of
+from aethercfd.copilot.providers import PROVIDERS, get_provider
 from aethercfd.copilot.tools import ToolContext, ToolSet
 
 
@@ -46,17 +46,20 @@ class PolicyApprover:
 
 
 def run(case: str, prompt: str, *, approve: str = "none", allow_destructive: bool = False, model: str | None = None,
-        timeout_min: float = 120.0, resume: str | None = None, out=sys.stdout) -> int:
+        timeout_min: float = 120.0, resume: str | None = None, provider: str | None = None, out=sys.stdout) -> int:
     from aethercfd.scripting.api import Session
 
     s = Session(case, create_project=True)
-    cli = find_claude(getattr(s.settings, "claude_exe", None))
+    prov = get_provider(provider or getattr(s.settings, "copilot_provider", None))
+    cli = prov.find(prov.configured_exe(s.settings))
     if cli is None:
-        print("Claude Code CLI not found (install it, or sign in once through the Claude desktop app)", file=out)
+        print(prov.install_hint, file=out)
         return 3
-    st = auth_status(cli)
+    st = prov.auth_status(cli)
     if not st.logged_in:
-        print(f"Claude Code ({cli.exe}) is not signed in. Run:\n  \"{cli.exe}\" auth login", file=out)
+        print(st.detail if st.method == "config-error" else
+              f"{prov.product} ({cli.exe}) is not signed in. Run:\n  \"" + "\" \"".join(prov.login_argv(cli)) + "\"",
+              file=out)
         return 4
     executor = Executor(default_registry(), s.context, PolicyApprover(approve, allow_destructive=allow_destructive,
                                                                       out=out))
@@ -75,37 +78,39 @@ def run(case: str, prompt: str, *, approve: str = "none", allow_destructive: boo
     done = threading.Event()
     state = {"result": None, "streaming": False}
 
-    def on_event(ev: dict) -> None:
+    def on_event(ev: dict) -> None:  # provider-neutral events (aethercfd.copilot.provider)
         t = ev.get("type")
-        if t == "stream_event":
-            e = ev.get("event") or {}
-            if e.get("type") == "content_block_delta" and (e.get("delta") or {}).get("type") == "text_delta":
-                print(e["delta"]["text"], end="", file=out, flush=True)
-                state["streaming"] = True
-        elif t == "assistant" and not state["streaming"]:
-            txt = text_of(ev)
-            if txt:
-                print(txt, file=out, flush=True)
-        elif t == "assistant":
+        if t == "text_delta":
+            print(ev.get("text", ""), end="", file=out, flush=True)
+            state["streaming"] = True
+        elif t == "message" and not state["streaming"]:
+            if ev.get("text"):
+                print(ev["text"], file=out, flush=True)
+        elif t == "message":
             state["streaming"] = False
             print("", file=out, flush=True)
-        elif t == "system" and ev.get("subtype") == "init":
-            servers = {m.get("name"): m.get("status") for m in ev.get("mcp_servers", [])}
-            print(f"[copilot] model {ev.get('model')}, session {ev.get('session_id')}, MCP {servers}", file=out,
+        elif t == "error":
+            print(f"[{prov.label}] {ev.get('message')}", file=out, flush=True)
+        elif t == "init":
+            print(f"[copilot] {prov.product} {cli.version}, model {ev.get('model')}, session {ev.get('session_id')}"
+                  + (f", tools NOT connected: {ev['tools_failed']}" if ev.get("tools_failed") else ""), file=out,
                   flush=True)
         elif t == "result":
             state["result"] = ev
             done.set()
 
-    sess = CopilotSession(cli, s.root, bridge, on_event=on_event, on_exit=lambda code: done.set(), model=model,
-                          resume=resume, distro=s.settings.wsl.default_distro, wsl_path=s.case().wsl_path)
+    sess = prov.session(cli, s.root, bridge, on_event=on_event, on_exit=lambda code: done.set(), model=model,
+                        resume=resume, distro=s.settings.wsl.default_distro, wsl_path=s.case().wsl_path)
     sess.start()
     sess.send(prompt)
     t0 = time.monotonic()
     finished = done.wait(timeout_min * 60)
     res = state["result"] or {}
+    spend = (f"cost ${res['cost_usd']:.2f}" if res.get("cost_usd") is not None else
+             f"tokens {res['usage']}" if res.get("usage") else "")
     print(f"\n[copilot] {'finished' if finished else 'TIMED OUT'} in {(time.monotonic() - t0) / 60:.1f} min; "
-          f"turns {res.get('num_turns')}, cost ${sess.cost_usd:.2f}, session {sess.session_id}", file=out, flush=True)
+          f"turns {res.get('num_turns')}, {spend}, session {sess.session_id}"
+          + (f"\n[copilot] stopped: {res.get('message')}" if res.get("is_error") else ""), file=out, flush=True)
     sess.stop()
     bridge.stop()
     if s.runs is not None:
@@ -121,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("prompt", help="what to ask; '-' reads it from stdin; '@file' reads it from a file")
     ap.add_argument("--approve", choices=["none", "edits", "all"], default="none")
     ap.add_argument("--allow-destructive", action="store_true")
+    ap.add_argument("--provider", choices=list(PROVIDERS), help="AI provider (default: the copilot_provider setting)")
     ap.add_argument("--model")
     ap.add_argument("--resume")
     ap.add_argument("--timeout-min", type=float, default=120.0)
@@ -128,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     prompt = sys.stdin.read() if a.prompt == "-" else (Path(a.prompt[1:]).read_text(encoding="utf-8")
                                                         if a.prompt.startswith("@") else a.prompt)
     return run(a.case, prompt, approve=a.approve, allow_destructive=a.allow_destructive, model=a.model,
-               timeout_min=a.timeout_min, resume=a.resume)
+               timeout_min=a.timeout_min, resume=a.resume, provider=a.provider)
 
 
 if __name__ == "__main__":
