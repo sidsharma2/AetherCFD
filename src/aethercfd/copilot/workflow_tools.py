@@ -152,6 +152,83 @@ def dict_batch(ctx: ToolContext, p: DictBatchParams) -> dict:
     return _execute_batch(ctx, {"edits": edits, "summary": p.summary}, p)
 
 
+# ============================================================================ grid study
+class GridCreateParams(Justified):
+    ratio: float = Field(1.5, ge=1.1, le=3.0, description="Refinement ratio r (Celik et al.: > 1.3); coarse = 1/r, "
+                                                           "fine = r cell counts per direction")
+
+
+class GridRunParams(Justified):
+    wait: bool = Field(True, description="Wait for each level's run to finish (up to timeout_min each)")
+    timeout_min: float = Field(60.0, gt=0, le=24 * 60)
+
+
+def grid_study_status(ctx: ToolContext, _p: NoParams) -> dict:
+    from aethercfd.case import gridstudy
+    from aethercfd.case.guided import load_state
+
+    root = ctx.root
+    out: dict = {"levels": [s.__dict__ for s in gridstudy.level_states(root)],
+                 "record": gridstudy.load_record(root)}
+    v = gridstudy.study_gate(_case(ctx), load_state(root).get("answers", {}))
+    out["gate"] = v.gate.as_dict()
+    return out
+
+
+def grid_study_create(ctx: ToolContext, p: GridCreateParams) -> dict:
+    from aethercfd.case import gridstudy
+
+    try:
+        params, plans, notes = gridstudy.plan_levels(ctx.root, p.ratio)
+    except gridstudy.GridStudyError as exc:
+        raise ToolError(str(exc)) from None
+    out = ctx.execute("files.write", params, p)
+    out["levels"] = [{"name": x.name, "cells_estimate": x.cells_estimate} for x in plans]
+    out["notes"] = notes
+    return out
+
+
+def grid_study_run(ctx: ToolContext, p: GridRunParams) -> dict:
+    import time
+
+    from aethercfd.case import gridstudy
+    from aethercfd.runs.manager import RunState
+
+    todo = gridstudy.run_params(ctx.root)
+    if not todo:
+        return {"ok": True, "message": "every level has run; evaluate the study"}
+    results = []
+    for params in todo:
+        out = ctx.execute("run.start", params, p)
+        results.append({"level": params["case"], **{k: out.get(k) for k in ("ok", "message", "data")}})
+        if not out.get("ok") or not p.wait:
+            if not out.get("ok"):
+                break
+            continue
+        runs = ctx.session.runs
+        deadline = time.monotonic() + p.timeout_min * 60
+        while time.monotonic() < deadline:
+            rec = runs.get(out["data"])
+            if rec is None or (not RunState(rec.state).active and rec.state != RunState.QUEUED.value):
+                break
+            runs.wait(out["data"], timeout=10.0)
+        rec = runs.get(out["data"])
+        results[-1]["state"] = rec.state if rec else "?"
+    return {"ok": all(r.get("ok") for r in results), "runs": results}
+
+
+def grid_study_evaluate(ctx: ToolContext, p: Justified) -> dict:
+    from aethercfd.case import gridstudy
+
+    try:
+        rec = gridstudy.evaluate(ctx.root)
+    except gridstudy.GridStudyError as exc:
+        raise ToolError(str(exc)) from None
+    out = ctx.execute("dict.batch", gridstudy.record_params(ctx.root, rec), p)
+    out["results"] = rec["results"]
+    return out
+
+
 # ============================================================================ cfd_agents
 def _agents():
     from aethercfd.services.cfd_agents import CfdAgents
@@ -223,6 +300,17 @@ WORKFLOW_TOOLS: list[Tool] = [
     Tool("dict_batch", "Several dictionary edits across files as ONE plan (one approval, one journal entry, one "
          "revert); missing parent sub-dictionaries are created. Use it to apply an agent's suggestion.",
          DictBatchParams, dict_batch, mutates=True),
+    Tool("grid_study_status", "Grid-convergence study of the open case: the fine/medium/coarse levels (cells, run "
+         "finished, iteratively converged), the evaluated Richardson/GCI record and the Validation gate verdict.",
+         NoParams, grid_study_status),
+    Tool("grid_study_create", "Create a grid study around the open case: grid_study/coarse and grid_study/fine with "
+         "blockMeshDict cell counts scaled by 1/r and r (the case is the medium mesh). One plan for the user to approve.",
+         GridCreateParams, grid_study_create, mutates=True),
+    Tool("grid_study_run", "Run the study levels that have not run (mesh + check + solve each, one after the other; "
+         "each run is approved).", GridRunParams, grid_study_run, mutates=True),
+    Tool("grid_study_evaluate", "Evaluate the study: quantities of interest on the three levels (patch means of p/T, "
+         "postProcessing .dat values), observed order, Richardson extrapolation, GCI (Celik et al. 2008); stores the "
+         "record (approved, journalled).", Justified, grid_study_evaluate, mutates=True),
     Tool("cfd_agents_status", "Which of the research group's cfd_agents can run here (Murphy, Connie, Reggie, Darwin "
          "are wired; Betty, Bill, Bob, Larry are not, with the reason), the interpreter and any setup problem.",
          NoParams, cfd_agents_status),

@@ -783,18 +783,39 @@ def _validation(c: _Ctx):
     gates = [rg, G.convergence_gate(case, f, s), G.health_gate(case)]
     if case.latest_result_time and f.turbulence not in (None, "laminar") and G.yplus_from_results(case):
         gates.append(G.yplus_gate(case, f, c.fields, c.ref))
-    gates.append(G.Gate("grid-study", True, "info", "Single mesh: no grid-convergence study yet",
-                        "A result is only mesh-independent once a refined mesh gives the same answer "
-                        "(Richardson extrapolation needs three meshes).",
-                        "Copy the case, refine (AetherMesh grading ×1.5-2) and compare with the Diff/Analysis "
-                        "panels. Not automated yet."))
+    from aethercfd.case import gridstudy
+
+    verdict = gridstudy.study_gate(case, c.answers)
+    gates.append(verdict.gate)
     files = sorted((case.root / "postProcessing").glob("*")) if (case.root / "postProcessing").is_dir() else []
-    acts = [Action("agent.connie", "Connie: run-health review of the telemetry",
-                   "cfd_agents; reads postProcessing/*/fieldMinMax.dat, solverInfo.dat"),
-            Action("agent.murphy", "Murphy: diagnose the solver log", "cfd_agents failure diagnosis")]
+    if (case.root / gridstudy.STUDY_DIR).is_dir():
+        files.append(case.root / gridstudy.STUDY_DIR)
+    lv = {n for n, _ in gridstudy.levels(case.root)}
+    acts = []
+    if not {"fine", "coarse"} <= lv:
+        acts.append(Action("grid.create", f"Grid study: create coarse and fine meshes (r = {gridstudy.DEFAULT_RATIO:g})",
+                           "Copies the case into grid_study/coarse and grid_study/fine with blockMeshDict cell counts "
+                           "scaled by 1/r and r; this case is the medium mesh. Shown as one plan to approve."))
+    else:
+        acts.append(Action("grid.run", "Grid study: run the coarse and fine levels",
+                           "mesh + check + solve for each level that has not run yet, through the run manager"))
+        acts.append(Action("grid.evaluate", "Grid study: evaluate (Richardson extrapolation, GCI)",
+                           "Reads the three levels' results; the record is journalled in the project"))
+    acts += [Action("agent.connie", "Connie: run-health review of the telemetry",
+                    "cfd_agents; reads postProcessing/*/fieldMinMax.dat, solverInfo.dat"),
+             Action("agent.murphy", "Murphy: diagnose the solver log", "cfd_agents failure diagnosis")]
+    q = [Question("gci_tolerance", "Acceptable discretisation uncertainty (GCI) of the quantity you report", "number",
+                  c.answers.get("gci_tolerance") or 5.0, "%",
+                  help="The grid study gate fails when GCI_fine exceeds this. 1-5 % is typical for engineering "
+                       "quantities; validation against experiments needs it well below the measurement error.")]
+    if verdict.choices:
+        q.append(Question("grid_qoi", "Which quantity matters for your conclusion?", "choice",
+                          c.answers.get("grid_qoi") or verdict.choices[0],
+                          choices=[(n, n) for n in verdict.choices],
+                          help="The grid study gate judges this quantity (all are in the study record)."))
     summary = rg.title if s is None else f"{len(s.residuals)} residual histories, " + (
         s.converged_msg or ("finished" if s.finished else "not finished"))
-    return summary, files, gates, [], acts, False
+    return summary, files, gates, q, acts, False
 
 
 def _post(c: _Ctx):
@@ -899,7 +920,8 @@ def plan_answers(case: Case | str | Path, stage: str, answers: dict, state: dict
     return gp
 
 
-_SIDE_ONLY = {"geometry_source", "L_ref", "flow_kind", "T_ref", "U_ref", "time_dependence", "target_yplus"}
+_SIDE_ONLY = {"geometry_source", "L_ref", "flow_kind", "T_ref", "U_ref", "time_dependence", "target_yplus",
+              "gci_tolerance", "grid_qoi"}
 
 
 def _apply_answer(case: Case, f: CaseFacts, fields, stage: str, q: Question, val, gp: GuidedPlan, stored: dict):

@@ -78,3 +78,17 @@ def test_agent_tools_with_a_fake_cfd_agents(tmp_path, monkeypatch):
     assert not ok and "not called from AetherCFD" in text
     ok, text = ts.call("cfd_agent_run", {"agent": "reggie"})  # no checkMesh log yet
     assert not ok and "checkMesh" in text
+
+
+def test_grid_study_tools(tmp_path):
+    ts = _ts(tmp_path)
+    ok, text = ts.call("grid_study_status", {})
+    d = json.loads(text)
+    assert ok and d["gate"]["title"] == "Mesh independence not shown" and [x["name"] for x in d["levels"]] == ["medium"]
+    ok, text = ts.call("grid_study_create", {"ratio": 1.5, **J})
+    out = json.loads(text)
+    assert ok, out
+    assert [x["name"] for x in out["levels"]] == ["coarse", "fine"]
+    assert (tmp_path / "c" / "grid_study" / "fine" / "system" / "blockMeshDict").is_file()
+    ok, text = ts.call("grid_study_evaluate", J)
+    assert not ok and "without a finished run" in text

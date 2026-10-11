@@ -92,3 +92,15 @@ def test_agent_runs_in_the_background(panel, qtbot, monkeypatch, tmp_path):
     panel.run_agent("murphy")
     qtbot.waitUntil(lambda: "fp_exception" in panel.agent_out.toPlainText(), timeout=60000)
     assert "nothing was changed" in panel.agent_out.toPlainText()
+
+
+def test_grid_study_create_from_the_validation_stage(panel):
+    panel.select_stage("validation")
+    assert any(b.property("action") == "grid.create" for b in panel.findChildren(type(panel.apply_btn)))
+    assert panel.grid_create()
+    plan = panel.approvals[-1]
+    assert plan.command == "files.write" and "fine" in plan.summary
+    root = Path(panel.sv.session.root)
+    assert (root / "grid_study" / "coarse" / "system" / "blockMeshDict").is_file()
+    panel.select_stage("validation")
+    assert any(b.property("action") == "grid.run" for b in panel.findChildren(type(panel.apply_btn)))

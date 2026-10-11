@@ -609,6 +609,12 @@ class WorkflowPanel(Panel):
     def run_action(self, aid: str) -> None:
         if aid in _RUN_PRESET:
             self.start_run(_RUN_PRESET[aid])
+        elif aid == "grid.create":
+            self.grid_create()
+        elif aid == "grid.run":
+            self.grid_run()
+        elif aid == "grid.evaluate":
+            self.grid_evaluate()
         elif aid.startswith("agent."):
             self.run_agent(aid.split(".", 1)[1])
         elif aid.startswith("open."):
@@ -637,6 +643,104 @@ class WorkflowPanel(Panel):
         if res.ok:
             self._open_panel("aether.run_status")
         return res.ok
+
+    # ------------------------------------------------------------------ grid study
+    def grid_create(self, ratio: float | None = None) -> bool:
+        from aethercfd.case import gridstudy
+        from aethercfd.commands.base import USER
+
+        s = self._session()
+        if s is None or not self.sv.ensure_project():
+            return False
+        try:
+            params, plans, notes = gridstudy.plan_levels(s.root, ratio or gridstudy.DEFAULT_RATIO)
+        except gridstudy.GridStudyError as exc:
+            QMessageBox.information(self, "Grid study", str(exc))
+            return False
+        plan = s.executor.plan("files.write", params, USER)
+        plan.summary = "Grid study levels: " + ", ".join(f"{p.name} ≈ {p.cells_estimate:,} cells" for p in plans)
+        plan.consequences += notes
+        if plan.blocked or not self._approve(plan, "AetherCFD grid study"):
+            return False
+        res = s.executor.execute("files.write", params, USER, plan=plan, approved_hash=plan.plan_hash)
+        self.sv.notify("Grid study levels created in grid_study/" if res.ok else f"Not created: {res.message}",
+                       "info" if res.ok else "error")
+        self.refresh_now()
+        return res.ok
+
+    def grid_run(self) -> bool:
+        """Approve the runs of the levels that have not run, then start them one after the other."""
+        from aethercfd.case import gridstudy
+        from aethercfd.commands.base import USER
+        from aethercfd.studio.panels.run.panels import PlanDialog
+
+        s = self._session()
+        if s is None or not self.sv.ensure_project():
+            return False
+        queue = []
+        for params in gridstudy.run_params(s.root):
+            plan = s.executor.plan("run.start", params, USER)
+            if plan.blocked:
+                QMessageBox.warning(self, "Cannot run the grid study", "\n".join(c.message for c in plan.blocked))
+                return False
+            if PlanDialog(plan, self).exec() != QDialog.DialogCode.Accepted:
+                return False
+            queue.append((params, plan))
+        if not queue:
+            self.sv.notify("Every grid level has run: evaluate the study")
+            return False
+        self._grid_queue = queue
+        self._grid_timer = QTimer(self, interval=3000, timeout=self._grid_next)
+        self._grid_next()
+        self._grid_timer.start()
+        return True
+
+    def _grid_next(self) -> None:
+        from aethercfd.commands.base import USER
+
+        s = self._session()
+        runs = getattr(s, "runs", None) if s is not None else None
+        if runs is None:
+            return
+        busy = [p for p, _pl in getattr(self, "_grid_running", []) if runs.active_for_case(Path(p["case"]))]
+        if busy:
+            return
+        if not self._grid_queue:
+            self._grid_timer.stop()
+            self._grid_running = []
+            self.sv.notify("Grid study runs finished: evaluate the study")
+            self.refresh_now()
+            return
+        params, plan = self._grid_queue.pop(0)
+        res = s.executor.execute("run.start", params, USER, plan=plan, approved_hash=plan.plan_hash)
+        self.sv.notify(res.message, "info" if res.ok else "error")
+        if not res.ok:
+            self._grid_queue = []
+        self._grid_running = [(params, plan)]
+
+    def grid_evaluate(self) -> None:
+        from aethercfd.case import gridstudy
+
+        s = self._session()
+        if s is None:
+            return
+        root = s.root
+        self.agent_out.show()
+        self.agent_out.setHtml("<i>Evaluating the grid study (reading three result sets)…</i>")
+
+        def done(res) -> None:
+            rec, err = res if isinstance(res, tuple) else (res, None)
+            if err is not None:
+                self.agent_out.setHtml(f"<span style='color:{T.warn}'>{_esc(str(err))}</span>")
+                return
+            rows = "".join(f"<li>{_esc(r['quantity'])}: {r['convergence']}"
+                           + (f", p = {r['p']:.3g}" if r.get("p") is not None else "")
+                           + (f", GCI {100 * r['gci_fine']:.3g} %" if r.get("gci_fine") is not None else "")
+                           + "</li>" for r in rec["results"][:12])
+            self.agent_out.setHtml(f"<p>Grid study: {len(rec['results'])} quantities</p><ul>{rows}</ul>")
+            self._batch(gridstudy.record_params(root, rec), who="AetherCFD grid study")
+
+        self.sv.run_bg(lambda: gridstudy.evaluate(root), done)
 
     def run_agent(self, agent: str, **kw) -> None:
         """Run a cfd_agent in the background; the result appears under the actions."""

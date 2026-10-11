@@ -28,7 +28,7 @@ Items new in this branch are marked *(new)*.
    * "Mark done" refused while any error gate fails;
    * copilot tools for the same path.
 3. **The biggest gaps for a beginner doing a real case correctly:**
-   * no grid-convergence study;
+   * the grid-convergence study is new and covers blockMesh cases only (snappy through its background mesh);
    * no integral-quantity convergence (forces, mass and energy balance);
    * y+ is a gate, not a field you can see;
    * no "why is this happening?" from a run anomaly;
@@ -201,7 +201,8 @@ Items new in this branch are marked *(new)*.
 | Pre-solve: dimensions, BC consistency, mesh quality, wall resolution, species sum, thermo range, solver/model compatibility | **Done** *(new, plus earlier checks)* | `gates.py`: dimensions, bc-coverage, p-reference, u-p-pairing, wall-functions, coverage, mesh-quality, yplus, species-sum, mach, steady; `checks.py` thermo-range, turb-fields | — |
 | Pre-solve: conservation, turbulence-model applicability | **Partial** | Re regime vs model warning *(new)* | — |
 | Post-solve: residual convergence and telemetry health | **Done** *(new)* | `convergence_gate`, `health_gate` (fieldMinMax NaN/negative k), Connie | — |
-| Post-solve: grid convergence, Richardson, integral convergence, conservation audit, uncertainty propagation, sensitivity, benchmark comparison | **Missing** | The Validation stage says so explicitly (info gate) | Highest-value next step |
+| Post-solve: grid convergence, Richardson extrapolation, GCI | **Partial** *(new, follow-up branch)* | `case/gridstudy.py`: coarse/fine levels in `grid_study/` (blockMeshDict counts × 1/r and × r, fine endTime × r^d); Celik et al. (2008) observed order, φ_ext, GCI, asymptotic check; Validation gate with a tolerance question, "inconclusive" when a level is not iteratively converged, and an explanation when y+ leaves the log layer with wall functions; copilot `grid_study_*` tools; `tests/unit/test_grid_study.py` | blockMesh cases only; quantities = patch means of p/T and postProcessing .dat values (no reattachment length or profiles yet) |
+| Post-solve: integral convergence, conservation audit, uncertainty propagation, sensitivity, benchmark comparison | **Missing** | — | — |
 | Experimental comparison | **Done** | Measurements (bias, RMSE, R²) | — |
 
 ## 15. Python-native post-processing
@@ -269,9 +270,9 @@ Items new in this branch are marked *(new)*.
 Ordered by value per effort. "Beginner-critical" items stop wrong answers; the rest make the app nicer or
 reach the long-term vision.
 
-1. **Grid-convergence study (beginner-critical).** "Refine ×1.5 into a sibling case, re-run, compare an
-   integral quantity, Richardson + GCI", wired into the Validation stage as a real gate. It reuses the
-   case copy, AetherMesh grading, the run manager and the Diff/Analysis panels.
+1. **Grid-convergence study (beginner-critical): started.** A three-level study with Richardson/GCI and a
+   Validation gate exists for blockMesh cases. Next: refineMesh-based levels for imported and snappy
+   meshes; richer quantities (reattachment length, profiles at stations, forces); a plot of φ against h.
 2. **Integral-quantity monitors (beginner-critical).** forces/forceCoeffs, mass flow per patch and wall
    heat flux as function objects added by the guided Run stage. They feed the run dashboard, become a
    convergence gate (change between the last writes) and support a conservation audit (Σ inflow − outflow).
