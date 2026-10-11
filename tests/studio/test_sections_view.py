@@ -267,7 +267,6 @@ def test_cht_probe_tip_section_and_dilution_paths(qtbot, tmp_path, monkeypatch):
         assert v.flow_bar.GetVisibility() and v.flow_bar.GetTitle().startswith("residence time")
         assert "|U|" in v.scalar_bar.GetTitle()
     finally:
-        v.set_smoothing("auto")
         _close(sv)
 
 
@@ -307,5 +306,4 @@ def test_decomposed_probe_ortho_sections_smooth_vs_cells(qtbot, tmp_path, monkey
         assert fi["cells"] > 0
         _shot(v, dirs, "probe_flow_paths_from_inlets")
     finally:
-        v.set_smoothing("auto")
         _close(sv)

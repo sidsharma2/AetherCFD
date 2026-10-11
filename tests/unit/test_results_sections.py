@@ -142,8 +142,10 @@ def test_pathlines_follow_the_vortex(smooth):
     assert np.ptp(np.linalg.norm(first[:, :2] - 0.05, axis=1)) < 0.002  # ... and each stays on its circle
 
 
-def test_multi_region_append_keeps_fields_the_solids_lack():
-    """A section through a fluid (with U) and a solid (without): U survives, NaN (no data) on the solid."""
+
+def test_multi_region_cut_keeps_the_field_and_greys_the_solids():
+    """A cut through a fluid (with U) and a solid (without): U survives on the fluid part, the solid part comes
+    back apart (drawn grey as 'no data'), and nothing is NaN-padded."""
     def square(x0, with_u):
         s = vtk.vtkPlaneSource()
         s.SetOrigin(x0, 0, 0)
@@ -152,14 +154,13 @@ def test_multi_region_append_keeps_fields_the_solids_lack():
         s.Update()
         p = s.GetOutput()
         if with_u:
-            for data, n in ((p.GetCellData(), p.GetNumberOfCells()), (p.GetPointData(), p.GetNumberOfPoints())):
-                a = nps.numpy_to_vtk(np.ones((n, 3), dtype=np.float32), deep=True)
-                a.SetName("U")
-                data.AddArray(a)
+            a = nps.numpy_to_vtk(np.ones((p.GetNumberOfCells(), 3), dtype=np.float32), deep=True)
+            a.SetName("U")
+            p.GetCellData().AddArray(a)
         return p
 
-    out = pl._append([square(0, True), square(2, False)])
-    u = nps.vtk_to_numpy(out.GetCellData().GetArray("U"))
-    assert out.GetPointData().GetArray("U") is not None and u.shape == (2, 3)
-    assert np.isfinite(u[0]).all() and np.isnan(u[1]).all()
-    assert out.GetCellData().GetArray("U").GetRange(-1) == (pytest.approx(3 ** 0.5), pytest.approx(3 ** 0.5))
+    fluid, solid = pl.split_by_field([square(0, True), square(2, False)], "U")
+    assert fluid.GetCellData().GetArray("U") is not None and fluid.GetNumberOfCells() == 1
+    assert solid.GetNumberOfCells() == 1 and solid.GetCellData().GetArray("U") is None
+    both, none = pl.split_by_field([square(0, False), square(2, False)], "U")
+    assert both.GetNumberOfCells() == 2 and none.GetNumberOfCells() == 0

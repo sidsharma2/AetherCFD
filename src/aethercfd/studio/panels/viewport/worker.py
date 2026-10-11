@@ -292,10 +292,18 @@ class VtkWorker(QObject):
 
     def _reader(self, case: str, decomposed: bool) -> FoamResults:
         key = (case, decomposed)
-        r = self._readers.get(key)
+        r = self._readers.pop(key, None)
         if r is None:
             r = FoamResults(case, decomposed=decomposed)
-            self._readers[key] = r
+            # a reader caches its whole mesh: keep the two most recent, so opening case after case (a CHT
+            # case, then a decomposed one) does not hold every mesh in memory at once
+            while len(self._readers) >= 2:
+                old_case, _d = next(iter(self._readers))
+                self._readers.pop(next(iter(self._readers)))
+                cache = self.__dict__.get("_geo_cache", {})
+                for k in [k for k in cache if old_case in repr(k)]:
+                    cache.pop(k, None)
+        self._readers[key] = r  # most recently used last
         return r
 
     @Slot(str, int, dict)
@@ -464,6 +472,7 @@ class VtkWorker(QObject):
 
 
 _SHARED: tuple[QThread, VtkWorker] | None = None
+_FINISHING: list[tuple[QThread, VtkWorker]] = []  # stopped while still busy: kept alive until they end
 
 
 def shared_worker() -> VtkWorker:
@@ -482,8 +491,12 @@ def shared_worker() -> VtkWorker:
 def stop_shared_worker() -> None:
     global _SHARED
     if _SHARED is not None:
-        th, _w = _SHARED
+        th, w = _SHARED
         th.quit()
-        th.wait(5000)
+        if not th.wait(5000):
+            # still inside a long read/filter: destroying a running QThread aborts the process (qFatal), so
+            # keep it referenced; it quits as soon as the current request returns
+            _FINISHING.append((th, w))
+        _FINISHING[:] = [(t, x) for t, x in _FINISHING if t.isRunning()]
         _SHARED = None
 

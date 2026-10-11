@@ -81,7 +81,6 @@ def _lut(cmap: str, lo: float, hi: float, n: int = 256) -> vtk.vtkLookupTable:
         r, g, b, a = cm(i / (n - 1))
         lut.SetTableValue(i, r, g, b, a)
     lut.SetTableRange(lo, hi)
-    lut.SetNanColor(0.55, 0.57, 0.60, 1.0)  # no data here (e.g. U on a solid region of a section)
     lut.Build()
     return lut
 
@@ -623,6 +622,11 @@ class ViewportPanel(ViewToolsMixin, Panel):
                     prop.SetLighting(False)
                     prop.SetLineWidth(1.8)
                     prop.SetColor(*((0.97, 0.97, 1.0) if self.look == "studio" else (0.05, 0.05, 0.06)))
+                elif info["overlay"] == "nodata":  # regions without the field (solids on a velocity section)
+                    lk.surface_material(prop, self.look, smooth=False, flat_view=self._is2d)
+                    prop.SetColor(0.55, 0.57, 0.60)
+                    prop.SetEdgeVisibility(cells_edges)
+                    prop.SetEdgeColor(0.12, 0.12, 0.14)
                 else:
                     prop.SetLighting(True)
                     prop.SetInterpolationToPhong()

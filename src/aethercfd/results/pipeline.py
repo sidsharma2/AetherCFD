@@ -126,7 +126,6 @@ def _append(polys: list) -> vtk.vtkPolyData:
         return vtk.vtkPolyData()
     if len(polys) == 1:
         return polys[0]
-    polys = _pad_arrays(polys)
     app = vtk.vtkAppendPolyData()
     for p in polys:
         app.AddInputData(p)
@@ -135,39 +134,6 @@ def _append(polys: list) -> vtk.vtkPolyData:
     out.ShallowCopy(app.GetOutput())
     return out
 
-
-def _pad_arrays(polys: list) -> list:
-    """Appending keeps only the arrays every piece has: a multi-region section (fluid with U, solids without)
-    would lose U. Pieces missing an array get it filled with NaN (drawn in the colour map's 'no data' grey)."""
-    out = []
-    for kind in ("point", "cell"):
-        want: dict[str, tuple[int, int]] = {}
-        for p in polys:
-            data = p.GetPointData() if kind == "point" else p.GetCellData()
-            for i in range(data.GetNumberOfArrays()):
-                a = data.GetArray(i)
-                if a is not None and a.GetName() and a.GetDataType() in (vtk.VTK_FLOAT, vtk.VTK_DOUBLE):
-                    want.setdefault(a.GetName(), (a.GetNumberOfComponents(), a.GetDataType()))
-        if not want:
-            continue
-        for k, p in enumerate(polys):
-            data = p.GetPointData() if kind == "point" else p.GetCellData()
-            missing = [n for n in want if data.GetArray(n) is None]
-            if not missing:
-                continue
-            q = p.NewInstance()
-            q.ShallowCopy(p)
-            qd = q.GetPointData() if kind == "point" else q.GetCellData()
-            n = q.GetNumberOfPoints() if kind == "point" else q.GetNumberOfCells()
-            for name in missing:
-                ncomp, vtype = want[name]  # same type and width, or the append drops the array anyway
-                vals = np.full((n, ncomp) if ncomp > 1 else n, np.nan, dtype=nps.get_numpy_array_type(vtype))
-                arr = nps.numpy_to_vtk(vals, deep=True, array_type=vtype)
-                arr.SetName(name)
-                qd.AddArray(arr)
-            polys[k] = q
-    out.extend(polys)
-    return out
 
 
 def scalar_array(ds, name: str, comp: str = "magnitude", association: str = "cell") -> str | None:
@@ -226,7 +192,20 @@ def colour_array(poly, name: str | None, comp: str, smooth: bool) -> tuple[str |
     return scalar_array(poly, name, comp), "cell"
 
 
-def _cut(internal, plane) -> vtk.vtkPolyData:
+def split_by_field(polys: list, name: str | None) -> tuple[vtk.vtkPolyData, vtk.vtkPolyData]:
+    """(pieces that carry the cell array ``name``, the others), each appended. A multi-region cut through a
+    fluid (with U) and solids (without): appended together the U array would be dropped (appending keeps
+    only the arrays every piece has), so the solids' part is kept apart and drawn as 'no data'."""
+    polys = [p for p in polys if p is not None and p.GetNumberOfCells()]
+    if not name:
+        return _append(polys), vtk.vtkPolyData()
+    has = [p for p in polys if p.GetCellData().GetArray(name) is not None]
+    if not has:  # nobody has it: keep the geometry, nothing to colour by
+        return _append(polys), vtk.vtkPolyData()
+    return _append(has), _append([p for p in polys if p.GetCellData().GetArray(name) is None])
+
+
+def _cut(internal, plane, name: str | None = None) -> tuple[vtk.vtkPolyData, vtk.vtkPolyData]:
     polys = []
     for ds in internal:
         c = vtk.vtkPlaneCutter()
@@ -235,7 +214,7 @@ def _cut(internal, plane) -> vtk.vtkPolyData:
         c.InterpolateAttributesOn()
         c.Update()
         polys.append(to_poly(c.GetOutput()))
-    return _append(polys)
+    return split_by_field(polys, name)
 
 
 def section_planes(spec, bounds, patches: dict | None = None) -> tuple[list[vtk.vtkPlane], list[str]]:
@@ -331,19 +310,23 @@ def stage_slice(spec, internal, field_name, comp, *, smooth: bool = False, patch
         -> StageOutput:
     fname = spec.get("field") or field_name
     planes, notes = section_planes(spec, bounds_of(internal), patches)
-    polys, lines, arrows = [], [], []
+    polys, lines, arrows, nodata = [], [], [], []
     vec = "U"
     for plane in planes:  # contours and arrows per plane: a stack's planes never connect to each other
-        poly = _cut(internal, plane)
+        poly, rest = _cut(internal, plane, fname)
         name, assoc = colour_array(poly, fname, spec.get("component", comp), smooth)
         ov, ov_notes = section_overlays(spec, poly, name, assoc, vec, plane.GetNormal())
         polys.append(poly)
+        nodata.append(rest)
         lines.append(ov.get("lines"))
         arrows.append(ov.get("arrows"))
         notes += [n for n in ov_notes if n not in notes]
     poly = _append(polys)
     name, assoc = colour_array(poly, fname, spec.get("component", comp), smooth)
-    overlays = {k: _append(v) for k, v in (("lines", lines), ("arrows", arrows)) if any(x is not None for x in v)}
+    overlays = {k: _append(v) for k, v in (("lines", lines), ("arrows", arrows), ("nodata", nodata))
+                if any(x is not None and x.GetNumberOfCells() for x in v)}
+    if "nodata" in overlays:
+        notes.append(f"grey: regions without {fname}")
     n = len(planes)
     label = f"section{'s' if n > 1 else ''}" + (f" ×{n}" if n > 1 else "") if spec.get("section") else "slice"
     if spec.get("contours"):
@@ -372,12 +355,15 @@ def stage_clip(spec, internal, field_name, comp, *, smooth: bool = False) -> Sta
         f.SetInputData(ds)
         f.Update()
         polys.append(to_poly(f.GetOutput()))
-    poly = _append(polys)
-    name, assoc = colour_array(poly, spec.get("field") or field_name, comp, smooth and not spec.get("crinkle"))
+    fname = spec.get("field") or field_name
+    poly, rest = split_by_field(polys, fname)
+    name, assoc = colour_array(poly, fname, comp, smooth and not spec.get("crinkle"))
     label = "cut-away" if spec.get("cutaway") else "clip"
     return StageOutput(poly, name, assoc, _range(poly, name, assoc), interpolated=assoc == "point",
                        label=f"{label} (whole cells)" if spec.get("crinkle") else
-                       label + (" (smoothed)" if assoc == "point" else ""), edges=bool(spec.get("edges")))
+                       label + (" (smoothed)" if assoc == "point" else ""), edges=bool(spec.get("edges")),
+                       overlays={"nodata": rest} if rest.GetNumberOfCells() else {},
+                       notes=[f"grey: regions without {fname}"] if rest.GetNumberOfCells() else [])
 
 
 def stage_threshold(spec, internal, field_name, comp) -> StageOutput:
