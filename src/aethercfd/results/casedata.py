@@ -44,6 +44,66 @@ def pick_region(root: str | Path, regions: list[str]) -> str:
     return regions[0]
 
 
+_FLUID_WORDS = ("fluid", "gas", "air", "water", "flow")
+ALL_REGIONS = ("", "all", "*", "everything")
+
+
+def region_kinds(root: str | Path, regions: list[str]) -> dict[str, str]:
+    """'fluid' or 'solid' for each region of a multi-region case: from regionProperties (``fluid (...)``,
+    ``solid (...)``); a region it does not name is a fluid when named like one or when it has a velocity."""
+    root = Path(root)
+    kinds: dict[str, str] = {}
+    for f in (root / "constant" / "regionProperties", root / "system" / "regionProperties"):
+        try:
+            text = re.sub(r"//[^\n]*|/\*.*?\*/", " ", f.read_text(encoding="utf-8", errors="replace"), flags=re.S)
+        except OSError:
+            continue
+        for kind in ("fluid", "solid"):
+            for m in re.finditer(rf"\b{kind}\s*\(([^)]*)\)", text):
+                for name in m.group(1).split():
+                    if name in regions:
+                        kinds.setdefault(name, kind)
+        if kinds:
+            break
+    for r in regions:
+        if r not in kinds:
+            moving = any((t / r / "U").is_file() for base in (root, root / "processor0") for t in base.glob("[0-9]*"))
+            kinds[r] = "fluid" if moving or any(k in r.lower() for k in _FLUID_WORDS) else "solid"
+    return kinds
+
+
+def resolve_regions(spec, regions: list[str], kinds: dict[str, str] | None = None) -> list[str] | None:
+    """Regions named by ``spec``, in the case's order: None for all of them ('all', '' or None); a region name
+    (any case, or a unique part of one: 'inner_tube'); 'fluid' / 'solids' for every region of that kind; a list
+    or a comma-separated string of those. Raises ValueError, listing the regions, for anything else."""
+    if not regions:
+        raise ValueError("this case has a single region")
+    toks = spec if isinstance(spec, (list, tuple)) else re.split(r"[,;\s]+", str(spec or ""))
+    toks = [str(t).strip() for t in toks if str(t).strip()]
+    if not toks or any(t.lower() in ALL_REGIONS for t in toks):
+        return None
+    kinds = kinds or {}
+    picked: set[str] = set()
+    for t in toks:
+        low = t.lower()
+        exact = [r for r in regions if r.lower() == low]
+        kind = {"fluid": "fluid", "fluids": "fluid", "solid": "solid", "solids": "solid"}.get(low)
+        part = [r for r in regions if low in r.lower()]
+        if exact:
+            picked.add(exact[0])
+        elif kind:
+            hit = [r for r in regions if kinds.get(r) == kind]
+            if not hit:
+                raise ValueError(f"this case has no {kind} region (regions: {', '.join(regions)})")
+            picked.update(hit)
+        elif len(part) == 1:
+            picked.add(part[0])
+        else:
+            raise ValueError(f"{'ambiguous' if part else 'no'} region {t!r}: one of {', '.join(regions)}, "
+                             "or 'fluid', 'solids', 'all'")
+    return [r for r in regions if r in picked]
+
+
 class CaseData:
     def __init__(self, root: str | Path, region: str = ""):
         self.root = Path(root)

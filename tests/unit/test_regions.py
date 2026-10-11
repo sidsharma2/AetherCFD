@@ -87,6 +87,30 @@ def test_pick_region_fallbacks(tmp_path):
     assert pick_region(tmp_path / "nope", ["s1", "s3"]) == "s1"
 
 
+def test_region_kinds_and_resolve_regions(tmp_path):
+    from aethercfd.results.casedata import region_kinds, resolve_regions
+
+    case = two_region_case(tmp_path)
+    kinds = region_kinds(case, ["a", "b"])
+    assert kinds == {"a": "solid", "b": "fluid"}  # regionProperties
+    assert region_kinds(tmp_path / "nope", ["air_gap", "steel"]) == {"air_gap": "fluid", "steel": "solid"}
+    regs = ["fluid", "solid_1_collar", "solid_2_outer_tube", "solid_3_inner_tube"]
+    k = {r: ("fluid" if r == "fluid" else "solid") for r in regs}
+    assert resolve_regions("solids", regs, k) == regs[1:]
+    assert resolve_regions("fluid", regs, k) == ["fluid"]
+    assert resolve_regions(None, regs, k) is None and resolve_regions("all", regs, k) is None
+    assert resolve_regions(["inner_tube", "COLLAR"], regs, k) == ["solid_1_collar", "solid_3_inner_tube"]
+    assert resolve_regions("fluid, inner_tube", regs, k) == ["fluid", "solid_3_inner_tube"]
+    with pytest.raises(ValueError, match="ambiguous region 'tube'"):
+        resolve_regions("tube", regs, k)
+    with pytest.raises(ValueError, match="no region 'pipe'"):
+        resolve_regions("pipe", regs, k)
+    with pytest.raises(ValueError, match="no solid region"):
+        resolve_regions("solids", ["a", "b"], {"a": "fluid", "b": "fluid"})
+    with pytest.raises(ValueError, match="single region"):
+        resolve_regions("solids", [])
+
+
 def test_field_files_into_a_region(tmp_path):
     from aethercfd.results.write_fields import field_files
 

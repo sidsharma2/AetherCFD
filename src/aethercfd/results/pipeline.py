@@ -98,12 +98,68 @@ def to_poly(obj) -> vtk.vtkPolyData:
         return out
     if obj.IsA("vtkPolyData"):
         return obj
+    return surface(obj)
+
+
+def surface(ds) -> vtk.vtkPolyData:
+    """Outer surface of a volume dataset, cell data preserved and every face wound outward (see
+    orient_outward); a polydata is returned as it is."""
+    if ds.IsA("vtkPolyData"):
+        return ds
     g = vtk.vtkGeometryFilter()
-    g.SetInputData(obj)
+    g.SetInputData(ds)
+    g.PassThroughCellIdsOn()
     g.Update()
     out = vtk.vtkPolyData()
     out.ShallowCopy(g.GetOutput())
+    ids = out.GetCellData().GetArray("vtkOriginalCellIds")
+    if ids is not None:
+        if ds.IsA("vtkUnstructuredGrid"):
+            try:
+                orient_outward(out, ds, nps.vtk_to_numpy(ids))
+            except Exception:  # presentation only: never fail a stage over it
+                import logging
+
+                logging.getLogger(__name__).exception("orienting the surface faces")
+        out.GetCellData().RemoveArray("vtkOriginalCellIds")
     return out
+
+
+def orient_outward(poly: vtk.vtkPolyData, ds, src: np.ndarray) -> int:
+    """Wind every boundary face of ``poly`` (the surface of unstructured grid ``ds``; ``src``: each face's cell
+    in ``ds``) so it points away from its own cell. VTK's OpenFOAM reader hands prism (wedge) cells over inside
+    out, so their wall faces come out wound inward; the GPU then lights them from behind, and a curved wall
+    meshed with prism layers shows dark moiré streaks. Returns the number of faces flipped."""
+    polys = poly.GetPolys()
+    if poly.GetNumberOfCells() != polys.GetNumberOfCells() or not polys.GetNumberOfCells() or not ds.GetNumberOfCells():
+        return 0  # (vertices or lines mixed in: leave it)
+    off = nps.vtk_to_numpy(polys.GetOffsetsArray()).astype(np.int64)
+    conn = nps.vtk_to_numpy(polys.GetConnectivityArray()).astype(np.int64)
+    pts = nps.vtk_to_numpy(poly.GetPoints().GetData()).astype(np.float64)
+    starts, sizes = off[:-1], np.diff(off)
+    face = np.repeat(np.arange(len(sizes)), sizes)
+    pos = np.arange(len(conn)) - starts[face]
+    nxt = conn[starts[face] + (pos + 1) % sizes[face]]
+    normal = np.add.reduceat(np.cross(pts[conn], pts[nxt]), starts, axis=0)  # Newell: area-weighted normal
+    centre = np.add.reduceat(pts[conn], starts, axis=0) / sizes[:, None]
+    cells = ds.GetCells()
+    coff = nps.vtk_to_numpy(cells.GetOffsetsArray()).astype(np.int64)
+    cconn = nps.vtk_to_numpy(cells.GetConnectivityArray()).astype(np.int64)
+    vpts = nps.vtk_to_numpy(ds.GetPoints().GetData()).astype(np.float64)
+    nonempty = np.diff(coff) > 0
+    cc = np.zeros((len(coff) - 1, 3))
+    cc[nonempty] = np.add.reduceat(vpts[cconn], coff[:-1][nonempty], axis=0) / np.diff(coff)[nonempty, None]
+    inward = np.einsum("ij,ij->i", normal, centre - cc[src]) < 0
+    if not inward.any():
+        return 0
+    flip = inward[face]
+    idx = np.arange(len(conn))
+    idx[flip] = (starts[face] + sizes[face] - 1 - pos)[flip]  # reverse the point order of those faces
+    new = vtk.vtkCellArray()
+    new.SetData(nps.numpy_to_vtk(off, deep=True, array_type=vtk.VTK_ID_TYPE),
+                nps.numpy_to_vtk(conn[idx], deep=True, array_type=vtk.VTK_ID_TYPE))
+    poly.SetPolys(new)
+    return int(inward.sum())
 
 
 def _append(polys: list) -> vtk.vtkPolyData:

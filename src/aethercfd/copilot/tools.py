@@ -34,7 +34,7 @@ class ToolError(RuntimeError):
 class UiHooks(Protocol):
     """Implemented by the GUI; absent in headless mode."""
 
-    def show_field(self, field: str, time: str | None, slice_axis: str | None) -> str: ...
+    def show_field(self, field: str, time: str | None, slice_axis: str | None, regions=None) -> str: ...
 
     def open_file(self, path: Path, line: int | None) -> str: ...
 
@@ -136,10 +136,17 @@ class JournalParams(BaseModel):
     last: int = Field(10, ge=1, le=100)
 
 
+REGIONS_DESCRIPTION = (
+    "Multi-region (CHT) case only: which regions to show -- 'solids', 'fluid', 'all', a region name or a list of "
+    "names (a unique part of a name works, e.g. 'inner_tube'). Slices and stages then cut only these regions, "
+    "through their own middle, and the camera frames them. Omit to keep what is shown.")
+
+
 class ShowFieldParams(BaseModel):
     field: str
     time: str | None = Field(None, description="Time folder name; default latest")
     slice_axis: str | None = Field(None, description="x | y | z for a mid-plane slice, or omit")
+    regions: list[str] | str | None = Field(None, description=REGIONS_DESCRIPTION)
 
 
 class OpenFileParams(BaseModel):
@@ -552,7 +559,9 @@ def run_control(ctx: ToolContext, p: RunControlParams) -> dict:
 def show_field(ctx: ToolContext, p: ShowFieldParams) -> dict:
     if ctx.ui is None:
         raise ToolError("no GUI attached")
-    return {"result": ctx.ui.show_field(p.field, p.time, p.slice_axis)}
+    if p.regions is None:
+        return {"result": ctx.ui.show_field(p.field, p.time, p.slice_axis)}
+    return {"result": ctx.ui.show_field(p.field, p.time, p.slice_axis, p.regions)}
 
 
 def open_file(ctx: ToolContext, p: OpenFileParams) -> dict:
@@ -611,6 +620,17 @@ class AddStageParams(BaseModel):
         "'line','axis':'x','pos':0.05,'n':60}; threshold {'field':'T','lo':1500}; quality {'metric':"
         "'nonOrthogonality','min':60}; schlieren {'source':'rho','axis':'z'}. smooth/subdivide are presentation-only."))
     wait_s: float = Field(60.0, ge=0, le=600, description="Wait for the stage to be computed and report its result")
+    regions: list[str] | str | None = Field(None, description=REGIONS_DESCRIPTION)
+
+
+class RegionsParams(BaseModel):
+    regions: list[str] | str | None = Field(None, description=(
+        "'solids', 'fluid', 'all', a region name or a list of names (a unique part of a name works); omit to "
+        "list the regions (with fluid/solid) and what is shown"))
+
+
+class ShowcaseParams(BaseModel):
+    regions: list[str] | str | None = Field(None, description=REGIONS_DESCRIPTION)
 
 
 class RemoveStageParams(BaseModel):
@@ -686,7 +706,7 @@ def app_select_file(ctx: ToolContext, p: SelectFileParams) -> dict:
 
 def app_add_stage(ctx: ToolContext, p: AddStageParams) -> dict:
     ui = _ui(ctx)
-    sid = ui.add_stage(p.type, p.params)
+    sid = ui.add_stage(p.type, p.params) if p.regions is None else ui.add_stage(p.type, p.params, p.regions)
     if not str(sid).startswith("c"):
         raise ToolError(str(sid))
     deadline = time.monotonic() + p.wait_s
@@ -730,8 +750,13 @@ def app_look(ctx: ToolContext, p: LookParams) -> dict:
     return {"result": _ui(ctx).viewport_look(p.look)}
 
 
-def app_showcase(ctx: ToolContext, p: BaseModel) -> dict:
-    return {"result": _ui(ctx).showcase()}
+def app_showcase(ctx: ToolContext, p: ShowcaseParams) -> dict:
+    ui = _ui(ctx)
+    return {"result": ui.showcase() if p.regions is None else ui.showcase(p.regions)}
+
+
+def app_regions(ctx: ToolContext, p: RegionsParams) -> dict:
+    return _ui(ctx).viewport_regions(p.regions)
 
 
 def app_animation(ctx: ToolContext, p: AnimationParams) -> dict:
@@ -788,8 +813,9 @@ BASE_TOOLS: list[Tool] = [
          "and log tails.", RunParams, run_openfoam, mutates=True),
     Tool("run_control", "Control a running job: write_now, stop_write (write and stop), pause, resume, terminate, "
          "kill. Needs approval.", RunControlParams, run_control, mutates=True),
-    Tool("show_field", "Show a field in the AetherCFD 3D viewport for the user (optionally a mid-plane slice).",
-         ShowFieldParams, show_field, gui_only=True),
+    Tool("show_field", "Show a field in the AetherCFD 3D viewport for the user (optionally a mid-plane slice). On a "
+         "multi-region (CHT) case pass regions, e.g. 'solids' for the temperature in the solids: one call shows "
+         "and slices just those regions.", ShowFieldParams, show_field, gui_only=True),
     Tool("open_file", "Open a case file in the AetherCFD editor at a line, for the user to look at.", OpenFileParams,
          open_file, gui_only=True),
     Tool("app_overview", "What the user sees in AetherCFD: perspective, open panels, all available panels, the "
@@ -814,7 +840,8 @@ BASE_TOOLS: list[Tool] = [
          SelectFileParams, app_select_file, gui_only=True),
     Tool("add_view_stage", "Add a visualization stage to the 3D viewport the user is looking at (Q-criterion vortices "
          "and isosurfaces on the GPU, slices, clips, thresholds, streamlines, glyphs, schlieren, mesh-quality maps) and "
-         "wait for its result.", AddStageParams, app_add_stage, gui_only=True),
+         "wait for its result. Stages use only the regions shown in the viewport (regions= picks them first on a "
+         "multi-region case).", AddStageParams, app_add_stage, gui_only=True),
     Tool("remove_view_stage", "Remove one visualization stage (or all).", RemoveStageParams, app_remove_stage,
          gui_only=True),
     Tool("viewport_camera", "Move the 3D camera: iso, x, y, z, fit, or frame a stage.", CameraParams, app_camera,
@@ -827,7 +854,11 @@ BASE_TOOLS: list[Tool] = [
          LookParams, app_look, gui_only=True),
     Tool("viewport_showcase", "One-click best first view of the shown field: Studio look; for 3D cases a mid-plane "
          "slice in a glass shell of the domain with an isometric camera. Use it when the user wants to 'see the "
-         "result' or a nice picture.", NoParams, app_showcase, gui_only=True),
+         "result' or a nice picture. On a multi-region case regions= (e.g. 'solids', one region) frames and slices "
+         "just those.", ShowcaseParams, app_showcase, gui_only=True),
+    Tool("viewport_regions", "Multi-region (CHT) cases: list the regions (fluid/solid) and which are shown, or show "
+         "only some ('solids', 'fluid', names, 'all'). Hidden regions are not drawn, sliced or used by stages; the "
+         "camera frames the shown ones.", RegionsParams, app_regions, gui_only=True),
     Tool("viewport_animation", "Record a turntable (camera orbit) or time sweep (every saved time) of the 3D view "
          "as an animated GIF/WebP in .aethercfd/local/animations; returns the file (a time sweep finishes later).",
          AnimationParams, app_animation, gui_only=True),

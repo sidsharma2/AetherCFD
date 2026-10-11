@@ -145,16 +145,17 @@ class _UiHooks(QObject):
         ev.wait(30)
         return str(box[0]) if box else "the GUI did not answer"
 
-    def show_field(self, field: str, time: str | None, slice_axis: str | None) -> str:
+    def show_field(self, field: str, time: str | None, slice_axis: str | None, regions=None) -> str:
         def go():
             host, spec = self.sv.host, self.sv.panels.get("aether.viewport")
-            panel = next(iter(host.panels_of("aether.viewport")), None)
+            # the viewport the other viewport tools (regions, stages, showcase) act on: the active one
+            panel = getattr(self.sv, "active_viewport", None) or next(iter(host.panels_of("aether.viewport")), None)
             if panel is None:
                 d = host.open_panel(spec)
                 panel = host.build_panel(d.objectName())
             if panel is None or not hasattr(panel, "show_field"):
                 return "no viewport available"
-            return panel.show_field(field, time, slice_axis)
+            return panel.show_field(field, time, slice_axis, regions)
         return self._call(go)
 
     def open_file(self, path: Path, line: int | None) -> str:
@@ -207,8 +208,11 @@ class _UiHooks(QObject):
     def viewport_look(self, look: str) -> str:
         return self._auto("viewport_look", look)
 
-    def showcase(self) -> str:
-        return self._auto("showcase")
+    def showcase(self, regions=None) -> str:
+        return self._auto("showcase", regions)
+
+    def viewport_regions(self, regions=None) -> dict:
+        return self._auto("viewport_regions", regions)
 
     def animation(self, kind: str, frames: int, fps: int, fmt: str) -> str:
         return self._auto("animation", kind, frames, fps, fmt)
@@ -222,8 +226,8 @@ class _UiHooks(QObject):
     def select_file(self, path: str) -> str:
         return self._auto("select_file", path)
 
-    def add_stage(self, kind: str, params: dict) -> str:
-        return self._auto("add_stage", kind, params)
+    def add_stage(self, kind: str, params: dict, regions=None) -> str:
+        return self._auto("add_stage", kind, params, regions)
 
     def stage_status(self, sid: str):
         return self._auto("stage_status", sid)

@@ -55,6 +55,12 @@ at about 1280x720 and Read the PNG; if the picture is uninformative (a uniform c
 move or change the slice before describing it. viewport_animation makes a turntable or time sweep; \
 open_in_paraview hands the case to ParaView. To run a case the user just created, run_openfoam with \
 preset auto (it runs the tutorial's Allrun, or mesh + check + solve) instead of guessing the steps.
+- Multi-region (CHT) cases (case_overview lists the regions): the viewport draws every region at once, and the \
+fluid hides the solids. For "the temperature in the solids" call show_field(field='T', regions='solids', \
+slice_axis=...) or viewport_showcase(regions='solids') in one go: only those regions are drawn, sliced through \
+their own middle and framed. regions takes 'solids', 'fluid', 'all', a region name or a list; \
+viewport_regions lists the regions (fluid/solid) and what is shown. add_view_stage works on the shown regions \
+only (or pass regions). A solid region has no U or p_rgh: show T there.
 - Use case_checks for setup problems, mesh_hotspots/grading_design/wall_spacing for mesh work.
 - Be concise; give units.{extra}"""
 

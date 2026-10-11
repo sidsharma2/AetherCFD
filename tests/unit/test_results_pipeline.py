@@ -98,3 +98,50 @@ def test_mirror_revolve_and_fields_needed(internal):
     assert pl.fields_needed([{"type": "schlieren", "source": "rho"}, {"type": "streamlines"}]) == \
         {"rho", "grad(rho)", "U"}
     assert pl.wedge_angle([np.array([0, 1, 0.0436]), np.array([0, -1, 0.0436])]) == pytest.approx(5.0, abs=0.01)
+
+
+def _prism(order) -> vtk.vtkUnstructuredGrid:
+    pts = vtk.vtkPoints()
+    for p in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (0, 1, 1)):
+        pts.InsertNextPoint(*p)
+    ug = vtk.vtkUnstructuredGrid()
+    ug.SetPoints(pts)
+    ug.InsertNextCell(vtk.VTK_WEDGE, 6, order)
+    t = nps.numpy_to_vtk(np.array([7.0]), deep=True)
+    t.SetName("T")
+    ug.GetCellData().AddArray(t)
+    return ug
+
+
+def _all_outward(poly) -> bool:
+    """Every face of a convex closed surface points away from its centre."""
+    n = vtk.vtkPolyDataNormals()
+    n.SetInputData(poly)
+    n.ComputeCellNormalsOn()
+    n.ComputePointNormalsOff()
+    n.ConsistencyOff()
+    n.AutoOrientNormalsOff()
+    n.SplittingOff()
+    n.Update()
+    normals = nps.vtk_to_numpy(n.GetOutput().GetCellData().GetNormals())
+    cc = vtk.vtkCellCenters()
+    cc.SetInputData(poly)
+    cc.Update()
+    centres = nps.vtk_to_numpy(cc.GetOutput().GetPoints().GetData())
+    mid = centres.mean(axis=0)
+    return bool(len(normals)) and bool((np.einsum("ij,ij->i", normals, centres - mid) > 0).all())
+
+
+@pytest.mark.parametrize("order", [[0, 1, 2, 3, 4, 5], [0, 2, 1, 3, 5, 4]])  # one is inside out, like the reader's
+def test_stage_surfaces_are_wound_outward(order):
+    """VTK's OpenFOAM reader hands prisms over inside out: clip / threshold surfaces must still face outward
+    (an inward face is lit from behind and shows as a dark streak)."""
+    ug = _prism(order)
+    surf = pl.to_poly(ug)
+    assert surf.GetNumberOfPolys() == 5 and _all_outward(surf)
+    assert surf.GetCellData().GetArray("vtkOriginalCellIds") is None
+    for spec in ({"type": "clip", "axis": "z", "pos": 0.5}, {"type": "clip", "axis": "z", "pos": 0.5, "crinkle": True},
+                 {"type": "threshold", "field": "T", "lo": 0}):
+        out = pl.run_stage(spec, [ug], "T")
+        assert out.poly.GetNumberOfPolys() >= 5 and _all_outward(out.poly), spec
+        assert out.range == pytest.approx((7.0, 7.0))  # cell data survives the reorientation

@@ -103,6 +103,7 @@ class DockHost(QObject):
         self.manager = ads.CDockManager(window)
         self.manager.setStyleSheet(self.manager.styleSheet())  # keep QtAds' own sheet; app QSS overrides
         self._docks: dict[str, ads.CDockWidget] = {}
+        self._sides: dict[str, Area] = {}  # dock -> the area it was last placed in (on-demand tabbing)
         self._central = self._make_central()
         for sig in (self.manager.dockAreasAdded, self.manager.dockAreasRemoved,
                     self.manager.dockWidgetAdded, self.manager.dockWidgetRemoved,
@@ -227,7 +228,10 @@ class DockHost(QObject):
 
     def open_panel(self, spec: PanelSpec, *, instance: str | None = None, area: Area | None = None,
                    args: dict | None = None, focus: bool = True) -> ads.CDockWidget:
-        """Show a panel (creating it if needed) in its default (or the given) area."""
+        """Show a panel (creating it if needed) in its default (or the given) area. Opened on demand (no
+        ``area``: a menu, the palette, the copilot), it becomes a tab beside the panels already open on its
+        side, so the window keeps a few tab strips to click through instead of a new column per panel; a
+        layout recipe passes ``area`` and keeps its deliberate splits."""
         if instance is None:
             instance = self.next_instance(spec.type_id) if spec.multi_instance else "main"
         name = f"{spec.type_id}#{instance}"
@@ -239,7 +243,7 @@ class DockHost(QObject):
                 existing.raise_()
             return existing
         d = existing or self.create_dock(spec, name, args=args)
-        self.place(d, area or spec.default_area, tab_group=spec.tab_group)
+        self.place(d, area or spec.default_area, tab_group=spec.tab_group, join_side=area is None)
         d.toggleView(True)
         d.setAsCurrentTab()
         self.panel_opened.emit(name)
@@ -263,7 +267,26 @@ class DockHost(QObject):
         self.panel_opened.emit(name)
         return d
 
-    def place(self, d: ads.CDockWidget, area: Area, *, tab_group: str | None = None) -> None:
+    def _side_area(self, area: Area, exclude: ads.CDockWidget):
+        """The dock area already holding the most open panels whose home is ``area`` (docked, not floating
+        or auto-hidden), or None."""
+        counts: dict[int, tuple[int, object]] = {}
+        for other_name, other in self._docks.items():
+            if other is exclude or other.isClosed() or other.isAutoHide() or other.isFloating() \
+                    or other_name == "aether.workbench#main":
+                continue
+            spec = self.services.panels.get(self.split_name(other_name)[0])
+            side = self._sides.get(other_name, spec.default_area if spec else None)  # where it was put, else home
+            target = other.dockAreaWidget()
+            if side is not area or target is None:
+                continue
+            n, _ = counts.get(id(target), (0, target))
+            counts[id(target)] = (n + 1, target)
+        return max(counts.values(), key=lambda c: c[0])[1] if counts else None
+
+    def place(self, d: ads.CDockWidget, area: Area, *, tab_group: str | None = None,
+              join_side: bool = False) -> None:
+        self._sides[d.objectName()] = area
         if area is Area.FLOATING:
             self.manager.addDockWidgetFloating(d)
             return
@@ -282,6 +305,11 @@ class DockHost(QObject):
                         and other.dockAreaWidget() is not None and not other.isAutoHide():
                     self.manager.addDockWidgetTabToArea(d, other.dockAreaWidget())
                     return
+        if join_side:  # on demand: a tab on its side, not one more column
+            target = self._side_area(area, d)
+            if target is not None:
+                self.manager.addDockWidgetTabToArea(d, target)
+                return
         self.manager.addDockWidget(_AREAS[area], d)
 
     def close_panel(self, name: str) -> bool:
