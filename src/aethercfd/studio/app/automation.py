@@ -314,6 +314,13 @@ class AppAutomation:
         vp = self._viewport(open_if_missing=True)
         return vp.set_look(look) if vp is not None else "no viewport"
 
+    def theme(self, mode: str) -> str:
+        """App theme: 'light', 'dark' or 'system' (follows Windows' app mode)."""
+        try:
+            return f"theme: {self.sv.set_theme(mode)} ({mode})"
+        except ValueError as exc:
+            return str(exc)
+
     def showcase(self) -> str:
         vp = self._viewport(open_if_missing=True)
         return vp.showcase() if vp is not None else "no viewport"

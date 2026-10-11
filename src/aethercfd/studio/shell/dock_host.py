@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QMainWindow, QStackedLayout, QWidget
 
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec, PlaceholderPanel
 from aethercfd.studio.theme.style import icon
+from aethercfd.studio.theme.tokens import T
 
 log = logging.getLogger(__name__)
 CF = ads.CDockManager.eConfigFlag
@@ -117,7 +118,7 @@ class DockHost(QObject):
         d.setObjectName("aether.workbench#main")
         lbl = QLabel("Open a case  ·  Ctrl+K to search  ·  View ▸ Add panel")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl.setStyleSheet("color: #6d6f76; font-size: 11pt;")
+        lbl.setStyleSheet(f"color: {T.text_faint}; font-size: 11pt;")
         d.setWidget(lbl)
         d.setFeature(ads.CDockWidget.DockWidgetFeature.NoTab, True)
         d.setFeature(ads.CDockWidget.DockWidgetFeature.DockWidgetClosable, False)

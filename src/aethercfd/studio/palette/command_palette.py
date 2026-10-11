@@ -129,6 +129,12 @@ class CommandPalette(QDialog):
         for t in TEMPLATES:
             out.append(PaletteItem(f"New case: {t.title}", "template", w.new_case_dialog, "msc.new-folder",
                                    t.summary, " ".join(sorted(t.tags)) + " template tutorial new case"))
+        for mode, title, ic in (("light", "Light", "mdi6.white-balance-sunny"),
+                                ("dark", "Dark", "mdi6.weather-night"),
+                                ("system", "System (follow Windows)", "mdi6.theme-light-dark")):
+            out.append(PaletteItem(f"Theme: {title}", "theme", lambda m=mode: sv.set_theme(m), ic,
+                                   "current" if sv.theme.mode == mode else "",
+                                   f"theme {mode} mode appearance colours colors light dark"))
         from aethercfd.studio.layout.recipes import PERSPECTIVES
         from aethercfd.studio.layout.screens import current_screens
 

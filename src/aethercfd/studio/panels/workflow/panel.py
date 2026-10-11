@@ -25,8 +25,8 @@ from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSp
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
 
-_STATUS = {"ok": ("msc.pass-filled", T.ok), "warn": ("msc.warning", T.warn), "todo": ("msc.circle-large-outline",
-           T.text_faint), "info": ("msc.info", T.info), "na": ("msc.circle-slash", T.text_faint)}
+_STATUS = {"ok": ("msc.pass-filled", "ok"), "warn": ("msc.warning", "warn"), "todo": ("msc.circle-large-outline",
+           "text_faint"), "info": ("msc.info", "info"), "na": ("msc.circle-slash", "text_faint")}  # (icon, token)
 _STAGE_PANEL = {"mesh": "aether.mesh_quality", "run": "aether.run_status", "post": "aether.viewport"}
 
 
@@ -75,9 +75,9 @@ class WorkflowPanel(Panel):
             self.tree.addTopLevelItem(QTreeWidgetItem([f"Could not assess the case: {exc}"]))
             return
         for i, st in enumerate(stages, start=1):
-            ic, col = _STATUS.get(st.status, _STATUS["info"])
+            ic, tok = _STATUS.get(st.status, _STATUS["info"])
             it = QTreeWidgetItem([f"{i:>2}  {st.title}"])
-            it.setIcon(0, icon(ic, col))
+            it.setIcon(0, icon(ic, getattr(T, tok)))
             it.setToolTip(0, st.summary)
             it.setData(0, Qt.ItemDataRole.UserRole + 1, st.id)
             sub = QTreeWidgetItem([st.summary])

@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from aethercfd.studio.theme.tokens import T
+
 if TYPE_CHECKING:
     from aethercfd.studio.app.services import AppServices
 
@@ -64,6 +66,9 @@ class Panel(QWidget):
     def __init__(self, ctx: PanelContext):
         super().__init__()
         self.ctx = ctx
+        from aethercfd.studio.theme.manager import THEME
+
+        THEME.changed.connect(self._theme_changed)  # bound slot: disconnected when the panel is destroyed
 
     # state (JSON-serialisable, versioned per panel type)
     def save_state(self) -> dict:
@@ -85,6 +90,17 @@ class Panel(QWidget):
     def can_close(self) -> bool:
         return True
 
+    def on_theme_changed(self) -> None:
+        """The theme switched (T now reads the new palette). Style sheets, rich-text labels, read-only
+        text, item colours and plots were already re-tinted; redraw what the panel paints itself."""
+
+    def _theme_changed(self, _name: str) -> None:
+        try:
+            self.on_theme_changed()
+        except RuntimeError as exc:  # a child widget already deleted: nothing left to redraw
+            if "deleted" not in str(exc):
+                raise
+
     def dispose(self) -> None:
         """Release GL contexts, PTYs, worker requests before the widget is destroyed."""
 
@@ -101,6 +117,6 @@ class PlaceholderPanel(Panel):
         msg = QLabel(f"Panel '{type_id}' is not available (plugin not installed?).\n"
                      "Its place in the layout is kept; close it to discard.")
         msg.setWordWrap(True)
-        msg.setStyleSheet("color: #9a9ca3; padding: 16px;")
+        msg.setStyleSheet(f"color: {T.text_dim}; padding: 16px;")
         lay.addWidget(msg)
         lay.addStretch(1)

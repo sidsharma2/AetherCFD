@@ -26,7 +26,7 @@ from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSp
 from aethercfd.studio.theme.style import icon, mono_font
 from aethercfd.studio.theme.tokens import T
 
-_ACTOR_COLOR = {"user": T.text, "script": T.info, "agent": T.warn, "external": T.text_dim}
+_ACTOR_COLOR = {"user": "text", "script": "info", "agent": "warn", "external": "text_dim"}  # tokens
 
 
 class JournalPanel(Panel):
@@ -82,7 +82,7 @@ class JournalPanel(Panel):
             it = QTreeWidgetItem([e.get("ts", "")[:19].replace("T", " "), e.get("actor", {}).get("kind", ""),
                                   e.get("command", ""), e.get("summary", "")])
             it.setData(0, Qt.ItemDataRole.UserRole, e)
-            it.setForeground(1, QColor(_ACTOR_COLOR.get(e.get("actor", {}).get("kind", ""), T.text)))
+            it.setForeground(1, QColor(getattr(T, _ACTOR_COLOR.get(e.get("actor", {}).get("kind", ""), "text"))))
             if not e.get("ok", True):
                 it.setForeground(3, QColor(T.error))
             self.list.addTopLevelItem(it)

@@ -88,6 +88,16 @@ class MainWindow(QMainWindow):
             self._persp_actions[p.id] = act
         persp.addSeparator()
         persp.addAction("Reset Current Perspective", self.layouts.reset)
+        theme = v.addMenu(icon("mdi6.theme-light-dark"), "Theme")
+        tgroup = QActionGroup(self)
+        self._theme_actions = {}
+        for mode, label in (("system", "System (follow Windows)"), ("light", "Light"), ("dark", "Dark")):
+            act = theme.addAction(label, lambda m=mode: self.services.set_theme(m))
+            act.setCheckable(True)
+            tgroup.addAction(act)
+            self._theme_actions[mode] = act
+        self._theme_actions.get(self.services.theme.mode, self._theme_actions["system"]).setChecked(True)
+        self.services.theme.mode_changed.connect(self._on_theme_mode)  # bound: disconnected with the window
         self.layouts.perspective_changed.connect(
             lambda pid: self._persp_actions.get(pid) and self._persp_actions[pid].setChecked(True))
         lock = v.addAction("Lock Layout")
@@ -106,6 +116,11 @@ class MainWindow(QMainWindow):
         h = mb.addMenu("&Help")
         h.addAction("About AetherCFD", lambda: QMessageBox.about(
             self, "AetherCFD Studio", f"AetherCFD Studio {__version__}\nDrives OpenFOAM without hiding it."))
+
+    def _on_theme_mode(self, mode: str) -> None:
+        act = self._theme_actions.get(mode)
+        if act is not None:
+            act.setChecked(True)
 
     def _fill_add_panel_menu(self) -> None:
         m = self.add_panel_menu

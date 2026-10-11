@@ -44,15 +44,31 @@ def _fmt(color: str, *, italic: bool = False, bold: bool = False) -> QTextCharFo
     return f
 
 
+_SYNTAX: dict[str, dict[str, QTextCharFormat]] = {}  # theme name -> formats
+
+
+def syntax_formats() -> dict[str, QTextCharFormat]:
+    """The highlighter's formats in the active theme's syntax colours."""
+    f = _SYNTAX.get(T.name)
+    if f is None:
+        f = _SYNTAX[T.name] = {
+            "comment": _fmt(T.syn_comment, italic=True), "string": _fmt(T.syn_string),
+            "number": _fmt(T.syn_number), "directive": _fmt(T.syn_directive), "macro": _fmt(T.syn_macro),
+            "key": _fmt(T.syn_key), "keyword": _fmt(T.syn_keyword), "dims": _fmt(T.syn_dims),
+            "code": _fmt(T.syn_code), "type": _fmt(T.syn_type),
+        }
+    return f
+
+
 class FoamHighlighter(QSyntaxHighlighter):
     """Per-line regexes plus block state for /* ... */ comments and #{ ... #} code blocks."""
 
     IN_COMMENT, IN_CODE = 1, 2
-    F: ClassVar[dict[str, QTextCharFormat]] = {
-        "comment": _fmt("#6a9955", italic=True), "string": _fmt("#ce9178"), "number": _fmt("#b5cea8"),
-        "directive": _fmt("#c586c0"), "macro": _fmt("#4ec9b0"), "key": _fmt("#9cdcfe"),
-        "keyword": _fmt("#569cd6"), "dims": _fmt("#808080"), "code": _fmt("#d7ba7d"), "type": _fmt("#4ec9b0"),
-    }
+
+    @property
+    def F(self) -> dict[str, QTextCharFormat]:
+        return syntax_formats()
+
     RULES: ClassVar[list] = [
         (re.compile(r"^\s*([A-Za-z_][\w.:<>(),|*-]*|\"[^\"]*\")(?=\s)"), "key", 1),
         (re.compile(r"\b(uniform|nonuniform|true|false|yes|no|on|off|none|default)\b"), "keyword", 0),
@@ -165,10 +181,18 @@ class CodeEditor(QPlainTextEdit):
         self.cursorPositionChanged.connect(self._highlight_current_line)
         self._update_gutter_width()
         self._highlight_current_line()
+        from aethercfd.studio.theme.manager import THEME
+
+        THEME.changed.connect(self._on_theme)  # bound slot: disconnected when the editor is destroyed
         for seq, sig in (("Ctrl+Z", self.undo_requested), ("Ctrl+Y", self.redo_requested),
                          ("Ctrl+Shift+Z", self.redo_requested), ("Ctrl+S", self.save_requested)):
             sc = QShortcut(QKeySequence(seq), self, context=Qt.ShortcutContext.WidgetWithChildrenShortcut)
             sc.activated.connect(sig.emit)
+
+    def _on_theme(self, _name: str = "") -> None:
+        self.highlighter.rehighlight()  # syntax colours of the new theme
+        self._apply_extra()
+        self._gutter.update()
 
     # ------------------------------------------------------------------ gutter
     def gutter_width(self) -> int:

@@ -27,8 +27,7 @@ from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSp
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
 
-_COLORS = {"delete": "#5a2a2e", "insert": "#24452f", "replace": "#4d4122"}
-_FILLER = "#2a2b30"
+_COLORS = {"delete": "diff_delete", "insert": "diff_insert", "replace": "diff_replace"}  # tokens
 
 
 MAX_DIFF_LINES = 60_000  # difflib is quadratic in the worst case: beyond this the GUI would freeze
@@ -154,9 +153,10 @@ class DiffPanel(Panel):
         sels = []
         doc = ed.document()
         for i, (text, kind) in enumerate(rows):
-            color = _FILLER if text is None else _COLORS.get(kind)
-            if color is None:
+            tok = "alt" if text is None else _COLORS.get(kind)
+            if tok is None:
                 continue
+            color = getattr(T, tok)
             sel = QTextEdit.ExtraSelection()
             fmt = QTextCharFormat()
             fmt.setBackground(QColor(color))

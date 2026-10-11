@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor
+from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -285,7 +285,7 @@ class EditorPanel(Panel):
         self.form.clear()
         if not parsed.ok:
             err = QTreeWidgetItem(["(raw text has errors — fix them to use the form)", "", ""])
-            err.setForeground(0, Qt.GlobalColor.red)
+            err.setForeground(0, QColor(T.error))
             self.form.addTopLevelItem(err)
             self.form.blockSignals(False)
             return
@@ -319,11 +319,11 @@ class EditorPanel(Panel):
             it.setData(0, Qt.ItemDataRole.UserRole, p)
             if m.key.is_pattern:
                 it.setToolTip(0, "pattern keyword: applies to every name it matches")
-                it.setForeground(0, Qt.GlobalColor.darkCyan)
+                it.setForeground(0, QColor(T.info))
             if prov is Provenance.LITERAL and not big and not self.readonly:
                 it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
             else:
-                it.setForeground(1, Qt.GlobalColor.gray)
+                it.setForeground(1, QColor(T.text_faint))
                 it.setToolTip(1, f"{prov.value}: double-click to jump to the source")
             parent.addChild(it)
 

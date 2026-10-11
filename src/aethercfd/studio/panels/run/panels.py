@@ -44,20 +44,22 @@ from PySide6.QtWidgets import (
 from aethercfd.commands.base import USER, Risk
 from aethercfd.core.runtime import module_argv
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
-from aethercfd.studio.theme.style import icon, mono_font
+from aethercfd.studio.theme.style import icon, mono_font, plot_defaults
 from aethercfd.studio.theme.tokens import T
 
-pg.setConfigOptions(antialias=True, background=T.base, foreground=T.text_dim)
-_STATE_COLOR = {"running": T.ok, "paused": T.warn, "stopping": T.warn, "staging": T.info, "launching": T.info,
-                "syncing": T.info, "finished": T.text_dim, "failed": T.error, "killed": T.warn, "lost": T.error,
-                "guard_stopped": T.error, "queued": T.text_dim}
-# a fixed, distinguishable color per field (stable across sessions)
-_PALETTE = ["#4a8fe7", "#e0605a", "#5fae6e", "#d8a53c", "#b07fd8", "#4ec9b0", "#e8875a", "#9cdcfe", "#c586c0",
-            "#d7ba7d", "#7f8c9a", "#f2cc60", "#56b6c2", "#98c379", "#e06c75", "#61afef"]
+plot_defaults()
+_STATE_TOKEN = {"running": "ok", "paused": "warn", "stopping": "warn", "staging": "info", "launching": "info",
+                "syncing": "info", "finished": "text_dim", "failed": "error", "killed": "warn", "lost": "error",
+                "guard_stopped": "error", "queued": "text_dim"}
+
+
+def _state_color(state: str) -> str:
+    return getattr(T, _STATE_TOKEN.get(state, "text"))
 
 
 def _color(name: str) -> str:
-    return _PALETTE[sum(map(ord, name)) % len(_PALETTE)]
+    """A fixed, distinguishable colour per field (stable across sessions; the theme's series palette)."""
+    return T.series[sum(map(ord, name)) % len(T.series)]
 
 
 # ============================================================================ Run panel
@@ -267,7 +269,7 @@ class RunPanel(Panel):
                                        " → ".join(st["app"] for st in r.steps))):
                 it = QTableWidgetItem(val)
                 if col == 1:
-                    it.setForeground(QColor(_STATE_COLOR.get(r.state, T.text)))
+                    it.setForeground(QColor(_state_color(r.state)))
                 self.history.setItem(row, col, it)
             if self.run_id is None and r.state in ("running", "paused", "staging", "stopping", "syncing"):
                 self.run_id = r.id
@@ -284,7 +286,7 @@ class RunPanel(Panel):
             sig = rec.signals_enabled
             self.btns["write_now"].setEnabled(active and sig)
             self.btns["stop_write"].setEnabled(active and sig)
-            col = _STATE_COLOR.get(rec.state, T.text)
+            col = _state_color(rec.state)
             extra = f"  ·  {rec.stop_reason}" if rec.stop_reason else ""
             self.state.setText(f"<span style='color:{col}'>● {rec.state}</span>  "
                                f"<span style='color:{T.text_dim}'>{rec.placement}{extra}</span>")
@@ -464,6 +466,10 @@ class ResidualsPanel(Panel):
                 self.curves[name] = c
             c.setData(x[: len(y)], y)
 
+    def on_theme_changed(self) -> None:
+        for name, c in self.curves.items():  # series colours are per theme
+            c.setPen(pg.mkPen(_color(name), width=1.4))
+
     def _pick_log(self) -> None:
         s = self.ctx.services.session
         start = str(s.root) if s else ""
@@ -532,13 +538,8 @@ class SolverLogPanel(Panel):
         self.view.setMaximumBlockCount(self.MAX_LINES)
         self.view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         lay.addWidget(self.view, 1)
-        self._fmt = {}
-        for k, c in (("fatal", T.error), ("warn", T.warn), ("time", T.accent), ("plain", T.text)):
-            f = QTextCharFormat()
-            f.setForeground(QColor(c))
-            if k == "time":
-                f.setFontWeight(600)
-            self._fmt[k] = f
+        self._fmt: dict[str, QTextCharFormat] = {}
+        self.on_theme_changed()
         self._pending: list[str] = []
         sv.follower.reset.connect(self._reset)
         sv.follower.lines.connect(self._on_lines)  # (not self._pending.extend: _flush swaps the list)
@@ -547,6 +548,15 @@ class SolverLogPanel(Panel):
         if sv.current_log:
             self._reset(sv.current_log)
             self._pending.extend(sv.follower.tail_lines)
+
+    def on_theme_changed(self) -> None:
+        """Formats for the lines still to come (the shown ones were re-tinted by the theme manager)."""
+        for k, c in (("fatal", T.error), ("warn", T.warn), ("time", T.accent), ("plain", T.text)):
+            f = QTextCharFormat()
+            f.setForeground(QColor(c))
+            if k == "time":
+                f.setFontWeight(600)
+            self._fmt[k] = f
 
     def _on_lines(self, lines: list) -> None:
         self._pending.extend(lines)

@@ -27,7 +27,7 @@ from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSp
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
 
-_SEV = {"ok": (T.ok, "OK"), "warn": (T.warn, "check"), "fail": (T.error, "FAIL")}
+_SEV = {"ok": ("ok", "OK"), "warn": ("warn", "check"), "fail": ("error", "FAIL")}  # (token, label)
 
 
 class MeshQualityPanel(Panel):
@@ -100,9 +100,9 @@ class MeshQualityPanel(Panel):
         if r.directions:
             self.table.addTopLevelItem(QTreeWidgetItem(["Dimensions", r.directions.replace("Mesh has ", ""), ""]))
         for c in r.checks:
-            col, label = _SEV.get(c.severity, (T.text, c.severity))
+            tok, label = _SEV.get(c.severity, ("text", c.severity))
             it = QTreeWidgetItem([c.name, c.value, label])
-            it.setForeground(2, QColor(col))
+            it.setForeground(2, QColor(getattr(T, tok)))
             it.setData(0, Qt.ItemDataRole.UserRole, c)
             self.table.addTopLevelItem(it)
         for st in r.sets:

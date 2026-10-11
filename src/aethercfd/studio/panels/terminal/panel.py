@@ -4,6 +4,7 @@ one OpenFOAM fork sourced. Work exactly as in your usual terminal; the GUI never
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import shlex
@@ -12,7 +13,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QToolButton, QVBoxLayout
 
 from aethercfd.core.paths import openfoam_path_safety, win_to_wsl
@@ -22,6 +23,21 @@ from aethercfd.studio.theme.tokens import T
 
 log = logging.getLogger(__name__)
 RES = Path(__file__).resolve().parents[2] / "resources"
+# ANSI colours: xterm.js' own (Tango) on dark; on light, darker hues that stay readable on a white page
+_ANSI_DARK = ("#2e3436", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#75507b", "#06989a", "#d3d7cf",
+              "#555753", "#ef2929", "#8ae234", "#fce94f", "#729fcf", "#ad7fa8", "#34e2e2", "#eeeeec")
+_ANSI_LIGHT = ("#000000", "#c4302b", "#18794e", "#8a6a00", "#0451a5", "#a3289e", "#0b7f99", "#5c5f66",
+               "#6e7178", "#d13a34", "#1f8a3c", "#9a7b00", "#2a6fd1", "#bc05bc", "#0598bc", "#8a8d93")
+_ANSI_NAMES = ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white", "brightBlack", "brightRed",
+               "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite")
+
+
+def xterm_theme() -> dict:
+    """xterm.js ITheme of the active app theme."""
+    theme = {"background": T.base, "foreground": T.text, "cursor": T.text, "cursorAccent": T.base,
+             "selectionBackground": T.accent_soft}
+    theme.update(zip(_ANSI_NAMES, _ANSI_DARK if T.dark else _ANSI_LIGHT, strict=True))
+    return theme
 
 
 class _PtyReader(QThread):
@@ -126,6 +142,8 @@ class TerminalPanel(Panel):
         self.channel = QWebChannel(self.view.page())
         self.channel.registerObject("bridge", self.bridge)
         self.view.page().setWebChannel(self.channel)
+        self.view.page().setBackgroundColor(QColor(T.base))
+        self.view.loadFinished.connect(lambda _ok: self.on_theme_changed())
         self.view.setUrl(QUrl.fromLocalFile(str(RES / "xterm" / "terminal.html")))
         lay.addWidget(self.view, 1)
         self.pty = None
@@ -138,6 +156,11 @@ class TerminalPanel(Panel):
         sv.backend_ready.connect(self._on_backend)  # bound slots: disconnected when this terminal is closed
         sv.case_changed.connect(self._on_case)
         self._fill_forks()
+
+    def on_theme_changed(self) -> None:
+        self.view.page().setBackgroundColor(QColor(T.base))
+        self.view.page().runJavaScript(
+            f"window.setTheme && window.setTheme({json.dumps(xterm_theme())}, {1 if T.dark else 4.5})")
 
     # ------------------------------------------------------------------ forks / launch
     def _fill_forks(self) -> None:
