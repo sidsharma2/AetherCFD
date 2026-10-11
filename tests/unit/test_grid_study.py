@@ -203,3 +203,21 @@ def test_dat_values_skip_non_quantities(tmp_path):
         d.mkdir(parents=True)
         (d / f"{stem}.dat").write_text("# Time a\n1 2.5\n")
     assert gs.dat_values(tmp_path) == {"f/forces:a": 2.5}
+
+
+def test_iterative_convergence_is_judged_on_the_quantity(tmp_path):
+    root = _case(tmp_path)
+    h = [(1 / n) ** 0.5 for n in (27500, 12225, 5430)]
+    phi = tuple(10 + 3 * x**2 for x in h)
+    e_min = min(abs(phi[0] - phi[1]), abs(phi[1] - phi[2]))
+    q = "mean p on inlet"
+    levels = [{"name": "fine", "converged": False, "changes": {q: 0.01 * e_min}},
+              {"name": "medium", "converged": True, "changes": {q: 0.0}},
+              {"name": "coarse", "converged": True}]
+    _record_full(root, phi, levels)
+    v = gs.study_gate(load_case(root), {})
+    assert v.gate.ok and any("residuals stalled but the quantity is steady" in e for e in v.gate.evidence)
+    levels[0]["changes"] = {q: 0.5 * e_min}  # still drifting: the iterative error rivals the mesh effect
+    _record_full(root, phi, levels)
+    v = gs.study_gate(load_case(root), {})
+    assert not v.gate.ok and "fine" in " ".join(v.gate.evidence)

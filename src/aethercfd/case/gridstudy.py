@@ -176,8 +176,10 @@ def levels(case_root: Path) -> list[tuple[str, Path]]:
 
 
 # ============================================================================ quantities of interest
-def patch_means(case_root: Path, fields: tuple[str, ...] = ("p", "p_rgh", "T")) -> dict[str, float]:
-    """Area-weighted mean of scalar fields on every open (non-wall, non-constraint) patch, latest time."""
+def patch_means(case_root: Path, fields: tuple[str, ...] = ("p", "p_rgh", "T"), *, time: str | None = None
+                ) -> dict[str, float]:
+    """Area-weighted mean of scalar fields on every open (non-wall, non-constraint) patch at ``time``
+    (default: the latest result)."""
     import vtk
     from vtk.util import numpy_support as nps
 
@@ -196,7 +198,7 @@ def patch_means(case_root: Path, fields: tuple[str, ...] = ("p", "p_rgh", "T")) 
     if not want:
         return {}
     present = [f for f in fields if f in meta.cell_arrays]
-    ds = fr.read(float(case.latest_result_time), fields=present, patches=want)
+    ds = fr.read(float(time or case.latest_result_time), fields=present, patches=want)
     out: dict[str, float] = {}
     for path, leaf in iter_leaves(ds):
         patch = path.rsplit("/", 1)[-1]
@@ -222,9 +224,10 @@ def patch_means(case_root: Path, fields: tuple[str, ...] = ("p", "p_rgh", "T")) 
     return out
 
 
-def dat_values(case_root: Path) -> dict[str, float]:
+def dat_values(case_root: Path, *, earlier: bool = False) -> dict[str, float]:
     """Last value of every scalar column of the function-object output (forces, forceCoeffs,
-    surfaceFieldValue, ...): postProcessing/<object>/<time>/<file>.dat, newest time folder."""
+    surfaceFieldValue, ...): postProcessing/<object>/<time>/<file>.dat, newest time folder. ``earlier``: the
+    value 10 % of the rows before the end instead (to judge iterative convergence)."""
     pp = Path(case_root) / "postProcessing"
     out: dict[str, float] = {}
     if not pp.is_dir():
@@ -237,7 +240,7 @@ def dat_values(case_root: Path) -> dict[str, float]:
             # not solution quantities: residuals, field extremes (mesh-dependent by nature), y+ (a mesh property)
             if dat.stem in _NOT_QOI or dat.stat().st_size > 64 * 2**20:
                 continue
-            header, last = None, None
+            header, rows = None, []
             with dat.open(encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     s = line.strip()
@@ -246,9 +249,10 @@ def dat_values(case_root: Path) -> dict[str, float]:
                     if s.startswith("#"):
                         header = s.lstrip("#").split()
                     else:
-                        last = s
-            if last is None:
+                        rows.append(s)
+            if not rows or (earlier and len(rows) < 10):
                 continue
+            last = rows[int(0.9 * (len(rows) - 1))] if earlier else rows[-1]
             vals = last.replace("(", " ").replace(")", " ").split()
             cols = header if header and len(header) == len(vals) else [f"col{i}" for i in range(len(vals))]
             for c, v in list(zip(cols, vals, strict=False))[1:]:  # first column is the time
@@ -265,6 +269,18 @@ def quantities(case_root: Path) -> dict[str, float]:
     q = patch_means(case_root)
     q.update(dat_values(case_root))
     return q
+
+
+def quantity_change(case_root: Path, latest: dict[str, float]) -> dict[str, float]:
+    """|change| of each quantity over the end of the run: patch means at the previous write time, .dat values
+    10 % of the rows before the end. Celik et al.: the iterative error must be far below the mesh effect."""
+    case = load_case(case_root)
+    results = [t for _v, t in case.times if t != "0"]
+    earlier: dict[str, float] = {}
+    if len(results) >= 2:
+        earlier.update(patch_means(case_root, time=results[-2]))
+    earlier.update(dat_values(case_root, earlier=True))
+    return {k: abs(latest[k] - v) for k, v in earlier.items() if k in latest}
 
 
 # ============================================================================ Richardson / GCI
@@ -439,6 +455,8 @@ def evaluate(case_root: Path) -> dict:
     for d in lv:  # wall y+ per level: with wall functions it must stay in the log layer on every mesh
         yp = yplus_from_results(load_case(d["root"]))
         d["yplus_mean"] = (sum(m for _a, m, _b in yp.values()) / len(yp)) if yp else None
+        ch = quantity_change(Path(d["root"]), q[d["name"]])
+        d["changes"] = {k: v for k, v in ch.items() if k in shared}
     nut = _nut_wall_type(case)
     return {"format": 1, "evaluated_at": datetime.now(UTC).isoformat(timespec="seconds"), "dim": dim,
             "levels": lv, "nut_wall": nut,
@@ -550,9 +568,23 @@ def study_gate(case: Case, answers: dict) -> StudyVerdict:
         ev.append(f"GCI_fine = {100 * r['gci_fine']:.3g} %" + (
             f", GCI_coarse = {100 * r['gci_coarse']:.3g} %" if r.get("gci_coarse") is not None else "") + (
             f", asymptotic-range ratio {r['asymptotic']:.3g} (≈ 1 expected)" if r.get("asymptotic") else ""))
-    unconv = [lvl["name"] for lvl in rec.get("levels", []) if lvl.get("converged") is False]
+    # iterative convergence judged on THIS quantity (Celik et al.): its change over the end of each run must be far
+    # below the differences between the meshes; the residual verdict is used only when there is no history
+    e_min = min(abs(r["phi"][0] - r["phi"][1]), abs(r["phi"][1] - r["phi"][2]))
+    unconv, stalled = [], []
+    for lvl in rec.get("levels", []):
+        change = (lvl.get("changes") or {}).get(r["quantity"])
+        if change is not None:
+            if change > 0.1 * e_min:
+                unconv.append(lvl["name"])
+            elif lvl.get("converged") is False:
+                stalled.append(f"{lvl['name']} (Δ {change:.3g} over the last writes vs {e_min:.3g} between meshes)")
+        elif lvl.get("converged") is False:
+            unconv.append(lvl["name"])
     if unconv:
         ev.append(f"not iteratively converged: {', '.join(unconv)} (iterative error contaminates the GCI)")
+    if stalled:
+        ev.append("residuals stalled but the quantity is steady: " + "; ".join(stalled))
     yp = {lvl["name"]: lvl.get("yplus_mean") for lvl in rec.get("levels", []) if lvl.get("yplus_mean")}
     wall_fn = (rec.get("nut_wall") or "") in ("nutkWallFunction", "nutUWallFunction", "nutWallFunction")
     # wall functions whose first cell slides out of the log layer as the mesh refines
