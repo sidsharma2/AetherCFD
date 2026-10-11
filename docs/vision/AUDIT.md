@@ -285,7 +285,8 @@ reach the long-term vision.
      drive, discovered pvbatch/plot-style paths.
    * A first-run setup page (distro, case roots, cfd_agents interpreter).
    * Finish multi-provider support.
-   * Ship `_runner.py` as package data in the PyInstaller spec, or the frozen app cannot start the agents.
+   * Rebuild the packaged app: the spec now ships the cfd_agents `_runner.py` (like `pinn_worker.py`), but the
+     installed exe predates this branch.
 8. **Templates.** Premixed flame (e.g. a laminar flame tube), compressible nozzle, MRF mixer, plus a
    verification case per template with a known answer (benchmark comparison).
 9. **Physics graph view.** Draw the stage DAG with object-level nodes (fields, models, schemes)

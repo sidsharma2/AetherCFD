@@ -161,6 +161,20 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
         sw.step("pre-run checks", lambda: ch.run() or "started", timeout=180,
                 until=lambda: ch.summary.text() not in ("Checking…", ""), detail=lambda: ch.summary.text())
 
+        # ------------------------------------------------------------ guided workflow (read-only: no answers applied)
+        wf = sw.panel("aether.workflow")
+        sw.step("workflow assesses the 12 stages", lambda: wf.refresh_now() or wf.progress.text())
+
+        def visit_stages():
+            for st in wf.stages:
+                wf.select_stage(st.id)
+                if wf.current != st.id:
+                    raise AssertionError(f"could not show stage {st.id}")
+            return ", ".join(f"{s.id}:{s.status}" for s in wf.stages)
+
+        sw.step("workflow shows every stage", visit_stages)
+        sw.shot("workflow")
+
         # ------------------------------------------------------------ journal, diff
         jn = sw.panel("aether.journal")
         sw.step("journal reload", lambda: jn.reload() or "reloaded")

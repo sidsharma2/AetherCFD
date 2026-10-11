@@ -38,6 +38,8 @@ DEFAULT_PYTHON = Path(r"D:\Research-Software\envs\nooa-pilot-2026-09-01\Scripts\
 RUNNER = Path(__file__).with_name("_runner.py")
 MARK = "@@AETHER_RESULT "
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+PROBE_TTL = 600.0
+_PROBES: dict[tuple[str, str], tuple[float, Availability]] = {}
 
 
 @dataclass(frozen=True)
@@ -179,12 +181,18 @@ class CfdAgents:
         return out
 
     def probe(self, *, refresh: bool = False) -> Availability:
+        """What can run here. Cached per (interpreter, root) for PROBE_TTL s: the agents' environment takes
+        tens of seconds to import, and every panel/copilot call makes a new CfdAgents."""
+        key = (str(self.python), str(self.root))
+        hit = _PROBES.get(key)
+        if not refresh and hit is not None and time.monotonic() - hit[0] < PROBE_TTL:
+            self._probe = hit[1]
         if self._probe is not None and not refresh:
             return self._probe
         probs = self.problems()
         av = Availability(not probs, str(self.python), str(self.root), problems=probs)
         if not probs:
-            ok, res, err, _s, _argv = self._call("probe", {}, timeout=90)
+            ok, res, err, _s, _argv = self._call("probe", {}, timeout=max(self.timeout, 240))
             if not ok:
                 av.ok = False
                 av.problems.append(f"the cfd_agents environment could not start: {err}")
@@ -195,6 +203,8 @@ class CfdAgents:
                     av.problems.append(f"cfd_agents does not import: {res['package_error']}")
                 av.agents = res.get("agents", {})
         self._probe = av
+        if av.ok or not any("timed out" in p for p in av.problems):  # a slow machine is not a verdict
+            _PROBES[key] = (time.monotonic(), av)
         return av
 
     def ollama_running(self) -> bool:
