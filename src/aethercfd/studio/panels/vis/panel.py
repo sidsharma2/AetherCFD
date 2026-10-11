@@ -41,11 +41,12 @@ AXES = ["x", "y", "z"]
 METRICS = ["nonOrthogonality", "skewness", "aspectRatio", "volumeRatio", "cellVolume"]
 TITLES = {"qcriterion": "Q-criterion vortices (GPU)", "isosurface": "Isosurface (GPU)", "slice": "Slice",
           "clip": "Clip", "threshold": "Threshold", "contour": "Contour (VTK)", "streamlines": "Streamlines",
-          "glyphs": "Vector glyphs", "schlieren": "Schlieren", "quality": "Mesh quality"}
+          "glyphs": "Vector glyphs", "schlieren": "Schlieren", "quality": "Mesh quality",
+          "pathlines": "Pathlines (saved times)"}
 ICONS = {"slice": "mdi6.box-cutter", "clip": "mdi6.content-cut", "threshold": "mdi6.filter-outline",
          "contour": "mdi6.chart-bell-curve", "streamlines": "mdi6.waves", "glyphs": "mdi6.arrow-top-right",
          "schlieren": "mdi6.blur", "quality": "mdi6.grid", "qcriterion": "mdi6.weather-tornado",
-         "isosurface": "mdi6.layers-outline"}
+         "isosurface": "mdi6.layers-outline", "pathlines": "mdi6.chart-timeline-variant"}
 # (key, label, kind, default); kinds: axis frac bool field vfield int float optfloat text choice:<a|b>
 PARAMS: dict[str, list[tuple[str, str, str, object]]] = {
     "qcriterion": [("level", "Q level [1/s²] (blank = auto)", "optfloat", None),
@@ -58,7 +59,9 @@ PARAMS: dict[str, list[tuple[str, str, str, object]]] = {
                    ("cmap", "Colours", "choice:turbo|viridis|inferno|plasma|coolwarm|gray", "viridis"),
                    ("opacity", "Opacity", "frac", 1.0), ("smooth", "Presentation smoothing (iterations)", "int0", 0), ("subdivide", "Presentation subdivision (0-2)", "int0", 0),
                    ("backend", "Compute on", "choice:auto|cuda|cpu", "auto")],
-    "slice": [("axis", "Normal", "axis", "z"), ("pos", "Position", "frac", 0.5)],
+    "slice": [("axis", "Normal", "axis", "z"), ("pos", "Position", "frac", 0.5),
+              ("stack", "Parallel slices (0 = one)", "int0", 0), ("contours", "Contour lines (0 = none)", "int0", 0),
+              ("arrows", "In-plane arrows", "bool", False), ("edges", "Mesh edges", "bool", False)],
     "clip": [("axis", "Normal", "axis", "x"), ("pos", "Position", "frac", 0.5), ("invert", "Keep other side", "bool",
                                                                                   False),
              ("crinkle", "Whole cells", "bool", False)],
@@ -70,7 +73,11 @@ PARAMS: dict[str, list[tuple[str, str, str, object]]] = {
                 ("smooth", "Presentation smoothing (iterations)", "int0", 0), ("subdivide", "Presentation subdivision (0-2)", "int0", 0)],
     "streamlines": [("field", "Vector field", "vfield", "U"), ("seed", "Seeds", "choice:line|plane|sphere", "line"),
                     ("axis", "Seed normal", "axis", "x"), ("pos", "Seed position", "frac", 0.05),
-                    ("n", "Seed count", "int", 50), ("max_length", "Max length (x diagonal)", "float", 3.0)],
+                    ("n", "Seed count", "int", 50), ("max_length", "Max length (x diagonal)", "float", 3.0),
+                    ("tubes", "Tubes", "bool", False)],
+    "pathlines": [("field", "Vector field", "vfield", "U"), ("seed", "Seeds", "choice:line|plane|sphere", "line"),
+                  ("axis", "Seed normal", "axis", "x"), ("pos", "Seed position", "frac", 0.05),
+                  ("n", "Seed count", "int", 50), ("tubes", "Tubes", "bool", False)],
     "glyphs": [("field", "Vector field", "vfield", "U"), ("max_points", "Max arrows", "int", 2000),
                ("scale", "Scale", "float", 1.0)],
     "schlieren": [("source", "Density field", "field", "rho"), ("k", "Contrast k", "float", 12.0),
@@ -283,6 +290,9 @@ class VisPanel(Panel):
 
         def setv(v):
             s[key] = v
+            if s.get("type") in ("slice", "clip") and key in ("axis", "pos"):
+                for k in ("origin", "normal", "through"):  # a plane set by points / dragging gives way
+                    s.pop(k, None)
             self.list.currentItem().setText(self._label(s)) if self.list.currentItem() else None
             self._apply_timer.start()
 
@@ -328,7 +338,8 @@ class VisPanel(Panel):
             w.textEdited.connect(parse_list)
         elif kind.startswith("choice:"):
             w = QComboBox()
-            w.addItems(kind.split(":", 1)[1].split("|"))
+            items = kind.split(":", 1)[1].split("|")
+            w.addItems(items if val is None or str(val) in items else [*items, str(val)])  # e.g. seeds on patches
             w.setCurrentText(str(val))
             w.currentTextChanged.connect(setv)
         else:

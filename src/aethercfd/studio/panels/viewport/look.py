@@ -100,6 +100,21 @@ def style_bar(bar: vtk.vtkScalarBarActor, look: str) -> None:
             tp.ShadowOff()
 
 
+def style_second_bar(bar: vtk.vtkScalarBarActor, look: str) -> None:
+    """The flow paths' own colour bar, where the main one is not: along the bottom in Studio (the main bar
+    is at the right), at the right in Classic (the main bar is along the bottom)."""
+    style_bar(bar, "classic" if look == "studio" else "studio")
+    if look == "studio":
+        _text(bar.GetLabelTextProperty(), 12, (0.80, 0.83, 0.90))
+        _text(bar.GetTitleTextProperty(), 13, (0.93, 0.95, 1.0), semibold=True)
+        bar.SetPosition(0.25, 0.02)
+        bar.SetWidth(0.45)
+    else:
+        for tp in (bar.GetLabelTextProperty(), bar.GetTitleTextProperty()):
+            tp.SetFontFamilyToArial()
+            tp.SetColor(0.84, 0.84, 0.84)
+
+
 def make_hud() -> vtk.vtkTextActor:
     t = vtk.vtkTextActor()
     t.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()

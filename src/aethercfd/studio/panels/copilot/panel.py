@@ -145,7 +145,8 @@ class _UiHooks(QObject):
         ev.wait(30)
         return str(box[0]) if box else "the GUI did not answer"
 
-    def show_field(self, field: str, time: str | None, slice_axis: str | None, regions=None) -> str:
+    def show_field(self, field: str, time: str | None, slice_axis: str | None, regions=None,
+                   smoothing: str | None = None) -> str:
         def go():
             host, spec = self.sv.host, self.sv.panels.get("aether.viewport")
             # the viewport the other viewport tools (regions, stages, showcase) act on: the active one
@@ -155,7 +156,7 @@ class _UiHooks(QObject):
                 panel = host.build_panel(d.objectName())
             if panel is None or not hasattr(panel, "show_field"):
                 return "no viewport available"
-            return panel.show_field(field, time, slice_axis, regions)
+            return panel.show_field(field, time, slice_axis, regions, smoothing)
         return self._call(go)
 
     def open_file(self, path: Path, line: int | None) -> str:
@@ -226,8 +227,32 @@ class _UiHooks(QObject):
     def select_file(self, path: str) -> str:
         return self._auto("select_file", path)
 
-    def add_stage(self, kind: str, params: dict, regions=None) -> str:
-        return self._auto("add_stage", kind, params, regions)
+    def add_stage(self, kind: str, params: dict, regions=None, smoothing: str | None = None) -> str:
+        return self._auto("add_stage", kind, params, regions, smoothing)
+
+    def viewport_smoothing(self, mode: str, edges: bool | None) -> str:
+        return self._auto("viewport_smoothing", mode, edges)
+
+    def section(self, *args) -> str:
+        return self._auto("section", *args)
+
+    def cutaway(self, axis: str) -> str:
+        return self._auto("cutaway", axis)
+
+    def bookmark(self, action: str, name: str):
+        return self._auto("bookmark", action, name)
+
+    def quad(self, on: bool) -> str:
+        return self._auto("quad", on)
+
+    def flow_paths(self, *args) -> str:
+        return self._auto("flow_paths", *args)
+
+    def line_probe(self, p1, p2, field: str | None, n: int) -> str:
+        return self._auto("line_probe", p1, p2, field, n)
+
+    def line_status(self):
+        return self._auto("line_status")
 
     def stage_status(self, sid: str):
         return self._auto("stage_status", sid)

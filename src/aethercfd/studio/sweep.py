@@ -27,6 +27,13 @@ def _fail(msg: str):
     raise AssertionError(msg[-400:] or "returned nothing")
 
 
+def sx_axis(vp) -> str:
+    """The axis a cut-away of this domain should be normal to: the thinnest extent shows the most inside."""
+    from aethercfd.results.sections import thinnest_axis
+
+    return thinnest_axis(vp.bounds) if vp.bounds is not None else "x"
+
+
 class Sweep:
     def __init__(self, app, win, out: Path):
         self.app, self.win, self.sv, self.out = app, win, win.services, out
@@ -282,6 +289,80 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
                     sw.view_shot("showcase_solids", vp)
                 sw.step("viewport: all regions again", lambda: auto.viewport_regions("all")["result"], timeout=300,
                         until=lambda: getattr(vp, "drawn_gen", -1) == vp.gen and vp.region_sel is None)
+
+            # -------------------------------------------------------- Smooth / Cells, sections, views, flow paths
+            def drawn():
+                return getattr(vp, "drawn_gen", -1) == vp.gen
+
+            def stage_ok(prefix: str):
+                hits = {k: i for k, i in vp.stage_info.items() if k.startswith(prefix) and "@" not in k}
+                if not hits or not all(i.get("cells") for i in hits.values()):
+                    _fail(f"{prefix}: {hits or vp.stage_info}")
+                return "; ".join(f"{i['label']} ({i['cells']:,} cells) {' '.join(i.get('notes', []))[:120]}"
+                                 for i in hits.values())
+
+            sw.step("sections: three orthogonal planes with contours", lambda: auto.section(
+                "ortho3", show={"contours": True}), timeout=400, until=drawn, detail=lambda: stage_ok("stage:sec"))
+            sw.shot("sections_smooth")
+            sw.view_shot("sections_smooth", vp)
+            sw.step("smoothing: cells with mesh edges", lambda: auto.viewport_smoothing("cells", True), timeout=400,
+                    until=drawn, detail=lambda: f"{vp.smoothing}; bar '{vp.scalar_bar.GetTitle()}'; "
+                                                f"{stage_ok('stage:sec')}")
+            sw.shot("sections_cells")
+            sw.view_shot("sections_cells", vp)
+            sw.step("smoothing: back to the look's default", lambda: auto.viewport_smoothing("auto"), timeout=400,
+                    until=drawn, detail=lambda: vp.smoothing if vp.smoothing == "smooth" else _fail(vp.smoothing))
+            sw.step("sections: slice stack", lambda: auto.section("stack", n=4), timeout=400, until=drawn,
+                    detail=lambda: stage_ok("stage:sec"))
+            sw.step("sections: a stack is not dragged", lambda: vp.drag_section(True) if vp.drag_section(
+                True).startswith("a slice stack") else _fail("a stack got drag handles"))
+            sw.step("sections: plane by point + normal", lambda: auto.section(
+                "plane", origin=[(vp.bounds[0] + vp.bounds[1]) / 2, (vp.bounds[2] + vp.bounds[3]) / 2,
+                                 (vp.bounds[4] + vp.bounds[5]) / 2], normal=[1, 1, 0], show={"arrows": True}),
+                    timeout=400, until=drawn, detail=lambda: stage_ok("stage:sec"))
+            sw.step("sections: drag handles", lambda: vp.drag_section(True), timeout=30,
+                    detail=lambda: "handles on" if vp._plane_widget is not None else _fail("no plane widget"))
+            vp.drag_section(False)
+            sw.step("sections: open in 2D", vp.open_section_2d, timeout=400,
+                    until=lambda: "stage:sec2d" in getattr(sv.host.build_panel("aether.viewport#sec2d"), "stage_info",
+                                                           {}),
+                    detail=lambda: str(sv.host.build_panel("aether.viewport#sec2d").stage_info.get("stage:sec2d")))
+            sv.host.close_panel("aether.viewport#sec2d")
+            sv.set_active_viewport(vp)
+            b = vp.bounds
+            sw.step("line probe through the domain", lambda: auto.line_probe(
+                [b[0], (b[2] + b[3]) / 2, (b[4] + b[5]) / 2], [b[1], (b[2] + b[3]) / 2, (b[4] + b[5]) / 2], None, 200),
+                timeout=300, until=lambda: vp.last_line is not None,
+                detail=lambda: (f"{vp.last_line['inside']} of {vp.last_line['n']} samples inside, "
+                                f"{vp.last_line['association']}") if vp.last_line.get("inside") else
+                _fail(str(vp.last_line)))
+            with contextlib.suppress(Exception):
+                vp._line_dialog.close()
+            sw.step("cut-away in a glass shell", lambda: auto.cutaway(sx_axis(vp)), timeout=400, until=drawn,
+                    detail=lambda: stage_ok("stage:cut"))
+            sw.shot("cutaway")
+            sw.view_shot("cutaway", vp)
+            sw.step("remove sections", lambda: auto.section("mid-z", clear=True), timeout=400, until=drawn)
+            inlets = vp.inlet_paths()
+            sw.step(f"flow paths {'from the inlets' if inlets else 'from a plane'}", lambda: auto.flow_paths(
+                "inlets" if inlets else "plane", color_by="residence_time"), timeout=600, until=drawn,
+                detail=lambda: stage_ok("stage:flow") + f"; bar '{vp.scalar_bar.GetTitle()}'")
+            sw.shot("flow_paths")
+            sw.view_shot("flow_paths", vp)
+            sw.step("pathlines through the saved times", lambda: vp.set_pathlines(True), timeout=900, until=drawn,
+                    detail=lambda: stage_ok("stage:flow"))
+            sw.step("remove flow paths", lambda: auto.flow_paths(clear=True), timeout=400, until=drawn)
+            for view in ("front", "top", "right", "iso"):
+                sw.step(f"standard view {view}", lambda v=view: auto.camera(v))
+            sw.step("save a view", lambda: auto.bookmark("save", "sweep view"))
+            sw.step("restore a saved view", lambda: auto.camera("sweep view"))
+            sw.step("render every saved view", lambda: auto.bookmark("render", "") if isinstance(
+                auto.bookmark("render", ""), list) else _fail("no renders"), timeout=300)
+            sw.step("delete a saved view", lambda: auto.bookmark("delete", "sweep view"))
+            sw.step("quad view on", lambda: auto.quad(True), detail=lambda: f"{len(vp._quad or [])} extra views")
+            sw.shot("quad_view")
+            sw.view_shot("quad_view", vp)
+            sw.step("quad view off", lambda: auto.quad(False))
             gif = sw.out / "sweep_turntable.gif"
             sw.step("turntable animation (GIF)", lambda: vp.record_animation("turntable", str(gif), frames=12, fps=12)
                     if Path(vp.record_animation("turntable", str(gif), frames=12, fps=12)).is_file() else

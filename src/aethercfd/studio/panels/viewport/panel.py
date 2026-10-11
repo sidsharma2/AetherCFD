@@ -14,6 +14,7 @@ from pathlib import Path
 import vtk
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from aethercfd.results.foam_reader import display_name
 from aethercfd.studio.panels.viewport import look as lk
+from aethercfd.studio.panels.viewport.views import ViewToolsMixin
 from aethercfd.studio.panels.viewport.worker import shared_worker
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
 from aethercfd.studio.theme.style import icon
@@ -92,11 +94,29 @@ def _tool(ic: str, tip: str, *, checkable: bool = False) -> QToolButton:
     return b
 
 
-class ViewportPanel(Panel):
+def _text_tool(text: str, tip: str) -> QToolButton:
+    b = QToolButton(text=text, toolTip=tip, checkable=True, autoRaise=True)
+    b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+    return b
+
+
+def _menu_tool(ic: str, text: str, tip: str) -> QToolButton:
+    b = _tool(ic, tip)
+    b.setText(text)
+    b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    b.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+    return b
+
+
+SMOOTHINGS = ("smooth", "cells")
+
+
+class ViewportPanel(ViewToolsMixin, Panel):
     STATE_VERSION = 1
     _req_meta = Signal(str, int, dict)
     _req_load = Signal(str, int, dict)
     _req_probe = Signal(str, int, dict)
+    _req_line = Signal(str, int, dict)
     stages_updated = Signal(dict)  # stage block -> info (scalar, range, notes, cells) after each load
 
     def __init__(self, ctx: PanelContext):
@@ -139,6 +159,16 @@ class ViewportPanel(Panel):
         self.look_box = QComboBox(toolTip="Look: Studio = AetherCFD's post-processing (smooth shading, outlines, "
                                           "depth); Classic = ParaView-style true cell colours")
         self.look_box.addItems(["Studio", "Classic"])
+        # Smooth / Cells: how a cell-centred field is drawn, independent of the look
+        self.btn_smooth = _text_tool("Smooth", "Smooth: colours, sections and contours interpolated from the cell "
+                                               "values (no mesh stair-steps); labelled 'smoothed'")
+        self.btn_cells = _text_tool("Cells", "Cells: every cell's own value, contours per cell (the stair-steps "
+                                             "are the mesh resolution)")
+        self._smooth_group = QButtonGroup(self)
+        self._smooth_group.setExclusive(True)
+        self._smooth_group.addButton(self.btn_smooth)
+        self._smooth_group.addButton(self.btn_cells)
+        self.btn_edges = _tool("mdi6.grid", "Mesh edges on the surfaces and sections (Cells mode)", checkable=True)
         self.cmap = QComboBox(toolTip="Colour map (Studio picks one per field until you choose)")
         self.cmap.addItems(CMAPS)
         self.lock = QCheckBox("Lock range", toolTip="Keep the colour range when the time changes")
@@ -155,14 +185,19 @@ class ViewportPanel(Panel):
         self.block_regions: dict[str, str] = {}  # drawn block -> its region (per-region depth offsets)
         for w in (QLabel("Field"), self.field, self.comp, self.region_btn, QLabel("  t"), self.prev_t, self.time,
                   self.next_t,
-                  self.last_t, self.follow, QLabel("  "), self.look_box, self.rep, self.cmap, self.lock):
+                  self.last_t, self.follow, QLabel("  "), self.look_box, self.btn_smooth, self.btn_cells,
+                  self.btn_edges, self.rep, self.cmap, self.lock):
             bar.addWidget(w)
         bar.addStretch(1)
         self.btn_fit = _tool("msc.screen-full", "Fit view")
-        self.btn_x, self.btn_y, self.btn_z = (_tool("mdi6.axis-x-arrow", "Look along X"),
-                                             _tool("mdi6.axis-y-arrow", "Look along Y"),
-                                             _tool("mdi6.axis-z-arrow", "Look along Z"))
-        self.btn_iso = _tool("mdi6.cube-scan", "Isometric")
+        self.btn_views = _menu_tool("mdi6.cube-scan", "Views", "Standard views (front, top, right, iso...), saved "
+                                                               "views and the quad view")
+        self.btn_sections = _menu_tool("mdi6.box-cutter", "Sections", "Cut the mesh: mid-planes, three orthogonal "
+                                                                      "planes, a slice stack, a plane through 3 "
+                                                                      "points; contours, arrows, line probes, "
+                                                                      "cut-away")
+        self.btn_flow = _menu_tool("mdi6.waves", "Flow paths", "Streamlines from the inlets, a point, a line or a "
+                                                               "plane; pathlines; residence time")
         self.btn_ao = _tool("mdi6.circle-half-full", "Ambient occlusion (depth cues for 3D surfaces)", checkable=True)
         self.btn_shot = _tool("msc.device-camera", "Screenshot (PNG, 2x)")
         self.btn_render = _tool("mdi6.image-filter-hdr", "Render image… (up to 8K, 8x anti-aliasing)")
@@ -171,7 +206,7 @@ class ViewportPanel(Panel):
         self.btn_show = _tool("mdi6.creation", "Showcase: the best first view of this result (Studio look, "
                                                "mid-plane slice in a glass shell for 3D, isometric camera)")
         self.btn_pv = _tool("mdi6.alpha-p-box-outline", "Open this case in ParaView (with this field and time)")
-        for b in (self.btn_show, self.btn_fit, self.btn_x, self.btn_y, self.btn_z, self.btn_iso, self.btn_ao,
+        for b in (self.btn_show, self.btn_sections, self.btn_flow, self.btn_views, self.btn_fit, self.btn_ao,
                   self.btn_shot, self.btn_render, self.btn_rec, self.btn_pv, self.btn_side):
             bar.addWidget(b)
         lay.addLayout(bar)
@@ -229,6 +264,9 @@ class ViewportPanel(Panel):
             tp.ShadowOff()
         self.scalar_bar.VisibilityOff()
         self.plotter.renderer.AddViewProp(self.scalar_bar)  # (AddActor2D was removed in VTK 9.7)
+        self.flow_bar = vtk.vtkScalarBarActor()  # flow paths' own colour bar (e.g. residence time)
+        self.flow_bar.VisibilityOff()
+        self.plotter.renderer.AddViewProp(self.flow_bar)
         self.bar_lut = None  # the colour bar's own LUT, in display units (e.g. MPa)
         self.hud = lk.make_hud()
         self.plotter.renderer.AddViewProp(self.hud)
@@ -244,15 +282,37 @@ class ViewportPanel(Panel):
         if self.look not in lk.LOOKS:
             self.look = "studio"
         self.look_box.setCurrentText(self.look.capitalize())
+        # Smooth / Cells: the user's explicit choice (settings.viewport_smoothing) wins over the look's default
+        chosen = getattr(sv.settings, "viewport_smoothing", "auto") if getattr(sv, "settings", None) else "auto"
+        self._smooth_explicit = chosen in SMOOTHINGS
+        self.smoothing = chosen if chosen in SMOOTHINGS else ("smooth" if self.look == "studio" else "cells")
+        self.cell_edges = False
+        self._sync_smooth_buttons()
+        # sections, views, flow paths (ViewToolsMixin)
+        self.section_show = {"field": True, "edges": False, "contours": False, "arrows": False}
+        self.flow_colour = "U"
+        self._plane_widget = None
+        self._pick = None
+        self._quad = None
+        self._line_actor = None
+        self._line_rid = 0
+        self._line_plot = True
+        self.last_line = None
+        self.section_2d = None
+        self._last_request = 0.0
+        self._drag_timer = QTimer(self, singleShot=True, interval=90, timeout=self._drag_load)
+        self._build_view_menus()
         # ---------------- wiring
         self._slice_timer = QTimer(self, singleShot=True, interval=150, timeout=self.request_load)
         w = shared_worker()
         self._req_meta.connect(w.meta, Qt.ConnectionType.QueuedConnection)
         self._req_load.connect(w.load, Qt.ConnectionType.QueuedConnection)
         self._req_probe.connect(w.probe, Qt.ConnectionType.QueuedConnection)
+        self._req_line.connect(w.probe_line, Qt.ConnectionType.QueuedConnection)
         w.meta_ready.connect(self._on_meta)
         w.data_ready.connect(self._on_data)
         w.probe_ready.connect(self._on_probe)
+        w.line_ready.connect(self._on_line)
         w.failed.connect(self._on_fail)
         self.field.currentIndexChanged.connect(self._on_field_changed)
         self.comp.currentIndexChanged.connect(lambda *_: self.request_load(reset_range=True))
@@ -265,14 +325,13 @@ class ViewportPanel(Panel):
         self.cmap.currentIndexChanged.connect(lambda *_: self._apply_display())
         self.cmap.activated.connect(lambda *_: setattr(self, "_cmap_user", True))
         self.look_box.currentTextChanged.connect(lambda t: self.set_look(t.lower()))
+        self.btn_smooth.clicked.connect(lambda: self.set_smoothing("smooth"))
+        self.btn_cells.clicked.connect(lambda: self.set_smoothing("cells"))
+        self.btn_edges.toggled.connect(lambda on: self.set_smoothing(self.smoothing, edges=on, explicit=False))
         self.btn_rec.clicked.connect(self.animation_dialog)
         self.btn_show.clicked.connect(lambda: self.ctx.services.notify("Viewport: " + self.showcase()))
         self.btn_pv.clicked.connect(self.open_in_paraview)
         self.btn_fit.clicked.connect(self._fit)
-        self.btn_x.clicked.connect(lambda: self._view("yz"))
-        self.btn_y.clicked.connect(lambda: self._view("xz"))
-        self.btn_z.clicked.connect(lambda: self._view("xy"))
-        self.btn_iso.clicked.connect(lambda: (self.plotter.view_isometric(), self.plotter.render()))
         self.btn_shot.clicked.connect(self.screenshot)
         self.btn_render.clicked.connect(self.render_dialog)
         self.btn_ao.toggled.connect(self._set_ao)
@@ -295,6 +354,11 @@ class ViewportPanel(Panel):
 
     def set_case(self, root: Path | None) -> None:
         self._end_sweep("the case changed")
+        self._drop_plane_widget()
+        self._cancel_pick()
+        self._steady = None
+        if self._line_actor is not None:
+            self._line_actor.SetVisibility(False)
         self.gen += 1  # anything still loading for the previous case is now stale
         self._is2d = False
         self.case_root = Path(root) if root else None
@@ -606,7 +670,11 @@ class ViewportPanel(Panel):
                "patches": patches, "show_internal": any(p.endswith("internalMesh") for p in patches),
                "stages": [{**s, "field": self._vtk_names.get(s["field"], s["field"])} if s.get("field") else s
                           for s in self.stages],
-               "view": self.view_opts, "look": self.look, "regions": self.region_sel}
+               "view": self.view_opts, "look": self.look, "regions": self.region_sel,
+               "smoothing": self.smoothing}
+        if any(s.get("type") == "pathlines" and s.get("visible", True) for s in self.stages):
+            req["steady"] = self._is_steady()
+        self._last_request = __import__("time").monotonic()
         if self.slice_on.isChecked():
             # placed by the worker along the extent of the shown regions (right after a region change too)
             ax = self.slice_axis.currentIndex()
@@ -628,6 +696,7 @@ class ViewportPanel(Panel):
                 actor, _m = self.actors.pop(name)
                 self.plotter.renderer.RemoveActor(actor)
         self.scalar = data["scalar"]
+        self.smoothed = bool(data.get("smoothed"))  # before drawing: the colour bar says "smoothed"
         self.stage_info = data.get("stage_info", {})
         self.block_regions = data.get("block_regions", {})
         if data["bounds"] is not None:
@@ -650,9 +719,14 @@ class ViewportPanel(Panel):
             _actor, mapper = self.actors[name]
             mapper.SetInputData(poly)
         self._apply_display()
+        if self._quad:
+            self._quad_sync()
         if self._first_data:
             self._first_data = False
-            self._fit()
+            if self.section_2d:
+                self._frame_section_2d()
+            else:
+                self._fit()
         self.comp.setVisible(data.get("components", 0) > 1)
         if getattr(self, "_showcase_pending", False) and self.bounds is not None:
             self._showcase_pending = False
@@ -661,14 +735,15 @@ class ViewportPanel(Panel):
         self.edge_mapper.SetInputData(edges if edges is not None else vtk.vtkPolyData())
         self.edge_actor.SetVisibility(edges is not None and self.look == "studio"
                                       and self.view_opts.get("base") != "hidden")
-        self.smoothed = bool(data.get("smoothed"))
         msg = (f"{data['n_cells']:,} cells read · {data['seconds']:.2f} s · t = {data['time']:g}"
                if data["time"] is not None else "")
         if self.field.currentText() and data["scalar"] is None:
             msg += f" · '{self.field.currentText()}' is not written at this time"
             self.ctx.services.notify(f"Viewport: '{self.field.currentText()}' is not written at t = {data['time']:g}")
         if self.smoothed:
-            msg += " · Studio look: colours smoothed from the cell values (Classic shows the cells as computed)"
+            msg += " · smoothed: colours interpolated from the cell values (Cells shows each cell's own value)"
+        elif data["scalar"] is not None:
+            msg += " · cells: each cell's own value" + (" with the mesh edges" if self.cell_edges else "")
         interp = sorted({i["label"] for k, i in self.stage_info.items() if i.get("interpolated") and "~" not in k})
         if interp:
             msg += " · interpolated: " + ", ".join(interp)
@@ -690,10 +765,65 @@ class ViewportPanel(Panel):
         stage_luts: dict[str, vtk.vtkLookupTable] = {}
         bar = (lut, self.scalar) if self.scalar and lo_hi is not None else None
         stage_bar = None
+        cells_edges = self.smoothing == "cells" and self.cell_edges
+        flow_keys = {f"stage:{s['id']}" for s in self.stages if s.get("flow")}
+        flow_bar = None
+        stage_bar_key = None
+        has_shell = any(n.startswith("shell:") for n in self.actors) and any(
+            (s.get("section") or s.get("cutaway")) and s.get("visible", True) for s in self.stages)
         for name, (actor, mapper) in self.actors.items():
             prop = actor.GetProperty()
             info = self.stage_info.get(name)
             mapper.SetRelativeCoincidentTopologyPolygonOffsetParameters(*self._depth_offset(name))
+            if info is not None and info.get("overlay"):  # contour lines / arrows on a section: solid colours
+                mapper.ScalarVisibilityOff()
+                prop.SetRepresentationToSurface()
+                prop.SetEdgeVisibility(False)
+                prop.SetOpacity(1.0)
+                if info["overlay"] == "lines":
+                    prop.SetLighting(False)
+                    prop.SetLineWidth(1.8)
+                    prop.SetColor(*((0.97, 0.97, 1.0) if self.look == "studio" else (0.05, 0.05, 0.06)))
+                elif info["overlay"] == "nodata":  # regions without the field (solids on a velocity section)
+                    lk.surface_material(prop, self.look, smooth=False, flat_view=self._is2d)
+                    prop.SetColor(0.55, 0.57, 0.60)
+                    prop.SetEdgeVisibility(cells_edges)
+                    prop.SetEdgeColor(0.12, 0.12, 0.14)
+                else:
+                    prop.SetLighting(True)
+                    prop.SetInterpolationToPhong()
+                    prop.SetColor(0.93, 0.94, 0.97)
+                    prop.SetSpecular(0.3)
+                continue
+            if info is not None and info.get("type") in ("slice", "clip"):  # cut surfaces: the look's material
+                key = name.split("~")[0]
+                prop.SetRepresentationToSurface()
+                prop.SetOpacity(info.get("opacity", 1.0))
+                point = info.get("association") == "point"
+                lk.surface_material(prop, self.look, smooth=point, flat_view=self._is2d)
+                prop.SetEdgeVisibility(bool(info.get("edges")) or cells_edges)
+                prop.SetEdgeColor(0.12, 0.12, 0.14)
+                prop.SetColor(0.85, 0.85, 0.88)
+                if info.get("scalar") and info.get("range"):
+                    slut = stage_luts.get(key)
+                    if slut is None:
+                        smap = info.get("cmap") or cmap
+                        slut = stage_luts[key] = _lut(smap if smap in CMAPS else cmap, *info["range"])
+                    if point:
+                        mapper.SetScalarModeToUsePointFieldData()
+                        mapper.InterpolateScalarsBeforeMappingOn()
+                    else:
+                        mapper.SetScalarModeToUseCellFieldData()
+                    mapper.SelectColorArray(info["scalar"])
+                    mapper.SetLookupTable(slut)
+                    mapper.SetUseLookupTableScalarRange(True)
+                    mapper.ScalarVisibilityOn()
+                    if key == self.bar_stage or (stage_bar is None and "~" not in name):
+                        stage_bar = (slut, self._stage_bar_title(key, info))
+                        stage_bar_key = key
+                else:
+                    mapper.ScalarVisibilityOff()
+                continue
             if info is not None:  # a pipeline stage: its own array, range and colour map
                 key = name.split("~")[0]
                 prop.SetRepresentationToSurface()
@@ -723,9 +853,13 @@ class ViewportPanel(Panel):
                     mapper.SetLookupTable(slut)
                     mapper.SetUseLookupTableScalarRange(True)
                     mapper.ScalarVisibilityOn()
-                    # the colour bar explains what the eye goes to: the selected stage, else the first stage
-                    if key == self.bar_stage or (stage_bar is None and "~" not in name):
+                    # the colour bar explains what the eye goes to: the selected stage, else the first stage;
+                    # flow paths get their own (second) bar: they are usually coloured by something else
+                    if key in flow_keys and key != self.bar_stage:
+                        flow_bar = flow_bar or (slut, self._stage_bar_title(key, info))
+                    elif key == self.bar_stage or (stage_bar is None and "~" not in name):
                         stage_bar = (slut, self._stage_bar_title(key, info))
+                        stage_bar_key = key
                 else:
                     mapper.ScalarVisibilityOff()
                 continue
@@ -744,13 +878,15 @@ class ViewportPanel(Panel):
                 actor.SetVisibility(True)
                 actor.SetPickable(False)
                 continue
-            # the base mesh: translucent by default once pipeline stages are shown (they sit inside it)
-            base = self.view_opts.get("base") or ("translucent" if any(
-                s.get("visible", True) for s in self.stages) else "surface")
+            # the base mesh: translucent by default once pipeline stages are shown (they sit inside it); hidden
+            # when the glass shell of sections / a cut-away already shows the domain
+            is_slice = name.startswith("slice")
+            base = self.view_opts.get("base") or ("hidden" if has_shell and not is_slice else "translucent" if any(
+                s.get("visible", True) for s in self.stages) and not is_slice else "surface")
             actor.SetVisibility(base != "hidden")
             prop.SetOpacity({"translucent": 0.15, "outline": 0.35}.get(base, 1.0))
             poly = mapper.GetInput()
-            smooth = (self.look == "studio" and self.scalar is not None and poly is not None
+            smooth = (self.smoothing == "smooth" and self.scalar is not None and poly is not None
                       and poly.GetPointData().GetArray(self.scalar) is not None)
             lk.surface_material(prop, self.look, smooth=smooth or (self.look == "studio" and self.scalar is None),
                                 flat_view=self._is2d)
@@ -758,7 +894,7 @@ class ViewportPanel(Panel):
                 prop.SetRepresentationToWireframe()
             else:
                 prop.SetRepresentationToSurface()
-            prop.SetEdgeVisibility(rep == 1 and base == "surface")
+            prop.SetEdgeVisibility((rep == 1 or cells_edges) and base == "surface")
             prop.SetEdgeColor(0.15, 0.15, 0.17)
             prop.SetColor(0.65, 0.67, 0.70)
             if self.scalar and lo_hi is not None:
@@ -773,16 +909,30 @@ class ViewportPanel(Panel):
                 mapper.ScalarVisibilityOn()
             else:
                 mapper.ScalarVisibilityOff()
+        smoothed_bar = self.smoothed
         if stage_bar is not None and self.bar_stage != "field":
             bar = stage_bar
+            sinfo = self.stage_info.get(stage_bar_key) or {}
+            # sections, clips, contours and isosurfaces follow Smooth / Cells: say so when they are smoothed
+            smoothed_bar = (sinfo.get("type") in ("slice", "clip", "contour", "isosurface")
+                            and bool(sinfo.get("interpolated")) and self.smoothing == "smooth")
+        if bar is None and flow_bar is not None:  # only flow paths are coloured: they take the main bar
+            bar, flow_bar, smoothed_bar = flow_bar, None, False
         if bar is not None:
             title, blut = self._bar_title_and_lut(bar[0], bar[1], cmap)
+            if smoothed_bar:  # honest: interpolated colours say so on the colour bar too
+                title += "\nsmoothed"
             self.bar_lut = blut
             self.scalar_bar.SetLookupTable(blut)
             self.scalar_bar.SetTitle(title)
             self.scalar_bar.VisibilityOn()
         else:
             self.scalar_bar.VisibilityOff()
+        if flow_bar is not None:
+            ftitle, flut = self._bar_title_and_lut(flow_bar[0], flow_bar[1], cmap, self.flow_bar)
+            self.flow_bar.SetLookupTable(flut)
+            self.flow_bar.SetTitle(ftitle)
+        self.flow_bar.SetVisibility(flow_bar is not None)
         self._update_hud()
         self.plotter.render()
 
@@ -810,10 +960,16 @@ class ViewportPanel(Panel):
                 self._units[field] = None
         return self._units.get(field)
 
-    def _bar_title_and_lut(self, lut, name: str, cmap: str):
+    def _bar_title_and_lut(self, lut, name: str, cmap: str, bar=None):
         """Colour-bar title with units and an SI prefix (p [MPa]); its LUT is in those display units."""
         from aethercfd.results.units import bar_title, si_scale
 
+        bar = bar or self.scalar_bar
+        if name.endswith("]") and " [" in name:  # a stage's own title with its unit (residence time [s])
+            lo, hi = lut.GetTableRange()
+            bar.SetUseCustomLabels(False)
+            bar.SetLabelFormat(lk.label_format(lo, hi).replace("%", "%-#"))
+            return name, lut
         shown = display_name(name)
         base = shown.split("_mag")[0].split("_x")[0].split("_y")[0].split("_z")[0].strip("|")
         unit = self._unit(base)
@@ -823,7 +979,6 @@ class ViewportPanel(Panel):
         scaled = vtk.vtkLookupTable()
         scaled.DeepCopy(lut)
         scaled.SetTableRange(lo / f, hi / f)
-        bar = self.scalar_bar
         fmt = lk.label_format(lo / f, hi / f)
         if self.look == "studio":  # round tick values in display units (0, 10, 20 ... not 2.53e-05, 12.49)
             ticks = vtk.vtkDoubleArray()
@@ -849,6 +1004,7 @@ class ViewportPanel(Panel):
         """Background, depth cues, orientation widget and colour-bar style of the current look."""
         lk.apply_background(self.plotter.renderer, self.look)
         lk.style_bar(self.scalar_bar, self.look)
+        lk.style_second_bar(self.flow_bar, self.look)
         studio = self.look == "studio"
         try:
             if studio:
@@ -907,9 +1063,72 @@ class ViewportPanel(Panel):
             self.cmap.blockSignals(True)
             self.cmap.setCurrentText(lk.auto_cmap(self.field.currentText()))
             self.cmap.blockSignals(False)
+        if not self._smooth_explicit:  # the look's default until the user picks Smooth or Cells
+            self.smoothing = "smooth" if name == "studio" else "cells"
+            self._sync_smooth_buttons()
         self._apply_scene()
+        if self._quad:
+            self._quad_sync()
         self.request_load()
-        return f"look: {name}"
+        return f"look: {name} ({self.smoothing})"
+
+    def _sync_smooth_buttons(self) -> None:
+        for b, on in ((self.btn_smooth, self.smoothing == "smooth"), (self.btn_cells, self.smoothing == "cells")):
+            b.blockSignals(True)
+            b.setChecked(on)
+            b.blockSignals(False)
+        self.btn_edges.blockSignals(True)
+        self.btn_edges.setChecked(self.cell_edges)
+        self.btn_edges.setEnabled(self.smoothing == "cells")
+        self.btn_edges.blockSignals(False)
+
+    def set_smoothing(self, mode: str, *, edges: bool | None = None, explicit: bool = True,
+                      reload: bool = True) -> str:
+        """Smooth (colours, sections and contours interpolated from the cell values) or Cells (every cell's
+        own value, per-cell contours: the mesh resolution stays visible; optionally with the mesh edges).
+        'auto' goes back to the look's default. An explicit choice is remembered (settings)."""
+        mode = (mode or "").lower().strip()
+        if mode not in (*SMOOTHINGS, "auto"):
+            return f"unknown smoothing {mode!r}: smooth, cells or auto"
+        if mode == "auto":
+            self._smooth_explicit = False
+            mode = "smooth" if self.look == "studio" else "cells"
+        elif explicit:
+            self._smooth_explicit = True
+        if edges is not None:
+            self.cell_edges = bool(edges)
+        changed = mode != self.smoothing
+        self.smoothing = mode
+        self._sync_smooth_buttons()
+        st = getattr(self.ctx.services, "settings", None)
+        want = mode if self._smooth_explicit else "auto"
+        if explicit and st is not None and getattr(st, "viewport_smoothing", None) != want:
+            st.viewport_smoothing = want
+            try:
+                st.save()
+            except Exception:
+                log.exception("saving the viewport smoothing")
+        if reload and changed:
+            self.request_load()
+        elif reload:
+            self._apply_display()
+        return ("smooth: colours and contours interpolated from the cell values (labelled 'smoothed')"
+                if mode == "smooth" else
+                "cells: every cell's own value, contours per cell" + (", mesh edges shown" if self.cell_edges
+                                                                      else ""))
+
+    def _is_steady(self) -> bool:
+        """Steady run (SIMPLE / steadyState): its saved times are iterations (no pathlines through them)."""
+        if getattr(self, "_steady", None) is None:
+            self._steady = False
+            s = self.ctx.services.session
+            try:
+                from aethercfd.case.checks import facts
+
+                self._steady = bool(s is not None and facts(s.case()).steady)
+            except Exception:
+                log.exception("steady/transient check")
+        return self._steady
 
     def showcase(self, regions=None) -> str:
         """The best first view of the result, in one click (also the copilot's): the Studio look; a 3D
@@ -1160,6 +1379,8 @@ class ViewportPanel(Panel):
         return msg
 
     def _stage_bar_title(self, key: str, info: dict) -> str:
+        if info.get("title"):
+            return info["title"]
         sid = key.split(":", 1)[1]
         s = next((x for x in self.stages if x.get("id") == sid), {})
         col = s.get("color_by") or ("U" if s.get("type") == "qcriterion" else s.get("field") or info.get("scalar"))
@@ -1239,7 +1460,7 @@ class ViewportPanel(Panel):
 
         if ev.type() in (QEvent.Type.FocusIn, QEvent.Type.MouseButtonPress):
             self.ctx.services.set_active_viewport(self)
-        return False
+        return self._pick_event(ev)  # picking points (sections, flow seeds, line probes) eats the clicks
 
     def _on_fail(self, vid: str, gen: int, msg: str) -> None:
         if vid == self.vid:
@@ -1252,6 +1473,7 @@ class ViewportPanel(Panel):
             self.plotter.renderer.RemoveActor(actor)
         self.actors.clear()
         self.scalar_bar.VisibilityOff()
+        self.flow_bar.VisibilityOff()
         self.edge_actor.SetVisibility(False)
         self.edge_mapper.SetInputData(vtk.vtkPolyData())
         self.hud.SetVisibility(False)
@@ -1266,12 +1488,12 @@ class ViewportPanel(Panel):
                 self.plotter.view_isometric()  # a 3D case reads as 3D from the start
             self.plotter.reset_camera()
             self.plotter.camera_set = True
+        if self._quad:
+            self._quad_fit()
         self.plotter.render()
 
     def _view(self, plane: str) -> None:
-        {"xy": self.plotter.view_xy, "xz": self.plotter.view_xz, "yz": self.plotter.view_yz}[plane]()
-        self.plotter.reset_camera()
-        self.plotter.render()
+        self.set_view(plane)
 
     def _fit_2d(self, padding: float = 0.04) -> None:
         """2D / wedge cases: look along the THINNEST axis (empty or wedge direction -- e.g. y for
@@ -1401,12 +1623,14 @@ class ViewportPanel(Panel):
             pad = [(sb_bounds[2 * k + 1] - sb_bounds[2 * k]) * 0.06 for k in range(3)]
             ren.ResetCamera([sb_bounds[0] - pad[0], sb_bounds[1] + pad[0], sb_bounds[2] - pad[1],
                              sb_bounds[3] + pad[1], sb_bounds[4] - pad[2], sb_bounds[5] + pad[2]])
-        if colorbar and self.scalar_bar.GetVisibility():
+        for src_bar in (self.scalar_bar, self.flow_bar):
+            if not (colorbar and src_bar.GetVisibility()):
+                continue
             sb = vtk.vtkScalarBarActor()
-            sb.ShallowCopy(self.scalar_bar)
+            sb.ShallowCopy(src_bar)
             scale = height / max(1, self.plotter.height())
-            for tp_src, tp in ((self.scalar_bar.GetLabelTextProperty(), sb.GetLabelTextProperty()),
-                               (self.scalar_bar.GetTitleTextProperty(), sb.GetTitleTextProperty())):
+            for tp_src, tp in ((src_bar.GetLabelTextProperty(), sb.GetLabelTextProperty()),
+                               (src_bar.GetTitleTextProperty(), sb.GetTitleTextProperty())):
                 tp.ShallowCopy(tp_src)
                 tp.SetFontSize(max(8, round(tp_src.GetFontSize() * scale)))
                 if background == "white":
@@ -1521,6 +1745,10 @@ class ViewportPanel(Panel):
         form.addRow(bar)
         form.addRow(ray)
         form.addRow("Ray-tracing quality", spp)
+        marks = self.bookmarks()
+        all_views = QCheckBox(f"Also render every saved view ({len(marks)}), one image each")
+        all_views.setEnabled(bool(marks))
+        form.addRow(all_views)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(dlg.accept)
         bb.rejected.connect(dlg.reject)
@@ -1544,9 +1772,13 @@ class ViewportPanel(Panel):
                 "info" if r[0] and r[0]["ok"] else "error"))
             return
         try:
-            self.render_image(f, w, h, background=bg.currentText(), transparent=transparent.isChecked(),
-                              colorbar=bar.isChecked(), base=base.currentText(), frame_stages=frame.isChecked())
+            kw = {"background": bg.currentText(), "transparent": transparent.isChecked(), "colorbar": bar.isChecked(),
+                  "base": base.currentText()}
+            self.render_image(f, w, h, frame_stages=frame.isChecked(), **kw)
             self.ctx.services.notify(f"Rendered {w}×{h}: {f}")
+            if all_views.isChecked():
+                done = self.render_bookmarks(Path(f).parent, w, h, **kw)
+                self.ctx.services.notify(f"Rendered {len(done)} saved view(s) into {Path(f).parent}")
         except Exception as exc:
             self.ctx.services.notify(f"Render failed: {exc}", "error")
 
@@ -1606,9 +1838,14 @@ class ViewportPanel(Panel):
 
     # ------------------------------------------------------------------ scripted control (copilot)
     def show_field(self, field: str, time: str | None = None, slice_axis: str | None = None,
-                   regions=None) -> str:
+                   regions=None, smoothing: str | None = None) -> str:
         """Show a field (at a time, optionally on a mid-plane slice); on a multi-region (CHT) case in
-        ``regions`` only ('solids', 'fluid', region names, 'all'; None keeps the shown regions)."""
+        ``regions`` only ('solids', 'fluid', region names, 'all'; None keeps the shown regions); ``smoothing``
+        smooth / cells / auto (None keeps the current choice)."""
+        if smoothing:
+            msg = self.set_smoothing(smoothing, reload=False)
+            if msg.startswith("unknown"):
+                return msg
         if self.case_root is not None and not self.meta:
             # the case was just opened and its time steps / fields are still being read: do it when ready
             self._queued_show = (field, time, slice_axis, regions)
@@ -1738,6 +1975,7 @@ class ViewportPanel(Panel):
 
     def dispose(self) -> None:
         self._end_sweep()
+        self._drop_plane_widget()
         self._disposed = True
         for o in getattr(self, "_linked", []):  # unlink from compare-view peers before the plotter goes
             peers = getattr(o, "_linked", None)

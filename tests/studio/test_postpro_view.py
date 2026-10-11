@@ -51,14 +51,14 @@ def _wait_drawn(qtbot, v):
 
 def test_studio_and_classic_looks(vp, qtbot):
     v, sv, a = vp
-    assert a.viewport_look("studio") == "look: studio"
+    assert a.viewport_look("studio") == "look: studio (smooth)"
     _wait_drawn(qtbot, v)
     assert v.plotter.renderer.GetGradientBackground()
     assert v.smoothed and "smoothed" in v.info.text()  # honest about the interpolation
-    assert v.scalar_bar.GetTitle() == "|U| [m/s]" and v.scalar_bar.GetUseCustomLabels()
+    assert v.scalar_bar.GetTitle() == "|U| [m/s]\nsmoothed" and v.scalar_bar.GetUseCustomLabels()
     assert v.hud.GetVisibility() and "U" in v.hud.GetInput()
     assert v.cmap.currentText() == "turbo"  # per-field map until the user picks one
-    assert a.viewport_look("classic") == "look: classic"
+    assert a.viewport_look("classic") == "look: classic (cells)"
     _wait_drawn(qtbot, v)
     assert not v.plotter.renderer.GetGradientBackground() and not v.smoothed
     assert not v.hud.GetVisibility() and not v.edge_actor.GetVisibility()

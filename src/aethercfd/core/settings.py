@@ -64,6 +64,9 @@ class Settings(BaseModel):
     cfd_agents_root: str | None = None  # folder that contains the cfd_agents package
     theme: str = "system"  # system (follows Windows' app mode) | light | dark
     viewport_look: str = "studio"  # studio (AetherCFD's own look) | classic (ParaView-style, true cell values)
+    # auto (Smooth in Studio, Cells in Classic) | smooth (colours and contours interpolated to the mesh points)
+    # | cells (every cell's own value, stair-stepped contours: the mesh resolution stays visible)
+    viewport_smoothing: str = "auto"
     recent_cases: list[str] = Field(default_factory=list)
     case_roots: list[str] = Field(default_factory=lambda: [str(default_case_root())])
     mechanism_roots: list[str] = Field(default_factory=list)  # folders with kinetic mechanisms (YAML/CHEMKIN)

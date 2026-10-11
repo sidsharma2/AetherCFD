@@ -69,6 +69,9 @@ class AppAutomation:
         vp = self._viewport(open_if_missing=False)
         if vp is not None:
             out["viewport"] = {"field": vp.field.currentText(), "time": vp.time.currentText(),
+                               "look": vp.look, "smoothing": vp.smoothing, "mesh_edges": vp.cell_edges,
+                               "saved_views": list(vp.bookmarks()), "quad_view": bool(vp._quad),
+                               "inlets": [p.split("/")[-1] for p in vp.inlet_paths()] if vp.meta else [],
                                "fields": vp.field_names(), "times": [vp.time.itemText(i) for i in
                                                                     range(vp.time.count())][-10:],
                                "stages": [{**s, "result": {k: v for k, v in vp.stage_info.get(f"stage:{s['id']}",
@@ -253,9 +256,10 @@ class AppAutomation:
         return f"selected {p.name} (details in the Properties panel)"
 
     # ------------------------------------------------------------------ visualization
-    def add_stage(self, kind: str, params: dict, regions=None) -> str:
+    def add_stage(self, kind: str, params: dict, regions=None, smoothing: str | None = None) -> str:
         """A visualization stage on the viewport's shown regions (``regions``: show those first, e.g.
-        'solids' on a CHT case). Returns the stage id ('c<n>') or why not."""
+        'solids' on a CHT case; ``smoothing``: smooth / cells / auto). Returns the stage id ('c<n>') or why
+        not."""
         from aethercfd.results.pipeline import STAGE_TYPES
 
         if kind not in STAGE_TYPES:
@@ -263,6 +267,10 @@ class AppAutomation:
         vp = self._viewport()
         if vp is None:
             return "no viewport"
+        if smoothing:
+            msg = vp.set_smoothing(smoothing, reload=False)
+            if msg.startswith("unknown"):
+                return msg
         if regions is not None:
             msg = vp._apply_regions(regions)  # loaded with the stage below
             if msg.startswith("cannot"):
@@ -293,21 +301,91 @@ class AppAutomation:
         vp = self._viewport(open_if_missing=False)
         if vp is None:
             return "no viewport"
-        v = view.lower()
-        if v in ("iso", "isometric"):
-            vp.plotter.view_isometric()
-            vp.plotter.reset_camera()
-        elif v in ("x", "y", "z"):
-            vp._view({"x": "yz", "y": "xz", "z": "xy"}[v])
-        elif v in ("fit", "reset"):
+        v = view.lower().strip()
+        if v in ("fit", "reset"):
             vp._fit()
         elif v in ("frame", "frame_stage", "zoom"):
             if not vp.frame_stage(stage_id):
                 return "nothing to frame"
+        elif v in vp.bookmarks() or v.startswith("bookmark:"):
+            return vp.restore_bookmark(view.split(":", 1)[-1].strip())
         else:
-            return "view must be iso, x, y, z, fit or frame"
+            msg = vp.set_view(v)
+            if msg.startswith("unknown"):
+                marks = vp.bookmarks()
+                return msg + (f"; saved views: {', '.join(marks)}" if marks else "") + "; or fit / frame"
         vp.plotter.render()
         return f"camera: {view}"
+
+    # ------------------------------------------------------------------ smoothing, sections, views, flow paths
+    def viewport_smoothing(self, mode: str, edges: bool | None = None) -> str:
+        vp = self._viewport(open_if_missing=True)
+        return vp.set_smoothing(mode, edges=edges) if vp is not None else "no viewport"
+
+    def section(self, preset: str, axis: str | None = None, n: int = 5, origin=None, normal=None, points=None,
+                through: str | None = None, show: dict | None = None, smoothing: str | None = None,
+                keep: bool = False, open_2d: bool = False, clear: bool = False) -> str:
+        vp = self._viewport(open_if_missing=True)
+        if vp is None:
+            return "no viewport"
+        if clear:
+            return vp.clear_sections()
+        msg = vp.add_sections(preset, axis=axis, n=n, origin=origin, normal=normal, points=points, through=through,
+                              keep=keep, show=show, smoothing=smoothing)
+        if open_2d and vp._sections():
+            msg += "; " + vp.open_section_2d()
+        return msg
+
+    def cutaway(self, axis: str, pos: float = 0.5, invert: bool = False) -> str:
+        vp = self._viewport(open_if_missing=True)
+        return vp.cutaway(axis, pos, invert) if vp is not None else "no viewport"
+
+    def bookmark(self, action: str, name: str = "") -> str | list:
+        vp = self._viewport(open_if_missing=False)
+        if vp is None:
+            return "no viewport"
+        a = action.lower().strip()
+        if a == "save":
+            return vp.save_bookmark(name)
+        if a in ("restore", "go", "show"):
+            return vp.restore_bookmark(name)
+        if a == "delete":
+            return vp.delete_bookmark(name)
+        if a == "list":
+            return list(vp.bookmarks())
+        if a == "render":
+            if self.sv.session is None:
+                return "no case"
+            out = Path(self.sv.session.root) / ".aethercfd" / "local" / "renders"
+            done = vp.render_bookmarks(out, 1920, 1080, background="gradient", base="as shown")
+            return done or "no saved views to render"
+        return "action must be save, restore, delete, list or render"
+
+    def quad(self, on: bool = True) -> str:
+        vp = self._viewport(open_if_missing=True)
+        return vp.set_quad(on) if vp is not None else "no viewport"
+
+    def flow_paths(self, source: str = "inlets", inlets: list | None = None, point=None, p1=None, p2=None,
+                   axis: str | None = None, pos: float | None = None, n: int | None = None,
+                   color_by: str | None = None, tubes: bool | None = None, pathlines: bool | None = None,
+                   clear: bool = False) -> str:
+        vp = self._viewport(open_if_missing=True)
+        if vp is None:
+            return "no viewport"
+        if clear:
+            return vp.clear_flow_paths()
+        return vp.flow_paths(source, inlets=inlets, point=point, p1=p1, p2=p2, axis=axis, pos=pos, n=n,
+                             color_by=color_by, tubes=tubes, pathlines=pathlines)
+
+    def line_probe(self, p1, p2, field: str | None = None, n: int = 300) -> str:
+        vp = self._viewport(open_if_missing=False)
+        if vp is None:
+            return "no viewport"
+        return vp.line_probe(p1, p2, field, n, plot=True)
+
+    def line_status(self) -> dict | None:
+        vp = self._viewport(open_if_missing=False)
+        return None if vp is None else vp.last_line
 
     def render(self, width: int, height: int, background: str, base: str, frame: bool, name: str | None) -> str:
         vp = self._viewport(open_if_missing=False)
