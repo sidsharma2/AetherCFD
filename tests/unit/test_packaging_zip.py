@@ -38,7 +38,7 @@ def test_release_zip_layout(tmp_path):
 
 
 def test_release_zip_needs_a_build(tmp_path):
-    with pytest.raises(FileNotFoundError, match="build.py"):
+    with pytest.raises(FileNotFoundError, match=r"build.py"):
         _build_module().make_zip(tmp_path / "nothing", tmp_path, "1")
 
 
@@ -50,4 +50,4 @@ def test_install_script_finds_the_app_next_to_it(tmp_path):
     spec = importlib.util.spec_from_file_location("aether_release_install", rel / "install.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    assert mod.DIST == rel / "AetherCFD"
+    assert rel / "AetherCFD" == mod.DIST
