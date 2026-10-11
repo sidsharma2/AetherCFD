@@ -289,6 +289,10 @@ class CfdAgents:
             r.explanation = (f"Connie: run health {r.data.get('status', '?')} over {r.data.get('samples_evaluated', '?')} "
                              "samples" + ("" if not bad else ": " + "; ".join(
                                  f"{x.get('quantity')} {x.get('status')} ({x.get('reason', '')})" for x in bad[:5])))
+            if bad and _steady(case_root):
+                r.explanation += (". Note: Connie's growth-ratio thresholds are tuned for transient runs; in a steady "
+                                  "(SIMPLE) run the start-up transient alone gives large ratios, so weigh this "
+                                  "against the residuals and the fieldMinMax values")
         return r
 
     def reggie(self, max_non_orthogonality: float, initial_delta_t: float, target_courant_max: float = 0.5,
@@ -330,6 +334,16 @@ class CfdAgents:
                 r.explanation = ("Darwin only plans for all-tetrahedral meshes with ASCII fields from a converged "
                                  f"RANS run: {r.error}")
         return r
+
+
+def _steady(case_root) -> bool:
+    try:
+        from aethercfd.case.checks import facts
+        from aethercfd.case.model import load_case
+
+        return facts(load_case(case_root)).steady
+    except Exception:
+        return False
 
 
 def _residuals_low(s) -> bool:

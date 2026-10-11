@@ -274,7 +274,7 @@ def assess(case: Case | str | Path, state: dict | None = None) -> list[StageStat
                     "assess", False, "warn", "Could not assess this stage", str(exc))], [], [], False)
         st = StageState(sid, title, i, "todo", summary, "", list(deps), [], gates, files, questions, actions,
                         ADVANCED.get(sid, []), AGENTS.get(sid, []), optional=optional)
-        st.fingerprint = fingerprint(files)
+        st.fingerprint = _stage_fingerprint(sid, ctx, files)
         mark = state.get("stages", {}).get(sid, {})
         st.blocked_by = [d for d in deps if by_id[d].blocking or by_id[d].status == "blocked"]
         st.status = _status(st, mark, na)
@@ -284,6 +284,26 @@ def assess(case: Case | str | Path, state: dict | None = None) -> list[StageStat
     for st in out:
         st.next_action = _next_action(st, out)
     return out
+
+
+_RESIDUAL_CONTROL = re.compile(r"\bresidualControl\s*\{[^{}]*\}", re.S)
+
+
+def _stage_fingerprint(sid: str, c: _Ctx, files: list[Path]) -> str:
+    """What a "done" mark is bound to. Stages share files (controlDict, fvSolution): a stage is bound only to
+    what it decides, so a later stage's edit (e.g. Run adding function objects or residualControl) does not
+    invalidate an earlier stage."""
+    if sid == "physics":
+        f = c.facts
+        data = f"{c.case.application}|{c.case.solver_module}|{f.algorithm}|{f.steady}|{f.compressible}"
+        return hashlib.sha256(data.encode()).hexdigest()[:16]
+    if sid == "numerics":
+        h = hashlib.sha256()
+        for rel in ("system/fvSchemes", "system/fvSolution"):
+            text = G._read(c.case.root / rel) or ""
+            h.update(_RESIDUAL_CONTROL.sub("", text).encode())  # residualControl is a Run-stage decision
+        return h.hexdigest()[:16]
+    return fingerprint(files)
 
 
 def _status(st: StageState, mark: dict, na: bool) -> str:

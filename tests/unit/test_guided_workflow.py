@@ -320,6 +320,19 @@ def test_changed_files_invalidate_a_done_mark(tmp_path):
     assert st.status == "changed" and "changed since" in st.next_action
 
 
+def test_later_stages_do_not_invalidate_earlier_marks(tmp_path):
+    root = _case(tmp_path, "esi_pitzDaily")
+    for sid in ("physics", "numerics"):
+        _apply(root, guided.mark_params(root, sid, True)[0])
+    # the Run stage edits controlDict (function objects) and fvSolution (residualControl)
+    _apply(root, guided.plan_answers(root, "run", {"monitoring": True, "residual_target": 1e-4}).batch_params(root))
+    by = {s.id: s for s in guided.assess(root)}
+    assert by["physics"].status == "done" and by["numerics"].status == "done"
+    sch = root / "system" / "fvSchemes"
+    sch.write_text(sch.read_text().replace("bounded Gauss linearUpwind grad(U)", "bounded Gauss upwind"))
+    assert _stage(root, "numerics").status == "changed"  # its own decisions still invalidate it
+
+
 def test_yplus_estimate_from_the_mesh(tmp_path):
     root = _case(tmp_path, "of14_cavity")
     case = load_case(root)

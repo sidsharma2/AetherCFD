@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTabWidget,
     QTextBrowser,
@@ -97,6 +98,7 @@ class WorkflowPanel(Panel):
         pl.setContentsMargins(8, 6, 8, 6)
         self.title = QLabel("")
         self.title.setStyleSheet("font-weight: 600; font-size: 11pt;")
+        self.title.setWordWrap(True)
         self.status = QLabel("")
         self.next = QLabel("")
         self.next.setWordWrap(True)
@@ -107,10 +109,8 @@ class WorkflowPanel(Panel):
         self.deps = QLabel("")
         self.deps.setWordWrap(True)
         self.deps.setStyleSheet(f"color: {T.text_dim};")
-        head = QHBoxLayout()
-        head.addWidget(self.title, 1)
-        head.addWidget(self.status)
-        pl.addLayout(head)
+        pl.addWidget(self.title)
+        pl.addWidget(self.status)
         pl.addWidget(self.next)
         pl.addWidget(self.summary)
         pl.addWidget(self.deps)
@@ -121,10 +121,14 @@ class WorkflowPanel(Panel):
         self.gates.itemDoubleClicked.connect(self._gate_clicked)
         pl.addWidget(QLabel("Correctness gates"))
         pl.addWidget(self.gates, 1)
+        self.gate_detail = QLabel("")
+        self.gate_detail.setWordWrap(True)
+        self.gate_detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        pl.addWidget(self.gate_detail)
         self.fix_btn = QPushButton("Apply the selected gate's fix…")
         self.fix_btn.clicked.connect(self.apply_fix)
         self.fix_btn.setEnabled(False)
-        self.gates.currentItemChanged.connect(lambda *_: self.fix_btn.setEnabled(self._selected_gate_fix() is not None))
+        self.gates.currentItemChanged.connect(lambda *_: self._gate_selected())
         pl.addWidget(self.fix_btn)
 
         self.tabs = QTabWidget()
@@ -162,7 +166,9 @@ class WorkflowPanel(Panel):
         r = QWidget()
         rl = QVBoxLayout(r)
         rl.setContentsMargins(4, 4, 4, 4)
-        rl.addWidget(QLabel("The exact files of this stage (double-click: open in the editor, raw text)"))
+        raw_hint = QLabel("The exact files of this stage (double-click: open in the editor, raw text)")
+        raw_hint.setWordWrap(True)
+        rl.addWidget(raw_hint)
         self.raw = QListWidget()
         self.raw.itemDoubleClicked.connect(lambda it: self.open_raw(it.data(Qt.ItemDataRole.UserRole)))
         rl.addWidget(self.raw, 1)
@@ -178,8 +184,13 @@ class WorkflowPanel(Panel):
         marks.addWidget(self.unmark_btn)
         pl.addLayout(marks)
 
+        for b in (self.fix_btn, self.apply_btn, self.suggest_btn, self.mark_btn, self.unmark_btn):
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            b.setToolTip(b.toolTip() or b.text())
+        self.status.setWordWrap(True)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # wrap, never clip sideways
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(self.page)
         split.addWidget(scroll)
@@ -339,47 +350,54 @@ class WorkflowPanel(Panel):
                     ch.setForeground(0, QColor(T.text_dim))
                     it.addChild(ch)
             self.gates.addTopLevelItem(it)
-            if not gt.ok and gt.severity in ("error", "warn"):
-                it.setExpanded(True)
+        self.gate_detail.setText("")
         self.fix_btn.setEnabled(False)
+        first_bad = next((i for i, gt in enumerate(st.gates) if not gt.ok and gt.severity in ("error", "warn")), None)
+        if first_bad is not None:  # show why the first failing gate fails, and enable its fix
+            self.gates.setCurrentItem(self.gates.topLevelItem(first_bad))
         # guided questions
-        for row, q in enumerate(st.questions):
+        for row, q in enumerate(st.questions):  # stacked rows: fits a narrow side dock
             lab = QLabel(q.text)
             lab.setWordWrap(True)
             lab.setToolTip(q.help)
             ed = self._editor(q)
             self._editors[q.id] = ed
             unit = QLabel(q.unit)
+            unit.setWordWrap(True)
             unit.setStyleSheet(f"color: {T.text_dim};")
-            self.form.addWidget(lab, row * 2, 0)
-            self.form.addWidget(ed, row * 2, 1)
-            self.form.addWidget(unit, row * 2, 2)
             where = ("writes " + ", ".join(w for w in q.writes if w)) if any(q.writes) else \
                 "kept in the workflow state"
-            info = " · ".join(x for x in (q.derived, where) if x)
-            hint = QLabel(info)
+            hint = QLabel(" · ".join(x for x in (q.derived, where) if x))
             hint.setWordWrap(True)
             hint.setStyleSheet(f"color: {T.text_faint}; font-size: 8pt;")
-            self.form.addWidget(hint, row * 2 + 1, 0, 1, 3)
+            self.form.addWidget(lab, row * 3, 0, 1, 2)
+            self.form.addWidget(ed, row * 3 + 1, 0)
+            self.form.addWidget(unit, row * 3 + 1, 1)
+            self.form.addWidget(hint, row * 3 + 2, 0, 1, 2)
         for qid, v in pending.items():
             if qid in self._editors:
                 with contextlib.suppress(ValueError):
                     self.set_answer(qid, v)
         self.form.setColumnStretch(0, 3)
-        self.form.setColumnStretch(1, 2)
+        self.form.setColumnStretch(1, 1)
         self.apply_btn.setVisible(bool(st.questions))
         # actions (runs, agents, panels)
         for act in st.actions:
             b = QPushButton(act.label)
-            b.setToolTip(act.help)
+            b.setToolTip(f"{act.label}\n{act.help}".strip())
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # never widen the dock
             b.setProperty("action", act.id)
             b.clicked.connect(lambda _=False, aid=act.id: self.run_action(aid))
             self.actions_host.addWidget(b)
         # advanced
         if st.advanced:
-            self.adv_lay.addWidget(QLabel("All OpenFOAM objects and settings of this stage, in the expert tools:"))
+            adv_hint = QLabel("All OpenFOAM objects and settings of this stage, in the expert tools:")
+            adv_hint.setWordWrap(True)
+            self.adv_lay.addWidget(adv_hint)
         for pid, label3 in st.advanced:
             b = QPushButton(label3)
+            b.setToolTip(label3)
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             b.clicked.connect(lambda _=False, p=pid: self._open_panel(p))
             self.adv_lay.addWidget(b)
         self.adv_lay.addStretch(1)
@@ -412,13 +430,17 @@ class WorkflowPanel(Panel):
     def _editor(self, q) -> QWidget:
         if q.kind == "choice":
             w = QComboBox()
+            w.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            w.setMinimumContentsLength(14)
             for v, lab in q.choices:
                 w.addItem(lab, v)
+                w.setItemData(w.count() - 1, lab, Qt.ItemDataRole.ToolTipRole)
             i = w.findData(q.value)
             w.setCurrentIndex(max(i, 0))
             w.setProperty("initial", w.currentData())
         elif q.kind == "bool":
             w = QComboBox()
+            w.setMinimumContentsLength(4)
             w.addItem("Yes", True)
             w.addItem("No", False)
             w.setCurrentIndex(0 if q.value else 1)
@@ -426,6 +448,7 @@ class WorkflowPanel(Panel):
         else:
             w = QLineEdit("" if q.value is None else f"{q.value:g}" if isinstance(q.value, float) else str(q.value))
             w.setPlaceholderText("value")
+            w.setMinimumWidth(60)
             w.setProperty("initial", w.text())
         w.setToolTip(q.help)
         return w
@@ -520,6 +543,25 @@ class WorkflowPanel(Panel):
             return None
         g = next((g for g in st.gates if g.id == it.data(0, Qt.ItemDataRole.UserRole)), None)
         return g if g is not None and not g.ok and g.edits else None
+
+    def _gate_selected(self) -> None:
+        self.fix_btn.setEnabled(self._selected_gate_fix() is not None)
+        it = self.gates.currentItem()
+        while it is not None and it.parent() is not None:
+            it = it.parent()
+        st = self.stage(self.current)
+        g = next((g for g in st.gates if g.id == it.data(0, Qt.ItemDataRole.UserRole)), None) if (
+            it is not None and st is not None) else None
+        if g is None:
+            self.gate_detail.setText("")
+            return
+        parts = [f"<b>{_esc(g.title)}</b>"]
+        if g.why:
+            parts.append(f"<i>Why:</i> {_esc(g.why)}")
+        if g.how and not g.ok:
+            parts.append(f"<i>How to fix:</i> {_esc(g.how)}")
+        parts += [f"<span style='color:{T.text_dim}'>{_esc(e)}</span>" for e in g.evidence[:6] if e]
+        self.gate_detail.setText("<br>".join(parts))
 
     def _gate_clicked(self, item, _col) -> None:
         if self._selected_gate_fix() is not None:
@@ -701,6 +743,7 @@ def _clear(layout) -> None:
         item = layout.takeAt(0)
         w = item.widget()
         if w is not None:
+            w.hide()  # gone now, not when deleteLater runs
             w.deleteLater()
         elif item.layout() is not None:
             _clear(item.layout())
