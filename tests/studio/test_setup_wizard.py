@@ -58,18 +58,22 @@ class FakeDetector:
 def make(qtbot, tmp_path, monkeypatch):
     monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path / "cfg"))  # an empty config: a fresh install
     monkeypatch.setattr("aethercfd.studio.dialogs.setup_wizard.default_case_root", lambda: tmp_path / "home_OpenFOAM")
-    made = []
+    made, wizards = [], []
 
     def build(det: FakeDetector, launched: list | None = None) -> SetupWizard:
         sv = AppServices()
         w = SetupWizard(sv, detector=det, launcher=(launched.append if launched is not None else None))
-        qtbot.addWidget(w)
         made.append(sv)
+        wizards.append(w)
         return w
 
     yield build
     for sv in made:
         sv.pool.waitForDone(10000)
+    for w in wizards:  # as the app does: a closed wizard left alive crashes a later app-wide restyle
+        w.close()
+        w.deleteLater()
+    qtbot.wait(50)
 
 
 def _go_to(qtbot, w: SetupWizard, page) -> None:

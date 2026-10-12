@@ -1033,6 +1033,8 @@ class ViewportPanel(ViewToolsMixin, Panel):
     def on_theme_changed(self) -> None:
         """The Classic look follows the app theme (background, colour-bar text, axes labels); the Studio
         look keeps its dark vignette and light text in both themes."""
+        if getattr(self, "_disposed", False):  # closed: its render window is gone, rendering would crash
+            return
         try:
             self.plotter.add_axes(color=T.text_dim)
             if self.look == "studio":

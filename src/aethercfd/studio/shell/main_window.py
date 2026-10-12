@@ -241,7 +241,12 @@ class MainWindow(QMainWindow):
         """First-run setup (WSL, OpenFOAM, case folders, optional tools, the copilot's AI sign-in); re-openable."""
         from aethercfd.studio.dialogs.setup_wizard import SetupWizard
 
-        if SetupWizard(self.services, self).exec():
+        wiz = SetupWizard(self.services, self)
+        try:
+            ok = wiz.exec()
+        finally:
+            wiz.deleteLater()  # a closed wizard left alive crashes the next app-wide restyle (theme switch)
+        if ok:
             for p in self.host.panels_of("aether.copilot"):  # the provider choice may have changed
                 if hasattr(p, "reload_provider"):
                     p.reload_provider()

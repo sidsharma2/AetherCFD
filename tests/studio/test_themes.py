@@ -156,7 +156,6 @@ def test_wizard_and_copilot_follow_the_theme(window, qtbot, monkeypatch):
         monkeypatch.setattr(p, "auth_status", lambda cli, timeout=30: AuthStatus(True, "test", "me@lab"))
     sv, app = window.services, QApplication.instance()
     wiz = SetupWizard(sv)
-    qtbot.addWidget(wiz)
     cop = CopilotPanel(PanelContext(sv, "#main"))
     qtbot.addWidget(cop)
     qtbot.waitUntil(lambda: cop.cli is not None, timeout=10000)
@@ -168,3 +167,39 @@ def test_wizard_and_copilot_follow_the_theme(window, qtbot, monkeypatch):
     sv.set_theme("dark")
     assert _stale_colours(app, LIGHT) == []
     cop.dispose()
+    wiz.close()
+    wiz.deleteLater()  # as the app does: a closed wizard left alive crashes the next app-wide restyle
+    qtbot.wait(50)
+
+
+def test_theme_switch_after_the_setup_wizard_closed(window, qtbot, monkeypatch):
+    """Help > Setup Wizard, close it, switch the theme: the app deletes the wizard, so nothing crashes."""
+    from aethercfd.studio.dialogs import setup_wizard
+
+    monkeypatch.setattr(setup_wizard.SetupWizard, "exec", lambda self: 0)  # closed straight away
+    window.show_setup_wizard()
+    qtbot.wait(50)  # deleteLater runs
+    assert not [w for w in QApplication.topLevelWidgets() + window.findChildren(setup_wizard.SetupWizard)
+                if isinstance(w, setup_wizard.SetupWizard)]
+    window.services.set_theme("light")
+    window.services.set_theme("dark")
+
+
+def test_switch_with_an_open_and_a_closed_viewport(window, qtbot):
+    """A theme switch re-tints a live viewport, and a closed one (render window gone, widget not yet deleted)
+    is left alone instead of rendering into a dead window."""
+    pytest.importorskip("vtk")
+    sv = window.services
+    window.show()
+    spec = sv.panels.get("aether.viewport")
+    sv.host.open_panel(spec, instance="th1")
+    vp = sv.host.build_panel("aether.viewport#th1")
+    assert vp is not None
+    sv.set_theme("light")
+    vp.set_look("classic")
+    sv.set_theme("dark")
+    assert sv.host.close_panel("aether.viewport#th1")
+    assert vp._disposed
+    sv.set_theme("light")  # the closed panel is still connected until Qt deletes it
+    sv.set_theme("dark")
+    qtbot.wait(50)
