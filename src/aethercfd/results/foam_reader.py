@@ -150,8 +150,11 @@ class FoamResults:
         if time is not None:
             r.UpdateTimeStep(time)
         r.Update()
+        # A deep copy: the result is drawn on the GUI thread while the viewport worker reads again with this
+        # reader, which reuses its cached mesh objects and arrays. A shallow copy (even with new leaf
+        # objects) shares them, and drawing one read during the next deadlocked the app.
         out = r.GetOutput().NewInstance()
-        out.ShallowCopy(r.GetOutput())
+        out.DeepCopy(r.GetOutput())
         return out
 
 

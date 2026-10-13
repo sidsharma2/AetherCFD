@@ -184,6 +184,37 @@ def test_region_names_from_the_vtk_reader():
     assert ResultsMeta(patches=["internalMesh", "patch/inlet"]).internal_meshes == ["internalMesh"]
 
 
+def test_reads_never_share_dataset_objects_with_the_reader():
+    """The viewport draws one read's datasets on the GUI thread while its worker reads again with the same
+    reader; sharing the reader's own leaf objects (a plain multiblock ShallowCopy) deadlocked the app."""
+    pytest.importorskip("vtk")
+    from aethercfd.results.foam_reader import FoamResults, iter_leaves
+
+    case = Path(__file__).resolve().parents[1] / "fixtures" / "cases" / "esi_cavity"
+    if not (case / "constant" / "polyMesh").is_dir():
+        pytest.skip("fixture without a mesh")
+    r = FoamResults(case)
+    first = dict(iter_leaves(r.read(None)))
+    mine = {id(ds) for ds in first.values()}
+    theirs = [ds for _, ds in iter_leaves(r.reader.GetOutput())]
+    assert first and not (mine & {id(ds) for ds in theirs})
+
+    def arrays(datasets):  # the points and field arrays (the reader reuses its cached mesh arrays)
+        out = set()
+        for ds in datasets:
+            if ds.GetPoints() is not None:
+                out.add(ds.GetPoints().GetData().__this__)  # the C++ address (Python wrapper ids get reused)
+            cd = ds.GetCellData()
+            out |= {cd.GetAbstractArray(i).__this__ for i in range(cd.GetNumberOfArrays())}
+        return out
+
+    assert not (arrays(first.values()) & arrays(theirs))  # a shallow copy of each leaf still shares these
+    cells = {k: ds.GetNumberOfCells() for k, ds in first.items()}
+    second = dict(iter_leaves(r.read(None, cell_to_point=True)))
+    assert not ({id(ds) for ds in second.values()} & mine)
+    assert {k: ds.GetNumberOfCells() for k, ds in first.items()} == cells  # the first read is left alone
+
+
 def test_pod_and_dmd_agree_on_cpu_and_gpu():
     from aethercfd.results.modes import GPU_POD_MIN_VALUES, _linalg_backend, dmd, pod
 
