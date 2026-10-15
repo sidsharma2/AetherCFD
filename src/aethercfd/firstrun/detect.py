@@ -203,9 +203,12 @@ def check_ai(settings, providers: dict | None = None) -> list[AiReport]:
         except Exception as exc:
             out.append(AiReport(p.id, p.label, True, cli.version, False, str(exc), cli=cli))
             continue
-        hint = "" if a.logged_in else (a.detail if a.method == "config-error" else
-                                       f"Not signed in: press Sign in (or run `{p.login_hint}`).")
-        out.append(AiReport(p.id, p.label, True, cli.version, a.logged_in, a.detail or a.method, hint, cli))
+        # e.g. Claude signed in with an API (Console) account
+        problem = p.billing_problem(a, settings) if hasattr(p, "billing_problem") else None
+        hint = problem or ("" if a.logged_in else (a.detail if a.method == "config-error" else
+                                                   f"Not signed in: press Sign in (or run `{p.login_hint}`)."))
+        out.append(AiReport(p.id, p.label, True, cli.version, a.logged_in and not problem, a.detail or a.method, hint,
+                            cli))
     return out
 
 

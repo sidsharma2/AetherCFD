@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QTextBrowser,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from aethercfd.copilot.provider import NO_WINDOW
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
 from aethercfd.studio.theme.style import icon
 from aethercfd.studio.theme.tokens import T
@@ -338,11 +340,16 @@ class CopilotPanel(Panel):
         self.btn_stop = QToolButton(icon=icon("msc.debug-stop"), toolTip="Stop the current answer",
                                     autoRaise=True)
         self.btn_stop.setEnabled(False)
+        self.btn_account = QToolButton(icon=icon("msc.account"), autoRaise=True,
+                                       toolTip="Switch account: sign out, then sign in with another Claude "
+                                               "subscription (shared with the Claude desktop app and a terminal "
+                                               "`claude`)")
         top.addWidget(self.status, 1)
         top.addWidget(self.provider_box)
         top.addWidget(self.model)
         top.addWidget(self.btn_new)
         top.addWidget(self.btn_stop)
+        top.addWidget(self.btn_account)
         lay.addLayout(top)
         self.banner = QWidget()
         bl = QVBoxLayout(self.banner)  # stacked: the copilot usually lives in a narrow side dock
@@ -386,6 +393,7 @@ class CopilotPanel(Panel):
         self.btn_new.clicked.connect(self.new_conversation)
         self.btn_stop.clicked.connect(self._interrupt)
         self.btn_login.clicked.connect(self._login)
+        self.btn_account.clicked.connect(self.switch_account)
         self.btn_recheck.clicked.connect(self._find_cli)
         self.provider_box.currentIndexChanged.connect(self._provider_picked)
         self.model.activated.connect(lambda _i: self._model_picked())
@@ -429,6 +437,7 @@ class CopilotPanel(Panel):
     def _show_auth(self) -> None:
         prov, cli, auth = self.provider, self.cli, self.auth
         self.btn_login.setText(f"Sign in to {prov.label}")
+        self.btn_account.setVisible(cli is not None and prov.logout_argv(cli) is not None)
         if cli is None:
             self.banner_text.setText(prov.install_hint)
             self.btn_login.hide()
@@ -445,14 +454,63 @@ class CopilotPanel(Panel):
             self.banner.show()
             self.status.setText("Copilot: not signed in")
             return
+        problem = prov.billing_problem(auth, self.sv.settings)
+        if problem:
+            self.banner_text.setText(problem)
+            self.btn_login.setText("Switch account")
+            self.btn_login.show()
+            self.banner.show()
+            self.status.setText(f"Copilot: {auth.method} sign-in not used")
+            return
         self.banner.hide()
-        self.status.setText(f"{prov.product} {cli.version} · {auth.detail or auth.method}")
+        self.status.setText(self._signed_in_text())
+
+    def _signed_in_text(self) -> str:
+        a, c = self.auth, self.cli
+        plan = f" · {a.plan} plan" if a.plan else ""
+        return f"{self.provider.product} {getattr(c, 'version', '')} · {a.detail or a.method}{plan}"
+
+    def _cli_env(self) -> dict[str, str] | None:
+        if self.provider.id != "claude":
+            return None
+        from aethercfd.copilot.claude_cli import cli_env
+
+        return cli_env(self.sv.settings)
 
     def _login(self) -> None:
         if self.cli is None:
             return
-        subprocess.Popen(self.provider.login_argv(self.cli), creationflags=CREATE_NEW_CONSOLE)  # user sees prompts
+        if self.auth is not None and self.auth.logged_in:
+            self.switch_account()  # signed in with the wrong kind of account: the banner's button switches
+            return
+        # the user sees the prompts; --claudeai: a Claude subscription, never a Console (API-billed) account
+        subprocess.Popen(self.provider.login_argv(self.cli), creationflags=CREATE_NEW_CONSOLE, env=self._cli_env())
         self.sv.notify(f"Complete the {self.provider.label} sign-in in your browser, then press Check again")
+
+    def switch_account(self, *, confirm: bool = True) -> None:
+        """Sign the CLI out, then open its subscription sign-in (docs/copilot-accounts.md)."""
+        prov, cli = self.provider, self.cli
+        logout = prov.logout_argv(cli) if cli is not None else None
+        if logout is None:
+            return
+        who = (self.auth.detail if self.auth and self.auth.logged_in else "") or "the current account"
+        if confirm and QMessageBox.question(
+                self, "Switch account",
+                f"Sign {prov.product} out of {who} and sign in with another Claude subscription?\n\n"
+                f"The sign-in is shared with the Claude desktop app and any terminal `claude` on this Windows "
+                f"account: they switch too.") != QMessageBox.StandardButton.Yes:
+            return
+        self._stop_session()
+        try:
+            subprocess.run(logout, capture_output=True, timeout=30, creationflags=NO_WINDOW, env=self._cli_env())
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.sv.notify(f"Sign-out failed: {exc}", "warn")
+            return
+        self.auth = None
+        subprocess.Popen(prov.login_argv(cli), creationflags=CREATE_NEW_CONSOLE, env=self._cli_env())
+        self._add("note", f"Signed out of {who}. Finish the sign-in in your browser, then press Check again.")
+        self._show_auth()
+        self.sv.notify(f"Complete the {prov.label} sign-in in your browser, then press Check again")
 
     # ------------------------------------------------------------------ provider / model picker
     def _fill_models(self, models, current: str | None) -> None:
@@ -564,6 +622,11 @@ class CopilotPanel(Panel):
             self._add("note", f"{prov.product} {what}: see the note above (or run `{prov.login_hint}`), then send "
                               "again. Your message is still in the box.")
             return False
+        problem = prov.billing_problem(self.auth, self.sv.settings)
+        if problem:
+            self._show_auth()
+            self._add("note", problem + " Your message is still in the box.")
+            return False
         if not self.sv.ensure_project():
             return False
         from aethercfd.commands.executor import Executor
@@ -609,7 +672,7 @@ class CopilotPanel(Panel):
     def _idle_status(self) -> str:
         a, c = self.auth, self.cli
         if a is not None and a.logged_in and c is not None:
-            return f"{self.provider.product} {getattr(c, 'version', '')} · {a.detail or a.method}"
+            return self._signed_in_text()
         return self.status.text()
 
     def _case_changed(self) -> None:
@@ -734,7 +797,7 @@ class CopilotPanel(Panel):
             secs = time.monotonic() - self._t_start
             bits = [who, f"{ev.get('num_turns') or '?'} turns", f"{secs:.0f} s"]
             if ev.get("cost_usd") is not None:
-                bits.append(f"est. ${ev['cost_usd']:.2f}")
+                bits.append(self._conv_provider.spend_text(ev["cost_usd"], self.auth))
             elif ev.get("usage"):
                 u = ev["usage"]
                 bits.append(f"{_tokens(u.get('input_tokens', 0))} in / {_tokens(u.get('output_tokens', 0))} out tokens")

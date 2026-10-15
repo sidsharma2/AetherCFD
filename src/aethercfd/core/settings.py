@@ -56,6 +56,9 @@ class Settings(BaseModel):
     gpu_compute: str = "auto"  # auto (CUDA via CuPy when available) | cuda | cpu
     copilot_provider: str = "claude"  # claude (Claude Code) | codex (OpenAI Codex CLI)
     copilot_model: str | None = None  # model for new copilot conversations (default: the provider's own default)
+    # the Claude copilot only runs on a Claude subscription sign-in (never an API key / Console account billed
+    # per token); see docs/copilot-accounts.md
+    copilot_subscription_only: bool = True
     claude_exe: str | None = None  # Claude Code CLI for the copilot (default: found automatically)
     codex_exe: str | None = None  # OpenAI Codex CLI for the copilot (default: found automatically)
     ml_python: str | None = None  # python.exe of the PyTorch environment for PINNs (default: found automatically)
