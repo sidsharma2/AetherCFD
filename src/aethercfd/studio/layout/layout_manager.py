@@ -76,6 +76,35 @@ class LayoutManager(QObject):
         app.screenRemoved.connect(lambda *_: self._screen_timer.start())
         app.primaryScreenChanged.connect(lambda *_: self._screen_timer.start())
 
+    # ------------------------------------------------------------------ single window / extra screens
+    def use_extra_screens(self) -> bool:
+        """Settings.use_extra_screens: perspectives may float panels onto other monitors (default off)."""
+        settings = getattr(self.services, "settings", None)
+        return bool(getattr(settings, "use_extra_screens", False))
+
+    def _layout_key(self) -> str:
+        """Saved-layout key: the monitor fingerprint, kept apart for single-window layouts."""
+        fp = fingerprint(self.screens)
+        return fp if self.use_extra_screens() else f"{fp}|single-window"
+
+    def _find_variant(self, pid: str):
+        single = not self.use_extra_screens()
+        return self.store.find_variant(pid, self._layout_key(), arrangement(self.screens), len(self.screens),
+                                       single_window=single)
+
+    def set_use_extra_screens(self, on: bool) -> None:
+        """Switch between one window and spreading over monitors, then lay the perspective out again."""
+        settings = getattr(self.services, "settings", None)
+        if settings is None or bool(getattr(settings, "use_extra_screens", False)) == bool(on):
+            return
+        self.save_now()
+        settings.use_extra_screens = bool(on)
+        try:
+            settings.save()
+        except Exception:
+            log.exception("settings save failed")
+        self.restore(self.current)
+
     # ------------------------------------------------------------------ snapshot
     def _screen_of(self, r: Rect) -> ScreenInfo | None:
         return screen_at(self.screens, r)
@@ -113,7 +142,7 @@ class LayoutManager(QObject):
             "saved_at": datetime.now(UTC).isoformat(timespec="seconds"), "app_version": __version__,
             "main_window": self._win_record(self.window),
             "ads_state": base64.b64encode(self.host.save_state()).decode("ascii"),
-            "floating": floating, "panels": panels,
+            "floating": floating, "panels": panels, "single_window": not self.use_extra_screens(),
         }
 
     def schedule_save(self) -> None:
@@ -135,7 +164,7 @@ class LayoutManager(QObject):
                 # the dock state can be empty while panels look open (e.g. a panel that failed to build)
                 log.info("layout %s not saved: the dock state has no panels", self.current)
                 return
-            self.store.save_variant(self.current, fingerprint(self.screens), snap)
+            self.store.save_variant(self.current, self._layout_key(), snap)
         except Exception:
             log.exception("layout autosave failed")
 
@@ -145,7 +174,7 @@ class LayoutManager(QObject):
         try:
             self.screens = current_screens()
             self.current = pid
-            hit = self.store.find_variant(pid, fingerprint(self.screens), arrangement(self.screens), len(self.screens))
+            hit = self._find_variant(pid)
             how = "recipe"
             if hit is not None:
                 how, variant = hit
@@ -209,7 +238,8 @@ class LayoutManager(QObject):
             if d is not None and not d.isClosed() and name != "aether.workbench#main":
                 d.toggleView(False)
         groups: dict[str, object] = {}
-        for place in p.recipe(len(self.screens)):
+        n = len(self.screens) if self.use_extra_screens() else 1  # single window: the one-screen recipe
+        for place in p.recipe(n):
             spec = self.services.panels.get(place.panel)
             if spec is None:
                 continue
@@ -265,14 +295,14 @@ class LayoutManager(QObject):
                 w.resize(c.w, c.h)
 
     def _on_screens_settled(self) -> None:
-        old_fp = fingerprint(self.screens)
+        old_fp = self._layout_key()
         self.screens = current_screens()
-        new_fp = fingerprint(self.screens)
+        new_fp = self._layout_key()
         self.screens_changed.emit(self.screens)
         if new_fp == old_fp:
             self.clamp_all()
             return
-        hit = self.store.find_variant(self.current, new_fp, arrangement(self.screens), len(self.screens))
+        hit = self._find_variant(self.current)
         if hit is not None and hit[0] == "exact":
             self.restore(self.current)
             self.services.notify(f"Monitor setup changed: restored your '{self.current}' layout for these screens.")

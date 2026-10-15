@@ -66,12 +66,15 @@ class LayoutStore:
                 src.replace(p.with_suffix(f".bak{i + 1}.json"))
         shutil.copy2(p, p.with_suffix(".bak1.json"))
 
-    def find_variant(self, perspective: str, fp: str, arrangement: str, n_screens: int) -> tuple[str, dict] | None:
-        """Exact fingerprint first (any arrangement), else a variant with the same number of screens."""
+    def find_variant(self, perspective: str, fp: str, arrangement: str, n_screens: int,
+                     single_window: bool = False) -> tuple[str, dict] | None:
+        """Exact fingerprint first (any arrangement), else a variant with the same number of screens. A
+        single-window layout only matches single-window variants (older variants count as multi-screen)."""
         variants = self.load_file(perspective)["variants"]
         if fp in variants:
             return "exact", variants[fp]
-        same_count = [v for v in variants.values() if len(v.get("screens", [])) == n_screens]
+        same_count = [v for v in variants.values() if len(v.get("screens", [])) == n_screens
+                      and bool(v.get("single_window", False)) == single_window]
         if same_count:
             return "similar", sorted(same_count, key=lambda v: v.get("saved_at", ""))[-1]
         return None
