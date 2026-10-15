@@ -63,6 +63,9 @@ class Settings(BaseModel):
     cfd_agents_python: str | None = None  # python.exe of the cfd_agents environment (aethercfd.services.cfd_agents)
     cfd_agents_root: str | None = None  # folder that contains the cfd_agents package
     theme: str = "system"  # system (follows Windows' app mode) | light | dark
+    # perspectives float panels onto extra monitors (e.g. Run Monitor on a 2nd/3rd screen); off keeps every
+    # panel docked in the main window
+    use_extra_screens: bool = False
     viewport_look: str = "studio"  # studio (AetherCFD's own look) | classic (ParaView-style, true cell values)
     # auto (Smooth in Studio, Cells in Classic) | smooth (colours and contours interpolated to the mesh points)
     # | cells (every cell's own value, stair-stepped contours: the mesh resolution stays visible)

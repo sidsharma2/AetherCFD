@@ -88,6 +88,12 @@ class MainWindow(QMainWindow):
             self._persp_actions[p.id] = act
         persp.addSeparator()
         persp.addAction("Reset Current Perspective", self.layouts.reset)
+        extra = persp.addAction("Use Extra Screens")
+        extra.setCheckable(True)
+        extra.setChecked(self.layouts.use_extra_screens())
+        extra.setToolTip("On: perspectives float panels onto your other monitors (Run Monitor on its own "
+                         "screen). Off: every panel stays docked in this window.")
+        extra.toggled.connect(self.layouts.set_use_extra_screens)
         theme = v.addMenu(icon("mdi6.theme-light-dark"), "Theme")
         tgroup = QActionGroup(self)
         self._theme_actions = {}
