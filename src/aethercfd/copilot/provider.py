@@ -48,6 +48,7 @@ class AuthStatus:
     logged_in: bool
     method: str = "none"
     detail: str = ""
+    plan: str = ""  # subscription the sign-in belongs to (Claude: pro | max | team | enterprise), if reported
 
 
 def version_key(v: str) -> tuple[int, ...]:
@@ -102,6 +103,18 @@ class Provider(ABC):
     @abstractmethod
     def login_argv(self, cli: CliInfo) -> list[str]:
         """The CLI's own interactive sign-in; run it in a visible console (the browser opens)."""
+
+    def logout_argv(self, cli: CliInfo) -> list[str] | None:
+        """Sign the CLI out (no prompts), the first half of Switch account; None: the provider has no switch."""
+        return None
+
+    def billing_problem(self, auth: AuthStatus | None, settings=None) -> str | None:
+        """Why the copilot must not run on this sign-in (it would bill in a way the user did not choose), or None."""
+        return None
+
+    def spend_text(self, cost_usd: float, auth: AuthStatus | None) -> str:
+        """The status-line text for the cost the CLI reports after an answer."""
+        return f"est. ${cost_usd:.2f}"
 
     def models(self, cli: CliInfo | None) -> list[tuple[str, str | None]]:
         """(label, model id or None for the CLI's default). May ask the CLI; call it off the GUI thread."""

@@ -61,7 +61,12 @@ def run(case: str, prompt: str, *, approve: str = "none", allow_destructive: boo
               f"{prov.product} ({cli.exe}) is not signed in. Run:\n  \"" + "\" \"".join(prov.login_argv(cli)) + "\"",
               file=out)
         return 4
-    executor = Executor(default_registry(), s.context, PolicyApprover(approve, allow_destructive=allow_destructive,
+    problem = prov.billing_problem(st, s.settings)
+    if problem:
+        print(problem.replace("press Switch account", "run `claude auth logout` then `claude auth login --claudeai`"),
+              file=out)
+        return 4
+    executor =Executor(default_registry(), s.context, PolicyApprover(approve, allow_destructive=allow_destructive,
                                                                       out=out))
     tools = ToolSet(ToolContext(s, executor=executor))
     bridge = BridgeServer(lambda: tools).start()
@@ -106,7 +111,7 @@ def run(case: str, prompt: str, *, approve: str = "none", allow_destructive: boo
     t0 = time.monotonic()
     finished = done.wait(timeout_min * 60)
     res = state["result"] or {}
-    spend = (f"cost ${res['cost_usd']:.2f}" if res.get("cost_usd") is not None else
+    spend = (prov.spend_text(res["cost_usd"], st) if res.get("cost_usd") is not None else
              f"tokens {res['usage']}" if res.get("usage") else "")
     print(f"\n[copilot] {'finished' if finished else 'TIMED OUT'} in {(time.monotonic() - t0) / 60:.1f} min; "
           f"turns {res.get('num_turns')}, {spend}, session {sess.session_id}"

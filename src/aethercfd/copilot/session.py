@@ -19,7 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from aethercfd.copilot.bridge import BridgeServer
-from aethercfd.copilot.claude_cli import NO_WINDOW, ClaudeCli
+from aethercfd.copilot.claude_cli import NO_WINDOW, ClaudeCli, cli_env
 from aethercfd.copilot.provider import MCP_SERVER, CopilotSessionBase, result_event
 from aethercfd.core.runtime import module_argv
 from aethercfd.core.settings import cache_dir
@@ -178,7 +178,7 @@ class ClaudeSession(CopilotSessionBase):
         return a
 
     def start(self) -> None:
-        env = dict(os.environ)
+        env = cli_env()  # never an API key: the copilot runs on the Claude subscription the CLI is signed in to
         env["MCP_TOOL_TIMEOUT"] = str(4 * 3600 * 1000)  # approvals and runs can take a while
         env["MCP_TIMEOUT"] = "60000"
         errlog = cache_dir() / "copilot" / "claude-stderr.log"

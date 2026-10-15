@@ -38,6 +38,27 @@ class ClaudeProvider(Provider):
 
         return login_argv(cli)
 
+    def logout_argv(self, cli: CliInfo) -> list[str] | None:
+        from aethercfd.copilot.claude_cli import logout_argv
+
+        return logout_argv(cli)
+
+    def billing_problem(self, auth: AuthStatus | None, settings=None) -> str | None:
+        from aethercfd.copilot.claude_cli import SUBSCRIPTION_METHOD, subscription_only
+
+        if auth is None or not auth.logged_in or auth.method == SUBSCRIPTION_METHOD or not subscription_only(settings):
+            return None
+        return (f"Claude Code is signed in with '{auth.method}' (an API / Console account, billed per token). The "
+                "copilot only runs on a Claude subscription: press Switch account and sign in with your Claude plan.")
+
+    def spend_text(self, cost_usd: float, auth: AuthStatus | None) -> str:
+        from aethercfd.copilot.claude_cli import SUBSCRIPTION_METHOD
+
+        if auth is not None and auth.method == SUBSCRIPTION_METHOD:
+            # Claude Code reports what the answer would cost on the API; a subscription is not billed per answer
+            return f"${cost_usd:.2f} API-equiv. ({auth.plan or 'subscription'} plan, not billed)"
+        return f"est. ${cost_usd:.2f}"
+
     def session(self, cli: CliInfo, case_root: Path, bridge, *, on_event: Callable[[dict], None],
                 on_exit: Callable[[int], None] | None = None, model: str | None = None,
                 resume: str | None = None, allow_web: bool = False, distro: str = "", wsl_path: str = "",

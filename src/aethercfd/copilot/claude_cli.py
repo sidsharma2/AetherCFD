@@ -18,7 +18,8 @@ from aethercfd.copilot.provider import NO_WINDOW, AuthStatus, CliInfo, version_k
 
 ClaudeCli = CliInfo  # the name the rest of the app (and older tests) use
 _version_key = version_key
-__all__ = ["NO_WINDOW", "AuthStatus", "ClaudeCli", "auth_status", "candidates", "find_claude", "login_argv"]
+__all__ = ["API_BILLING_ENV", "NO_WINDOW", "SUBSCRIPTION_METHOD", "AuthStatus", "ClaudeCli", "auth_status",
+           "candidates", "cli_env", "find_claude", "login_argv", "logout_argv", "subscription_only"]
 
 
 def candidates(configured: str | None = None) -> list[tuple[Path, str]]:
@@ -57,17 +58,50 @@ def find_claude(configured: str | None = None) -> ClaudeCli | None:
     return None
 
 
+# Environment that makes Claude Code bill an API account or a cloud provider instead of the subscription it is
+# signed in to. The copilot never passes it on (docs/copilot-accounts.md), unless copilot_subscription_only is off.
+API_BILLING_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+                   "CLAUDE_CODE_USE_FOUNDRY")
+SUBSCRIPTION_METHOD = "claude.ai"  # `claude auth status --json` authMethod of a Claude subscription sign-in
+
+
+def subscription_only(settings=None) -> bool:
+    if settings is None:
+        from aethercfd.core.settings import Settings
+
+        try:
+            settings = Settings.load()
+        except Exception:
+            return True  # unreadable settings: the safe choice
+    return bool(getattr(settings, "copilot_subscription_only", True))
+
+
+def cli_env(settings=None, base: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment every Claude Code process the copilot starts gets (sign-in check, sign-in, sessions)."""
+    env = dict(os.environ if base is None else base)
+    if subscription_only(settings):
+        for k in list(env):
+            if k.upper() in API_BILLING_ENV:
+                del env[k]
+    return env
+
+
 def auth_status(cli: ClaudeCli, timeout: float = 30) -> AuthStatus:
     try:
         r = subprocess.run([str(cli.exe), "auth", "status", "--json"], capture_output=True, text=True, timeout=timeout,
-                           creationflags=NO_WINDOW)
+                           creationflags=NO_WINDOW, env=cli_env())
         d = json.loads(r.stdout or "{}")
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
         return AuthStatus(False, "unknown", str(exc))
     return AuthStatus(bool(d.get("loggedIn")), str(d.get("authMethod", "none")),
-                      str(d.get("email") or d.get("orgName") or ""))
+                      str(d.get("email") or d.get("orgName") or ""), str(d.get("subscriptionType") or ""))
 
 
 def login_argv(cli: ClaudeCli) -> list[str]:
-    """Interactive sign-in (opens the browser); run it in a visible console."""
-    return [str(cli.exe), "auth", "login"]
+    """Interactive sign-in with a Claude subscription (opens the browser); run it in a visible console."""
+    return [str(cli.exe), "auth", "login", "--claudeai"]
+
+
+def logout_argv(cli: ClaudeCli) -> list[str]:
+    """Sign out; shared by everything on this Windows account that uses Claude Code (desktop app, terminal)."""
+    return [str(cli.exe), "auth", "logout"]

@@ -145,3 +145,28 @@ def test_events_of_a_stopped_conversation_are_dropped(panel):
     n = len(p.items)
     p._on_event((p._gen - 1, {"type": "message", "text": "late"}))
     assert len(p.items) == n
+
+
+def test_an_api_sign_in_is_refused_and_switch_account_signs_out(panel, qtbot, monkeypatch):
+    """docs/copilot-accounts.md: the Claude copilot never runs on a Console (API-billed) sign-in."""
+    from aethercfd.copilot.provider import AuthStatus
+    from aethercfd.studio.panels.copilot import panel as panel_mod
+
+    p = panel
+    p.auth = AuthStatus(True, "claude.ai", "me@lab", "max")
+    p._show_auth()
+    assert p.banner.isHidden() and p.status.text().endswith("me@lab · max plan") and p.btn_account.isVisibleTo(p)
+    p.auth = AuthStatus(True, "console", "me@lab")
+    monkeypatch.setattr(PROVIDERS["claude"], "auth_status", lambda cli, timeout=30: p.auth)
+    p._show_auth()
+    assert not p.banner.isHidden() and p.btn_login.text() == "Switch account"
+    assert p.send("hello") is False and p.copilot is None  # nothing started on the API account
+    assert "Switch account" in p.items[-1]["text"]
+    calls = []
+    monkeypatch.setattr(panel_mod.subprocess, "run", lambda argv, **kw: calls.append(("run", argv, kw.get("env"))))
+    monkeypatch.setattr(panel_mod.subprocess, "Popen", lambda argv, **kw: calls.append(("popen", argv, kw.get("env"))))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    p.switch_account(confirm=False)
+    assert [(k, a[1:]) for k, a, _env in calls] == [("run", ["auth", "logout"]), ("popen", ["auth", "login", "--claudeai"])]
+    assert all("ANTHROPIC_API_KEY" not in {k.upper() for k in env} for _k, _a, env in calls)
+    assert p.auth is None and not p.banner.isHidden()  # waits for the new sign-in (Check again)

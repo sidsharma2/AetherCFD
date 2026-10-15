@@ -23,8 +23,11 @@ source, WSL + OpenFOAM, the first-run setup wizard, the copilot sign-in).
 **Copilot providers and sign-in:** the copilot runs through Claude Code (default; the Claude desktop app
 ships it) or the OpenAI Codex CLI; pick the provider and model in the Copilot panel's top bar (settings
 `copilot_provider`, `copilot_model`). Sign in once from the panel ("Sign in to Claude" / "Sign in to
-Codex"), or run `claude auth login` / `codex login`. Either way the AI only gets the AetherCFD tools:
+Codex"), or run `claude auth login --claudeai` / `codex login`. Either way the AI only gets the AetherCFD tools:
 its own shell and file-writing tools are off, and every edit or run goes through the approval dialog.
+The Claude copilot only runs on a Claude subscription sign-in: API keys are stripped from its environment, a
+Console (API-billed) sign-in is refused, and **Switch account** (person icon in the Copilot panel) changes
+subscriptions. See [docs/copilot-accounts.md](docs/copilot-accounts.md).
 
 **GPU:** the app renders on the discrete NVIDIA GPU automatically (setting `gpu = "high-performance"`;
 `integrated` / `system` to change). CUDA compute (CuPy) is used when available (the very first GPU stage after an install compiles its kernels, about a minute; they are cached); everything falls back to
