@@ -213,6 +213,9 @@ class ViewportPanel(ViewToolsMixin, Panel):
         # ---------------- view + sidebar
         split = QSplitter(Qt.Orientation.Horizontal)
         self.plotter = QtInteractor(self, auto_update=False)
+        from aethercfd.studio.panels.viewport.render_thread import guard_render_thread
+
+        guard_render_thread(self.plotter.render_window, self.vid)  # ADR 0008: renders on the GUI thread only
         self.plotter.set_background(T.viewport_bg)
         self.plotter.enable_anti_aliasing("fxaa")
         self.plotter.enable_depth_peeling(number_of_peels=4)  # correct order for translucent base meshes

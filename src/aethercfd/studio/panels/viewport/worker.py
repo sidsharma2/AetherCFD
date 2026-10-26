@@ -1,6 +1,12 @@
 """VtkWorker: reading and filtering on ONE dedicated thread (ADR 0005). The GUI thread only receives
-ready-to-render vtkPolyData (shallow copies) and never runs reader/filter code. VTK releases the GIL
-while it works, so the UI stays responsive even for million-cell meshes."""
+ready-to-render vtkPolyData and never runs reader/filter code. VTK releases the GIL while it works, so the
+UI stays responsive even for million-cell meshes.
+
+Thread rules (ADR 0008): the reader's output arrives as a deep copy (FoamResults.read), so nothing handed to
+the GUI is ever rewritten by the reader; everything else crosses as the frozen output of a filter this worker
+created for one call and never runs again. Objects in the geometry cache (_cached/_remember: glass shells,
+outlines) are reused across loads after the GUI already holds them, so they are never modified once
+remembered: the colouring loop skips shell blocks and the outline is passed through as is."""
 
 from __future__ import annotations
 
@@ -257,6 +263,7 @@ class VtkWorker(QObject):
         return self.__dict__.setdefault("_geo_cache", {}).get(key)
 
     def _remember(self, key, value):
+        """Cache ``value``. The GUI may already hold it, so nothing modifies it from here on (ADR 0008 rule 3)."""
         cache = self.__dict__.setdefault("_geo_cache", {})
         cache[key] = value
         while len(cache) > 16:  # a few cases / slices / region shells; oldest first out
@@ -365,7 +372,9 @@ class VtkWorker(QObject):
             patch_polys: dict[str, vtk.vtkPolyData] = {}  # reader patch name -> surface (seeds, planes)
             for path, ds in iter_leaves(mb):
                 if path.endswith("internalMesh"):
-                    own = ds.NewInstance()  # our own array lists: pathlines read other times with this reader
+                    # our own array lists: pathlines read other times with the same reader (its output is
+                    # already a deep copy since 2d8564e, ADR 0008; this copy only keeps the lists apart)
+                    own = ds.NewInstance()
                     own.ShallowCopy(ds)
                     ds = own
                     internal.append(ds)

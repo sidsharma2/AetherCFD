@@ -1,0 +1,219 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2306                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    arch        "LSB;label=32;scalar=64";
+    class       volScalarField;
+    location    "0.4/rightSolid";
+    object      T;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 0 0 1 0 0 0];
+
+internalField   uniform 300;
+
+boundaryField
+{
+    maxX
+    {
+        type            zeroGradient;
+    }
+    minZ
+    {
+        type            zeroGradient;
+    }
+    maxZ
+    {
+        type            zeroGradient;
+    }
+    rightSolid_to_bottomWater
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        refValue        uniform 300;
+        refGradient     uniform 0;
+        valueFraction   uniform 0.0075140686;
+        source          uniform 0;
+        logInterval     -1;
+        writePrecision  8;
+        updateHeader    1;
+        writeToFile     0;
+        useUserTime     1;
+        kappaMethod     solidThermo;
+        value           uniform 300;
+    }
+    rightSolid_to_topAir
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        refValue        nonuniform List<scalar> 
+130
+(
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+300
+300
+300
+300
+300
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+300
+300
+300
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+300
+300
+300
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+300
+300
+300
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+300
+300
+300
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+300
+300
+300
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+300
+300
+300
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+300
+300
+300
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+300
+300
+300
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+299.99999
+300
+300
+300
+300
+)
+;
+        refGradient     uniform 0;
+        valueFraction   uniform 0.00032132529;
+        source          uniform 0;
+        logInterval     -1;
+        writePrecision  8;
+        updateHeader    1;
+        writeToFile     0;
+        useUserTime     1;
+        kappaMethod     solidThermo;
+        value           uniform 300;
+    }
+    rightSolid_to_heater
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        refValue        nonuniform List<scalar> 10(300 300 300 300 300.00001 300.00001 300 300 300 300);
+        refGradient     uniform 0;
+        valueFraction   uniform 0.50000003;
+        source          uniform 0;
+        logInterval     -1;
+        writePrecision  8;
+        updateHeader    1;
+        writeToFile     0;
+        useUserTime     1;
+        kappaMethod     solidThermo;
+        value           uniform 300;
+    }
+}
+
+
+// ************************************************************************* //
