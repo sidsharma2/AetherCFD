@@ -123,3 +123,9 @@ source_modules = [
     "aethercfd.firstrun",
 ]
 forbidden_modules = ["PySide6", "PySide6QtAds", "pyvistaqt", "qtpy", "pyqtgraph", "aethercfd.studio"]
+
+[[tool.importlinter.contracts]]
+name = "Results code never imports Qt or the studio (ADR 0008: it runs on worker threads)"
+type = "forbidden"
+source_modules = ["aethercfd.results"]
+forbidden_modules = ["PySide6", "PySide6QtAds", "pyvistaqt", "qtpy", "pyqtgraph", "aethercfd.studio"]

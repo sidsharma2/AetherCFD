@@ -553,6 +553,15 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
             until=lambda: "Looking" not in cp.status.text(), detail=lambda: cp.status.text())
     sw.shot("final")
 
+    def on_gui_thread():
+        from aethercfd.studio.panels.viewport.render_thread import VIOLATIONS
+
+        if VIOLATIONS:
+            _fail(f"{len(VIOLATIONS)} render(s) off the GUI thread; first: {VIOLATIONS[0]}")
+        return "every viewport render ran on the GUI thread"
+
+    sw.step("ADR 0008: no viewport rendered off the GUI thread", on_gui_thread)
+
     failed = [st for st in sw.steps if not st["ok"]]
     report = {"case": str(root) if root else None, "has_results": has_results, "steps": sw.steps,
               "failed": len(failed), "total": len(sw.steps)}
