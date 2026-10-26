@@ -239,11 +239,15 @@ class RunManager:
             res = self.runner.run_script(control_sh("alive", rec.run_dir_wsl, rec.pgid), timeout_s=30)
         except Exception:
             return None
-        reply = res.stdout.strip()
+        raw = res.stdout.replace("\r", "")
+        reply = raw.strip()
         out = reply.split()
-        if not res.ok or "\n" in reply or not (reply == "DEAD" or (len(out) == 3 and out[0] == "ALIVE")):
+        complete = raw.rstrip(" \t").endswith("\n")  # the probe always ends its line: without it the reply was cut
+        if not res.ok or not complete or "\n" in reply or not (
+                reply == "DEAD" or (len(out) == 3 and out[0] == "ALIVE")):
             # an empty, garbled or truncated reply (WSL busy, wsl.exe hiccup, timeout) says nothing about the run:
-            # never mark a healthy run "lost" on it (seen live: a 1M-cell run marked lost while all 8 ranks computed)
+            # never mark a healthy run "lost" on it (seen live: a 1M-cell run marked lost while all 8 ranks computed).
+            # A reply cut inside the boot id ("ALIVE 555 ab") would otherwise read as another boot, i.e. DEAD.
             return None
         if reply == "DEAD":
             return False
