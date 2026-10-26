@@ -267,6 +267,22 @@ def cmd_set(args: argparse.Namespace) -> int:
     return 0 if res.ok else 1
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    from aethercfd.results.report import build
+
+    rep = build(args.case, out_dir=args.out, renders=not args.no_render)
+    print(f"verdict   {rep.data['verdict']}")
+    for r in rep.data["verdict_reasons"]:
+        print(f"            - {r}")
+    for q in rep.data["qois"]:
+        ch = f"{q['change_pct']:.2g} %" if q.get("change_pct") is not None else f"{q['samples']} samples"
+        print(f"qoi       {q.get('title') or q['id']}: {q['final']:.5g} {q.get('unit', '')} ({ch})")
+    for n in rep.notes:
+        print(f"note      {n}")
+    print(f"report    {rep.markdown}")
+    return {"ready": 0, "not ready": 3, "failed": 1}[rep.data["verdict"]]
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="aethercfd", description=__doc__)
     p.add_argument("--version", action="version", version=f"aethercfd {__version__}")
@@ -312,6 +328,13 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--insert", action="store_true", help="add the keyword if missing")
     st.add_argument("--create-project", action="store_true")
     st.set_defaults(func=cmd_set)
+
+    rp = sub.add_parser("report", help="write the run report (verdict, quantities of interest, balances, figures); "
+                                       "exit 0 ready, 3 not ready, 1 failed")
+    rp.add_argument("case")
+    rp.add_argument("--out", help="report folder (default: the project's local/reports/<case>-<time>)")
+    rp.add_argument("--no-render", action="store_true", help="skip the ParaView field pictures")
+    rp.set_defaults(func=cmd_report)
 
     # listed for --help only; main() hands everything after "copilot" to aethercfd.copilot.headless
     sub.add_parser("copilot", help="ask the Claude copilot about a case, headless (copilot -h for options)",

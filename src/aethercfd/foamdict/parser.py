@@ -35,6 +35,41 @@ _ATOM_KINDS = (K.WORD, K.STRING, K.MACRO, K.DIRECTIVE, K.VERBATIM, K.BLOB, K.ERR
 #: deeper nesting than this is reported and the rest of the input is kept as flat atoms (real
 #: dictionaries nest < 10 deep; this only guards pathological or misdetected input)
 MAX_DEPTH = 200
+_MAX_FUNC_ARGS = 20000  # characters an #includeFunc argument list may span
+
+
+def _line_directive_end(src: str, pos: int) -> int:
+    """End of an #includeFunc-style directive: the end of its line, or, when its argument list is still open
+    there or starts on the next line, the matching ')'. Foundation tutorials write
+    ``#includeFunc streamlinesLine\\n(\\n    name=streamlines,\\n    ...\\n)`` (pitzDailySteady/system/functions)."""
+    eol = src.find("\n", pos)
+    eol = len(src) if eol < 0 else eol
+    line = src[pos:eol].split("//", 1)[0]
+    depth = line.count("(") - line.count(")")
+    if depth <= 0:
+        if "(" in line:
+            return eol
+        k = eol
+        while k < len(src) and src[k] in " \t\r\n":
+            k += 1
+        if k >= len(src) or src[k] != "(":
+            return eol
+        scan, depth = k, 0
+    else:
+        scan = eol
+    i, in_str, limit = scan, False, min(len(src), scan + _MAX_FUNC_ARGS)
+    while i < limit:
+        ch = src[i]
+        if ch == '"':
+            in_str = not in_str
+        elif not in_str and ch == "(":
+            depth += 1
+        elif not in_str and ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return eol
 
 
 def parse(source: str, fmt: FileFormat | None = None) -> FoamDocument:
@@ -172,8 +207,7 @@ class _Parser:
         if name in _NOARG_DIRECTIVES:
             return Directive(dt.start, dt.end, name)
         if name in _LINE_DIRECTIVES:
-            eol = self.src.find("\n", dt.end)
-            eol = len(self.src) if eol < 0 else eol
+            eol = _line_directive_end(self.src, dt.end)
             # OpenFOAM reads the rest of the line verbatim ("streamlines(funcName=sl, U)" contains a
             # space inside the parentheses), so take raw tokens without structural interpretation
             while (t := self.peek()) is not None and t.start < eol and t.kind is not K.RBRACE:

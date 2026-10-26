@@ -29,7 +29,8 @@ Items new in this branch are marked *(new)*.
    * copilot tools for the same path.
 3. **The biggest gaps for a beginner doing a real case correctly:**
    * the grid-convergence study is new and covers blockMesh cases only (snappy through its background mesh);
-   * no integral-quantity convergence (forces, mass and energy balance);
+   * integral-quantity convergence (forces, flow rates, mass balance; heat balance in closed boxes) is new in
+     feat/qoi-postprocessing, with a run report;
    * y+ is a gate, not a field you can see;
    * no "why is this happening?" from a run anomaly;
    * templates miss premixed flames, nozzles and rotating machinery;
@@ -200,7 +201,8 @@ Items new in this branch are marked *(new)*.
 | Pre-solve: conservation, turbulence-model applicability | **Partial** | Re regime vs model warning *(new)* | — |
 | Post-solve: residual convergence and telemetry health | **Done** *(new)* | `convergence_gate`, `health_gate` (fieldMinMax NaN/negative k), Connie | — |
 | Post-solve: grid convergence, Richardson extrapolation, GCI | **Partial** *(new, follow-up branch)* | `case/gridstudy.py`: coarse/fine levels in `grid_study/` (blockMeshDict counts × 1/r and × r, fine endTime × r^d); Celik et al. (2008) observed order, φ_ext, GCI, asymptotic check; Validation gate with a tolerance question, "inconclusive" when a level is not iteratively converged (judged on the quantity's change over the last writes against the differences between meshes), and an explanation when y+ leaves the log layer with wall functions; copilot `grid_study_*` tools; `tests/unit/test_grid_study.py` | blockMesh cases only; quantities = patch means of p/T and postProcessing .dat values (no reattachment length or profiles yet) |
-| Post-solve: integral convergence, conservation audit, uncertainty propagation, sensitivity, benchmark comparison | **Missing** | — | — |
+| Post-solve: integral convergence, conservation audit | **Done** *(feat/qoi-postprocessing)* | `case/qoi.py`: `convergence_gate` (steady: band over the last 10 % of iterations; transient: drift of the mean between the last two quarters; against the largest value of the same kind), `conservation_gates` (Σ phi over every open patch; Σ wall heat flow in a closed steady box); `tests/unit/test_qoi.py`, `tests/wsl/test_qoi_live.py` | Energy balance for open domains; multi-region |
+| Post-solve: uncertainty propagation, sensitivity, benchmark comparison | **Missing** | — | — |
 | Experimental comparison | **Done** | Measurements (bias, RMSE, R²) | — |
 
 ## 15. Python-native post-processing
@@ -271,9 +273,14 @@ reach the long-term vision.
 1. **Grid-convergence study (beginner-critical): started.** A three-level study with Richardson/GCI and a
    Validation gate exists for blockMesh cases. Next: refineMesh-based levels for imported and snappy
    meshes; richer quantities (reattachment length, profiles at stations, forces); a plot of φ against h.
-2. **Integral-quantity monitors (beginner-critical).** forces/forceCoeffs, mass flow per patch and wall
-   heat flux as function objects added by the guided Run stage. They feed the run dashboard, become a
-   convergence gate (change between the last writes) and support a conservation audit (Σ inflow − outflow).
+2. **Integral-quantity monitors (beginner-critical): done** (branch `feat/qoi-postprocessing`). The guided Run
+   stage adds forces on the walls, flow rate and mean p (and T) per open patch and wall heat flow
+   (`case/qoi.py`, fork-aware syntax checked live in ESI v2306 and Foundation 14). The Validation stage judges
+   convergence on them and audits the mass balance (and the heat balance of a closed steady box). The Post
+   stage writes a run report (`results/report.py`: Markdown + PDF/PNG plots + ParaView field pictures +
+   report.json). Still open: forceCoeffs with reference values asked in the guided flow, the run dashboard
+   showing the QoIs live, energy balance for open domains (enthalpy flux at inlets and outlets), multi-region
+   cases.
 3. **y+ and other gate results as viewport maps.** Make the gates visible on the mesh: y+ per wall face,
    cells over a non-orthogonality limit, species sum ≠ 1. Add a "show me" button on each gate.
 4. **More guided physics.**

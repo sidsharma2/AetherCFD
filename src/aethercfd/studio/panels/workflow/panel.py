@@ -149,6 +149,8 @@ class WorkflowPanel(Panel):
         gl.addLayout(self.actions_host)
         self.agent_out = QTextBrowser()
         self.agent_out.setOpenExternalLinks(False)
+        self.agent_out.setOpenLinks(False)
+        self.agent_out.anchorClicked.connect(self._open_link)
         self.agent_out.setMaximumHeight(160)
         self.agent_out.hide()
         gl.addWidget(self.agent_out)
@@ -622,6 +624,8 @@ class WorkflowPanel(Panel):
             self.grid_run()
         elif aid == "grid.evaluate":
             self.grid_evaluate()
+        elif aid == "report.build":
+            self.build_report()
         elif aid.startswith("agent."):
             self.run_agent(aid.split(".", 1)[1])
         elif aid.startswith("open."):
@@ -754,6 +758,47 @@ class WorkflowPanel(Panel):
             self._batch(gridstudy.record_params(root, rec), who="AetherCFD grid study")
 
         self.sv.run_bg(lambda: gridstudy.evaluate(root), done)
+
+    # ------------------------------------------------------------------ run report
+    def build_report(self) -> None:
+        """Write the run report in the background (plots and ParaView pictures take ~30 s); link it when done."""
+        from aethercfd.results.report import build
+
+        s = self._session()
+        if s is None or not self.sv.ensure_project():
+            return
+        root = s.root
+        settings = getattr(self.sv, "settings", None)
+        self.agent_out.show()
+        self.agent_out.setHtml("<i>Writing the run report (plots, ParaView field pictures)…</i>")
+
+        def done(res) -> None:
+            rep, err = res if isinstance(res, tuple) else (res, None)
+            if err is not None or rep is None:
+                self.agent_out.setHtml(f"<span style='color:{T.error}'>Report failed: {_esc(str(err))}</span>")
+                return
+            col = {"ready": T.ok, "failed": T.error}.get(rep.data["verdict"], T.warn)
+            why = "".join(f"<li>{_esc(r)}</li>" for r in rep.data["verdict_reasons"][:5])
+            notes = "".join(f"<li>{_esc(n)}</li>" for n in rep.notes[:3])
+            self.agent_out.setHtml(
+                f"<p style='color:{col}'>Verdict: {_esc(rep.data['verdict'])}</p>" + (f"<ul>{why}</ul>" if why else "")
+                + f"<p><a href='{rep.markdown.as_uri()}'>Open report.md</a> · "
+                  f"<a href='{rep.dir.as_uri()}'>Open the folder</a> ({len(rep.figures)} figures)</p>"
+                + (f"<ul style='color:{T.text_faint}'>{notes}</ul>" if notes else ""))
+            self.sv.notify(f"Run report written: {rep.markdown}")
+            self.refresh_now()
+
+        self.sv.run_bg(lambda: build(root, settings=settings), done)
+
+    def _open_link(self, url) -> None:
+        import os
+
+        if url.isLocalFile():
+            path = url.toLocalFile()
+            if path.endswith(".md") and self.sv.panels.get("aether.editor") is not None:
+                self.sv.host.open_panel(self.sv.panels["aether.editor"], args={"path": path})
+            else:
+                os.startfile(path)
 
     def run_agent(self, agent: str, **kw) -> None:
         """Run a cfd_agent in the background; the result appears under the actions."""
