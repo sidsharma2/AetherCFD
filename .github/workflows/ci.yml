@@ -1,5 +1,8 @@
 # CI for AetherCFD Studio (docs/vision/roadmap.md, item Q1).
 #
+# Lint runs on Ubuntu (cheaper minutes). Tests run on Windows only: the app and its core are Windows programs
+# (drive paths, wsl.exe creationflags, LOCALAPPDATA), so most core tests cannot run on Linux.
+#
 # Hosted runners have no GPU, no OpenFOAM distro and no corpus under D:\OpenFOAM, so tests marked wsl, wsl_slow,
 # corpus or gl are deselected here; run them locally (README, Development). windows-2025 does ship wsl.exe, so the
 # markers, not the "no WSL" skips, are what keeps live WSL tests out.
@@ -28,10 +31,10 @@ env:
   MARKERS: "not wsl and not wsl_slow and not corpus and not gl"
 
 jobs:
-  lint-unit:
-    name: Lint + unit tests (Ubuntu)
+  lint:
+    name: Lint (Ubuntu)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
@@ -45,20 +48,6 @@ jobs:
         run: uv run ruff check src tests packaging
       - name: Import contracts
         run: uv run lint-imports
-      - uses: pyvista/setup-headless-display-action@c103a2ff45650d38cb71684b5dc6cdfeb9442c79 # v5.1.0
-        with:
-          qt: true
-      - name: Unit tests
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: uv run pytest tests/unit -m "${{ env.MARKERS }}" --junitxml=build/junit-unit-linux.xml
-      - name: Upload test report
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: unit-linux
-          path: build/junit-*.xml
-          if-no-files-found: ignore
 
   windows:
     name: Unit + studio tests (Windows)
