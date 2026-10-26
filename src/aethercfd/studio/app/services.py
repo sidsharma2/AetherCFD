@@ -44,6 +44,7 @@ class AppServices(QObject):
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self.settings = Settings.load()
+        self.watchdog = None  # the GUI-thread HangWatchdog, set by the app entry point (studio/__main__.py)
         self.bus = BUS
         self.bridge = CoreEventBridge(self.bus, self)
         self.panels = PanelRegistry()

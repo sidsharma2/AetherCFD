@@ -121,6 +121,7 @@ class MainWindow(QMainWindow):
 
         h = mb.addMenu("&Help")
         h.addAction(icon("msc.settings-gear"), "Setup Wizard…", self.show_setup_wizard)
+        h.addAction(icon("msc.report"), "Report a Problem…", self.report_problem)
         h.addSeparator()
         h.addAction("About AetherCFD", lambda: QMessageBox.about(
             self, "AetherCFD Studio", f"AetherCFD Studio {__version__}\nDrives OpenFOAM without hiding it."))
@@ -256,6 +257,32 @@ class MainWindow(QMainWindow):
             for p in self.host.panels_of("aether.copilot"):  # the provider choice may have changed
                 if hasattr(p, "reload_provider"):
                     p.reload_provider()
+
+    def report_problem(self, *, ask: bool = True):
+        """Help > Report a Problem: one local zip (logs, crash and hang dumps, versions; nothing from a case
+        folder). Returns its path; with ``ask`` it offers to open the folder."""
+        from aethercfd.core.settings import cache_dir
+        from aethercfd.studio.app.report import make_report
+
+        try:
+            path = make_report(cache_dir(), cache_dir() / "reports", settings=self.services.settings)
+        except OSError as exc:
+            QMessageBox.warning(self, "Report a problem", f"Could not write the report: {exc}")
+            return None
+        if ask:
+            box = QMessageBox(QMessageBox.Icon.Information, "Report a problem",
+                              f"Saved {path.name}\n\nIt holds the app log, crash and hang records and the versions "
+                              "of AetherCFD and its libraries. Nothing from your case folders is in it, and nothing "
+                              f"is sent anywhere.\n\n{path.parent}", parent=self)
+            open_btn = box.addButton("Open Folder", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(QMessageBox.StandardButton.Close)
+            box.exec()
+            if box.clickedButton() is open_btn:
+                from PySide6.QtCore import QUrl
+                from PySide6.QtGui import QDesktopServices
+
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+        return path
 
     def show_layout_diagnostics(self) -> None:
         scr = current_screens()

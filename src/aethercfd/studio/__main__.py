@@ -56,6 +56,13 @@ def main(argv: list[str] | None = None) -> int:
                                                       services.settings.theme)
         services.theme.set_mode("system")
     _install_excepthook(services)
+    from aethercfd.studio.app.bootstrap import crash_dir
+    from aethercfd.studio.app.watchdog import HangWatchdog
+
+    watchdog = HangWatchdog.from_env(crash_dir())  # a stuck GUI thread leaves crash/hang-*.txt with all stacks
+    if watchdog is not None:
+        watchdog.start()
+    services.watchdog = watchdog
     register_builtin_panels(services.panels)
     win = MainWindow(services)
     win.show()
@@ -81,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
         code = run_sweep(app, win, Path(args.smoke_out))
     else:
         code = app.exec()
+    if watchdog is not None:
+        watchdog.stop()  # teardown may legitimately block the GUI thread
     _teardown(app, win)
     return code
 
