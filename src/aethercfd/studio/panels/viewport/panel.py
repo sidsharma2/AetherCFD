@@ -1955,12 +1955,17 @@ class ViewportPanel(ViewToolsMixin, Panel):
 
     # ------------------------------------------------------------------ panel API
     def save_state(self) -> dict:
-        cam = self.plotter.camera
-        return {"field": self.field.currentText(), "component": self.comp.currentText(),
-                "rep": self.rep.currentIndex(), "cmap": self.cmap.currentText(), "follow": self.follow.isChecked(),
-                "stages": self.stages, "view": self.view_opts, "regions": self.region_sel,
-                "camera": {"position": list(cam.position), "focal_point": list(cam.focal_point),
-                           "view_up": list(cam.up)}}
+        state = {"field": self.field.currentText(), "component": self.comp.currentText(),
+                 "rep": self.rep.currentIndex(), "cmap": self.cmap.currentText(), "follow": self.follow.isChecked(),
+                 "stages": self.stages, "view": self.view_opts, "regions": self.region_sel}
+        # The layout is saved while the window closes. pyvista's plotter.camera resets AND RENDERS a camera
+        # that was never set (a viewport that drew nothing), into a GL window being destroyed: that hung or
+        # crashed on close. Read the plain VTK camera instead, and none of a closed viewport.
+        if not getattr(self, "_disposed", False):
+            cam = self.plotter.renderer.GetActiveCamera()
+            state["camera"] = {"position": list(cam.GetPosition()), "focal_point": list(cam.GetFocalPoint()),
+                               "view_up": list(cam.GetViewUp())}
+        return state
 
     def restore_state(self, state: dict) -> None:
         self.rep.setCurrentIndex(int(state.get("rep", 0)))
