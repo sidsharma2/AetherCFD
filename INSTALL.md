@@ -158,6 +158,9 @@ is older than a `~/.codex/config.toml` written by a newer Codex app: update it w
   over with the wizard.
 - Logs and caches: `%LOCALAPPDATA%\AetherCFD\Cache\` (`studio.log` is the first place to look when
   something goes wrong).
+- Crash and hang records: `%LOCALAPPDATA%\AetherCFD\Cache\crash\`. A native crash adds the stack of every
+  thread to `faulthandler.log`. When the window stops responding for more than 10 s, AetherCFD writes a
+  `hang-*.txt` file with the stack of every thread.
 - Per case: a hidden `.aethercfd` folder inside the case (journal, run records, copilot conversation).
 
 ## Troubleshooting
@@ -167,7 +170,26 @@ is older than a `~/.codex/config.toml` written by a newer Codex app: update it w
 - **The wizard finds no OpenFOAM** right after installing it: press *Look for OpenFOAM* again; a stopped
   distro takes a few seconds to start.
 - **The copilot says it is not signed in** although you just signed in: press *Check again* in the panel.
-- Anything else: send the owner `%LOCALAPPDATA%\AetherCFD\Cache\studio.log`.
+- **The window stops responding**: wait at least 10 s before you close it. AetherCFD then writes a
+  `hang-*.txt` file that shows where it was stuck. Send it with a report (next item). The environment
+  variable `AETHER_HANG_SECONDS` changes the 10 s; `0` turns the check off.
+- Anything else: use **Help > Report a Problem**. It saves one zip in
+  `%LOCALAPPDATA%\AetherCFD\Cache\reports\` with the app log, the crash and hang records and the
+  versions. Nothing from your case folders goes into it, and nothing is sent. Email the zip to the owner.
+
+### Optional: full Windows crash and hang dumps (needs admin)
+
+Only set this up if the owner asks for it. It changes a Windows setting, and a full dump can hold
+file paths and environment values, so check a dump before you share it.
+
+- **Crash dumps**: Windows Error Reporting saves one when `AetherCFD.exe` crashes. In an admin
+  PowerShell, create the key
+  `HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\AetherCFD.exe` and give it
+  `DumpType` (DWORD, `2` for a full dump) and `DumpFolder` (expandable string, for example
+  `%LOCALAPPDATA%\CrashDumps`). Delete the key to turn it off.
+- **Hang dumps**: download ProcDump from Microsoft Sysinternals and run
+  `procdump -h -ma AetherCFD.exe` while the app runs. It writes a full dump when the window stops
+  responding for 5 s.
 
 ## For the owner: sharing the app
 

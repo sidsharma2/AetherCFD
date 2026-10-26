@@ -65,6 +65,10 @@ class Sweep:
         t0 = time.perf_counter()
         rec = {"step": name}
         result = None
+        wd = getattr(self.sv, "watchdog", None)
+        if wd is not None:  # a hang dump (crash/hang-*.txt) then names the step that blocked
+            wd.context = f"sweep step {len(self.steps) + 1}: {name}"
+        self._partial(running=name)
         try:
             result = fn()
             if until is not None and not self.wait(until, timeout):
@@ -91,6 +95,13 @@ class Sweep:
         self.steps.append(rec)
         print(("OK  " if rec["ok"] else "FAIL") + f" {name} ({rec['seconds']} s) {rec.get('error', '')}", flush=True)
         return result
+
+    def _partial(self, running: str | None) -> None:
+        """sweep.partial.json before each step: when a step hangs (or the process is killed) the steps done so
+        far and the one that never finished are on disk; sweep.json is only written at the end."""
+        with contextlib.suppress(Exception):
+            (self.out / "sweep.partial.json").write_text(
+                json.dumps({"running": running, "steps": self.steps}, indent=1, default=str), encoding="utf-8")
 
     def panel(self, type_id: str, instance: str | None = None):
         spec = self.sv.panels.get(type_id)
@@ -557,5 +568,6 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
     report = {"case": str(root) if root else None, "has_results": has_results, "steps": sw.steps,
               "failed": len(failed), "total": len(sw.steps)}
     (out / "sweep.json").write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
+    sw._partial(running=None)  # finished: nothing is left running
     print(f"sweep: {len(sw.steps) - len(failed)}/{len(sw.steps)} steps ok -> {out / 'sweep.json'}", flush=True)
     return 1 if failed else 0
