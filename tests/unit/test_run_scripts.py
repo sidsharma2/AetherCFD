@@ -111,11 +111,18 @@ def test_existing_step_log_is_kept_not_overwritten(tmp_path):
     import shutil
     import subprocess
 
+    import os
+    from pathlib import Path
+
     bash = shutil.which("bash")
+    if bash and Path(bash).parent.name.lower() == "system32":
+        # the WSL launcher: it would run in the default distro, which a unit test must not need
+        git_bash = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe"
+        bash = str(git_bash) if git_bash.exists() else None
     if bash is None:
         import pytest
 
-        pytest.skip("no bash")
+        pytest.skip("no POSIX bash (Git Bash on Windows)")
     log = tmp_path / "log.rhoSimpleFoam"
     log.write_text("stage A\n")
     line = '  if [ -s "$log" ]; then mv -n "$log" "$log.$(date -r "$log" +%Y%m%d-%H%M%S)"; fi'
