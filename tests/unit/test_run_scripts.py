@@ -108,16 +108,15 @@ def test_step_log_names(app):
 
 def test_existing_step_log_is_kept_not_overwritten(tmp_path):
     """The step() prologue moves an earlier log aside (continuation runs re-use the solver's log name)."""
+    import os
     import shutil
     import subprocess
-
-    import os
     from pathlib import Path
 
     bash = shutil.which("bash")
     if bash and Path(bash).parent.name.lower() == "system32":
         # the WSL launcher: it would run in the default distro, which a unit test must not need
-        git_bash = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe"
+        git_bash = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Git" / "bin" / "bash.exe"
         bash = str(git_bash) if git_bash.exists() else None
     if bash is None:
         import pytest

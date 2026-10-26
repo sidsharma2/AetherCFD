@@ -73,8 +73,13 @@ jobs:
           cache-dependency-glob: uv.lock
       - name: Install
         run: uv sync --locked
-      # Mesa llvmpipe (software OpenGL) for VTK; the runner has no GPU
+      # Mesa llvmpipe as the system OpenGL driver (the runner has no GPU), so Qt and VTK share one real WGL context
+      # as on a desktop. No OSMesa window default and no PYVISTA_OFF_SCREEN: the viewport is an on-screen pyvistaqt
+      # widget, and those settings made pyvista build off-screen windows inside it (access violation in show_axes).
       - uses: pyvista/setup-headless-display-action@c103a2ff45650d38cb71684b5dc6cdfeb9442c79 # v5.1.0
+        with:
+          pyvista: false
+          install-mesa3d-offscreen: false
       - name: Unit tests
         run: uv run pytest tests/unit -m "${{ env.MARKERS }}" --junitxml=build/junit-unit-windows.xml
       - name: Studio tests
