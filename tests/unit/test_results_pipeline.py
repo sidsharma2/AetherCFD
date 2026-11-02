@@ -121,6 +121,23 @@ def test_schlieren_percentile_reference(internal):
     assert _schlieren_x(p90)[1].mean() < by_max.mean()
 
 
+def test_schlieren_zero_percentile_falls_back_to_the_data_maximum(internal):
+    # 398 of 400 cells without gradient: the 99th percentile is 0; the two real waves (0.001, a small absolute
+    # value) must still be dark, which a dimensional fallback reference of 1.0 would not give
+    ds = internal[0].NewInstance()
+    ds.DeepCopy(internal[0])
+    g = np.zeros((ds.GetNumberOfCells(), 3))
+    g[[37, 211], 0] = 1e-3
+    arr = nps.numpy_to_vtk(np.ascontiguousarray(g), deep=True)
+    arr.SetName("grad(rho)")
+    ds.GetCellData().AddArray(arr)
+    s = pl.run_stage({"type": "schlieren", "source": "rho", "k": 4, "percentile": 99, "axis": "z", "pos": 0.5},
+                     [ds], None, smooth=False)
+    assert any("scaled by its maximum" in n for n in s.notes) and not s.interpolated
+    vals = np.sort(nps.vtk_to_numpy(s.poly.GetCellData().GetArray("schlieren")))  # one slice polygon per cell
+    assert len(vals) == 400 and vals[:2] == pytest.approx(np.exp(-4.0)) and vals[2] == 1.0
+
+
 def test_schlieren_follows_smooth_or_cells(internal):
     spec = {"type": "schlieren", "source": "rho", "k": 10, "axis": "z", "pos": 0.5}
     cells = pl.run_stage(spec, internal, None, smooth=False)

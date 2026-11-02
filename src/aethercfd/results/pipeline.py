@@ -727,14 +727,21 @@ def stage_schlieren(spec, internal, field_name, comp, *, smooth: bool = False) -
         return StageOutput(vtk.vtkPolyData(), notes=notes or [f"neither {exact_name} nor {src} is loaded"],
                            label="schlieren")
     allg = np.concatenate([nps.vtk_to_numpy(w.GetCellData().GetArray("gradMag")) for w in sl_polys])
+    pos = allg[np.isfinite(allg) & (allg > 0)]
+    g_max = float(pos.max()) if pos.size else 0.0
+    what_g = f"{'|grad ln ' if log else '|grad '}{src}|"
     if pct is not None:
         pct = min(max(float(pct), 0.0), 100.0)
         g_ref = float(np.nanpercentile(allg, pct))
-        notes.append(f"scaled by the {pct:g}th percentile of {'|grad ln ' if log else '|grad '}{src}| "
-                     f"({g_ref:.3g}); cells above it are black")
+        if np.isfinite(g_ref) and g_ref > 0:
+            notes.append(f"scaled by the {pct:g}th percentile of {what_g} ({g_ref:.3g}); cells above it are black")
+        elif g_max > 0:  # most cells have no gradient: the percentile is 0, so use the data's own maximum
+            g_ref = g_max
+            notes.append(f"the {pct:g}th percentile of {what_g} is 0 (most cells have no gradient); "
+                         f"scaled by its maximum ({g_ref:.3g}) instead")
     else:
-        g_ref = float(np.nanmax(allg))
-    g_ref = g_ref if np.isfinite(g_ref) and g_ref > 0 else 1.0
+        g_ref = g_max
+    g_ref = g_ref if np.isfinite(g_ref) and g_ref > 0 else 1.0  # no gradient anywhere: S = 1 for any reference
     for w in sl_polys:
         m = nps.vtk_to_numpy(w.GetCellData().GetArray("gradMag"))
         s = nps.numpy_to_vtk(np.ascontiguousarray(np.exp(-k * m / g_ref), dtype=np.float64), deep=True)
