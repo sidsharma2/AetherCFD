@@ -20,7 +20,9 @@ src="$FOAM_TUTORIALS/$1"
 if [ ! -d "$src" ]; then echo "AETHERCFD: no tutorial $1 in $WM_PROJECT_DIR" >&2; exit 3; fi
 if [ -e "$2" ]; then echo "AETHERCFD: $2 already exists" >&2; exit 4; fi
 mkdir -p "$(dirname "$2")"
-cp -r "$src" "$2"
+# -L: tutorials share dictionaries through symlinks (v2606 multiRegionHeater: system/decomposeParDict ->
+# decomposeParDict.4); a WSL symlink on a Windows drive cannot be opened from Windows (WinError 1920)
+cp -rL "$src" "$2"
 cd "$2" || exit 5
 # what the tutorial's Allrun does first (restore0Dir): 0.orig -> 0, and system/*.orig where missing
 if [ -d 0.orig ] && [ ! -e 0 ]; then cp -r 0.orig 0; fi

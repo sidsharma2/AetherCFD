@@ -7,6 +7,7 @@ the run FINISHED, the solver log parses (residuals fall), result times and field
 numpy, and the case still opens. Writes build/toys/report.json and prints a table.
 
     uv run python scripts/toy_campaign.py [--only pitzDaily,cavity] [--root D:/OpenFOAM/_aethercfd_scratch/toys]
+        [--fork esi-v2606]   (installed fork to use for that family; default: the first one found)
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ TOYS = [
 ]
 
 
-def run_toy(tid: str, family: str, edits: dict, timeout: float, root: Path) -> dict:
+def run_toy(tid: str, family: str, edits: dict, timeout: float, root: Path, fork_id: str | None = None) -> dict:
     from aethercfd.backend.wsl.runner import WslRunner
     from aethercfd.core.settings import Settings
     from aethercfd.results.casedata import CaseData
@@ -39,11 +40,12 @@ def run_toy(tid: str, family: str, edits: dict, timeout: float, root: Path) -> d
     from aethercfd.templates.catalog import TEMPLATES
     from aethercfd.templates.create import copy_tutorial
 
-    rec: dict = {"toy": tid, "fork": family}
+    rec: dict = {"toy": tid, "fork": fork_id or family}
     t0 = time.time()
     st = Settings.load()
     runner = WslRunner(st.wsl.default_distro, allowed=st.wsl.allowed_distros)
-    fork = next(f for f in load_forks(runner) if str(f.family.value) == family)
+    forks = [f for f in load_forks(runner) if str(f.family.value) == family]
+    fork = next(f for f in forks if f.id == fork_id) if fork_id else forks[0]
     t = next(x for x in TEMPLATES if x.id == tid)
     dest = root / f"{family}_{tid}_{time.strftime('%m%d_%H%M%S')}"
     copy_tutorial(runner, fork, t, dest)
@@ -101,18 +103,20 @@ def main() -> int:
     ap.add_argument("--only", default="")
     ap.add_argument("--root", default="D:/OpenFOAM/_aethercfd_scratch/toys")
     ap.add_argument("--out", default="build/toys")
+    ap.add_argument("--fork", action="append", default=[], help="fork id to use for its family, e.g. esi-v2606")
     a = ap.parse_args()
     root, out = Path(a.root), Path(a.out)
     root.mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
     only = {x for x in a.only.split(",") if x}
+    fork_ids = {f.split("-", 1)[0]: f for f in a.fork}
     report = []
     for tid, fam, edits, tmo in TOYS:
         if only and tid not in only and f"{fam}_{tid}" not in only:
             continue
         print(f"== {fam} {tid}", flush=True)
         try:
-            rec = run_toy(tid, fam, edits, tmo, root)
+            rec = run_toy(tid, fam, edits, tmo, root, fork_ids.get(fam))
         except Exception as exc:
             rec = {"toy": tid, "fork": fam, "ok": False, "error": f"{type(exc).__name__}: {exc}",
                    "traceback": traceback.format_exc()[-2000:]}

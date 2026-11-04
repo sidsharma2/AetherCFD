@@ -18,6 +18,7 @@ from aethercfd.documents.document import Document
 from aethercfd.project.project import Placement, Project
 from aethercfd.runs.manager import RunManager, RunState
 from aethercfd.runs.spec import RunStep, StepKind
+from tests.wsl._forks import by_family
 
 pytestmark = [pytest.mark.wsl_slow, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL")]
 
@@ -37,7 +38,7 @@ def runner():
 
 @pytest.fixture(scope="module")
 def forks(runner):
-    return {f.family: f for f in probe_forks(runner)}
+    return by_family(probe_forks(runner))
 
 
 _LAUNCHED: list[tuple[RunManager, str]] = []

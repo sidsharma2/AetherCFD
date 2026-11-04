@@ -47,6 +47,29 @@ def test_fork_guess_picks_installed_profile():
     assert load_case(FIX / "esi_cavity").fork_guess.pick(forks).id == "esi-v2306"
 
 
+def test_fork_guess_with_two_esi_versions_installed():
+    from aethercfd.case.fork_detect import ForkGuess
+
+    forks = [ForkProfile("esi-v2606", Family.ESI, "v2606", "D", "/c", "/c"),
+             ForkProfile("esi-v2306", Family.ESI, "v2306", "D", "/a", "/a"),
+             ForkProfile("foundation-9", Family.FOUNDATION, "9", "D", "/d", "/d"),
+             ForkProfile("foundation-14", Family.FOUNDATION, "14", "D", "/b", "/b")]
+
+    def pick(fam, hint):
+        return ForkGuess(fam, hint, 1.0).pick(forks).id
+
+    assert pick(Family.ESI, "v2306") == "esi-v2306"  # exact
+    assert pick(Family.ESI, "v2606") == "esi-v2606"
+    assert pick(Family.ESI, "v2412") == "esi-v2306"  # newest not newer than the case
+    assert pick(Family.ESI, "v2612") == "esi-v2606"
+    assert pick(Family.ESI, "v2012") == "esi-v2306"  # older than everything installed: the closest
+    assert pick(Family.ESI, None) == "esi-v2306"  # no hint: existing cases stay on the oldest install
+    assert pick(Family.FOUNDATION, None) == "foundation-9"
+    assert pick(Family.FOUNDATION, "12") == "foundation-9"  # numeric, not string, order
+    assert pick(Family.FOUNDATION, "14") == "foundation-14"
+    assert pick(Family.FOUNDATION, "dev") == "foundation-14"
+
+
 def test_classify_file():
     root = FIX / "esi_cavity"
     assert classify_file(root, root / "system" / "controlDict") is FileKind.DICT

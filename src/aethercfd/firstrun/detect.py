@@ -36,6 +36,7 @@ OpenFOAM ESI v2306 (openfoam.com), Ubuntu 20.04/22.04:
     curl -s https://dl.openfoam.com/add-debian-repo.sh | sudo bash
     sudo apt-get install -y openfoam2306-default
   (installs to /usr/lib/openfoam/openfoam2306; details: develop.openfoam.com > wiki > precompiled > debian)
+  Newer ESI releases install the same way next to it (e.g. openfoam2606-default) and show up as their own version.
 
 OpenFOAM Foundation 14 (openfoam.org), Ubuntu 22.04/24.04:
     sudo sh -c "wget -O - https://dl.openfoam.org/gpg.key > /etc/apt/trusted.gpg.d/openfoam.asc"
