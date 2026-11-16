@@ -51,10 +51,14 @@ class AnalysisPanel(Panel):
         self._build_modes()
         self._build_surrogate()
         self._build_pinn()
-        self.sv.case_changed.connect(lambda _s: self._on_case())
+        self.sv.case_changed.connect(self._case_changed_slot)
         self.region.reload(self.sv.session.root if self.sv.session else None)
         self._fields()
         self._pinn_fields()
+
+    def _case_changed_slot(self, s=None) -> None:
+        """services.case_changed -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        self._on_case()
 
     def _on_case(self) -> None:
         """Results computed on the previous case's mesh must never be written into this one."""

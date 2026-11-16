@@ -64,13 +64,22 @@ class JournalPanel(Panel):
         lay.addWidget(split)
         sv = ctx.services
         self._reload_timer = QTimer(self, singleShot=True, interval=300, timeout=self.reload)
-        sv.bridge.event.connect(lambda topic, p: self._reload_timer.start() if topic == "command.applied" else None)
-        sv.case_changed.connect(lambda s: self.reload())
+        sv.bridge.event.connect(self._event_slot)
+        sv.case_changed.connect(self._case_changed_slot)
         self.reload()
 
     def _journal(self):
         s = self.ctx.services.session
         return s.project.journal if s is not None and s.project is not None else None
+
+    def _event_slot(self, topic, p) -> None:
+        """the core event bridge -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        if topic == "command.applied":
+            self._reload_timer.start()
+
+    def _case_changed_slot(self, s=None) -> None:
+        """services.case_changed -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        self.reload()
 
     def reload(self) -> None:
         self.list.clear()

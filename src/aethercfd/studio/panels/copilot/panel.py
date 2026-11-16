@@ -408,7 +408,7 @@ class CopilotPanel(Panel):
 
         self.broker = GuiApprovalBroker(lambda: self.window(), self)
         self.broker.on_decision = self._on_decision
-        self.sv.case_changed.connect(lambda _s: self._case_changed())
+        self.sv.case_changed.connect(self._case_changed_slot)
         self._find_cli()
         self._render()
 
@@ -674,6 +674,10 @@ class CopilotPanel(Panel):
         if a is not None and a.logged_in and c is not None:
             return self._signed_in_text()
         return self.status.text()
+
+    def _case_changed_slot(self, s=None) -> None:
+        """services.case_changed -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        self._case_changed()
 
     def _case_changed(self) -> None:
         handoff = getattr(self.sv, "copilot_handoff", None)
