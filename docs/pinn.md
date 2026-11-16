@@ -32,7 +32,9 @@ CUDA or driver problem cannot crash the GUI. Create the environment once:
 python scripts/setup_ml_env.py
 ```
 
-Run it from the AetherCFD source folder with any Python 3.10 or newer. The script:
+Run it from the AetherCFD source folder with any Python 3.10 or newer. The installed app has no `scripts`
+folder. There, run `aethercfd-cli ml-setup` from the install folder; it does the same and takes the same
+options. The script:
 
 1. Looks for an NVIDIA driver with `nvidia-smi`. With a driver for CUDA 12.6 or newer it installs the
    CUDA build of PyTorch (about 2.5 GB). Without one it installs the CPU build (a few hundred MB).
@@ -140,7 +142,11 @@ between runs, because some CUDA operations are not deterministic.
 - The GPU runs out of memory (it is shared with other programs): the run starts again on the CPU and the
   result says so. On the CPU an out-of-memory error asks for fewer points or a smaller network.
 - The worker crashes or is killed: the tab reports that it stopped without a result, with the end of its
-  log. It never waits forever.
+  log. It never waits forever. A crash inside PyTorch itself is named as one, with its exit code and the
+  last lines of the stack from `worker.log`.
+- `CUDA_VISIBLE_DEVICES=-1` (or `none`) is set to hide the GPU: the CUDA build of PyTorch 2.14.1 crashed
+  during CPU training with that value, in 10 of 11 test runs. AetherCFD passes the worker an empty value,
+  which hides the GPU without the crash, and the result notes it. Your own environment is not changed.
 - Stop, closing the panel, opening another case or closing the app ends the worker. If the app crashes, the
   worker notices within a few steps and exits.
 - The copilot tool waits `wait_min` minutes (default 20) and then stops the run.
