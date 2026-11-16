@@ -626,7 +626,8 @@ class AddStageParams(BaseModel):
         "Stage parameters, e.g. slice {'axis':'z','pos':0.5}; isosurface {'field':'T','value':1500,'color_by':'U'}; "
         "qcriterion {'percentile':97,'color_by':'U','smooth':20,'subdivide':1}; streamlines {'field':'U','seed':"
         "'line','axis':'x','pos':0.05,'n':60}; threshold {'field':'T','lo':1500}; quality {'metric':"
-        "'nonOrthogonality','min':60}; schlieren {'source':'rho','axis':'z'}. smooth/subdivide are presentation-only."))
+        "'nonOrthogonality','min':60}; schlieren {'source':'rho','axis':'z'} (add 'scale':'log','percentile':99,"
+        "'k':4 for jets and plumes whose density spans orders of magnitude). smooth/subdivide are presentation-only."))
     wait_s: float = Field(60.0, ge=0, le=600, description="Wait for the stage to be computed and report its result")
     smoothing: str | None = Field(None, description=SMOOTHING_HELP + " (applies to slices, clips, contours and "
                                                                      "isosurfaces)")

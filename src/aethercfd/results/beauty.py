@@ -75,7 +75,13 @@ for b in sc["blocks"]:
     if b["array"]:
         ColorBy(d, ("POINTS" if b["assoc"] == "point" else "CELLS", b["array"]))
         lut = GetColorTransferFunction(b["array"])
-        lut.ApplyPreset(b["preset"], True)
+        # ParaView 6 dropped the " (matplotlib)" suffix (and raises for an unknown name; 5.x returns False)
+        for name in (b["preset"], b["preset"].replace(" (matplotlib)", "")):
+            try:
+                if lut.ApplyPreset(name, True) is not False:
+                    break
+            except RuntimeError:
+                pass
         lut.RescaleTransferFunction(b["range"][0], b["range"][1])
         if b.get("bar"):
             d.SetScalarBarVisibility(view, True)
