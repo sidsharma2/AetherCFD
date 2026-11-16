@@ -259,6 +259,21 @@ def _solution(f: CaseFacts, sol: _Dict, sch: _Dict | None) -> list[Finding]:
                            [Edit(sol.rel, "relaxationFactors",
                                  "{ " + ("" if consistent else "fields { p 0.3; } ") + f"equations {{ {fields} }} }}",
                                  insert_if_missing=True)]))
+    if f.steady and algo == "SIMPLE" and (sol.get("SIMPLE/consistent")[0] or "").strip() in ("yes", "true", "on"):
+        for key in ("relaxationFactors/fields/p", "relaxationFactors/p", "relaxationFactors/fields/p_rgh"):
+            val, prov = sol.get(key)
+            try:
+                relax = float(val) if val is not None and prov == "literal" else None
+            except ValueError:
+                relax = None
+            if relax is not None and relax < 1:
+                out.append(Finding("simplec-p-relaxed", "warn", f"SIMPLEC with the pressure relaxed ({relax:g})",
+                                   "SIMPLEC (consistent yes) is built to run with the pressure unrelaxed and the "
+                                   "momentum near 0.9; relaxing p as well only slows convergence. Plain SIMPLE is "
+                                   "the one that needs p ~0.3.",
+                                   [f"{sol.rel}:{sol.line(key)}  {key} {val}", f"{sol.rel}  SIMPLE/consistent yes"],
+                                   "Set the pressure relaxation to 1", [Edit(sol.rel, key, "1")]))
+                break
     if f.compressible and f.steady and algo == "SIMPLE":
         has = any(sol.get(f"SIMPLE/{k}")[0] for k in ("pMinFactor", "pMaxFactor", "pMin", "pMax"))
         if not has and not any(sol.get(f"SIMPLE/{k}")[0] for k in ("rhoMin", "rhoMax")):
