@@ -154,7 +154,7 @@ def main(argv: Sequence[str] | None = None, *, run: Callable = subprocess.run, w
 
     if a.check:
         if not exists:
-            out(f"No environment at {env_dir}. Run this script without --check to create it.")
+            out(f"No environment at {env_dir}. Run this command without --check to create it.")
             return 1
         return _report(check(py), out)
 
@@ -192,7 +192,7 @@ def main(argv: Sequence[str] | None = None, *, run: Callable = subprocess.run, w
         r = run(c)
         if getattr(r, "returncode", 1) != 0:
             out(f"This step failed (exit code {getattr(r, 'returncode', '?')}): {' '.join(c)}. Nothing was "
-                "registered. Check the network connection and the free disk space, then run this script again.")
+                "registered. Check the network connection and the free disk space, then run this command again.")
             return 1
     st = check(py)
     code = _report(st, out)
