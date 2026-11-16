@@ -13,6 +13,16 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, co
 ROOT = Path(SPECPATH).parent
 SRC = ROOT / "src"
 ICON = str(SRC / "aethercfd" / "studio" / "resources" / "aethercfd.ico")
+# build.py --cpu-only (experimental): no CuPy, no NVIDIA CUDA libraries; GPU features fall back to numpy
+CPU_ONLY = os.environ.get("AETHERCFD_BUILD_CPU_ONLY") == "1"
+
+# version resource (Properties > Details) from src/aethercfd/__init__.py, via packaging/build.py
+import importlib.util
+
+_spec = importlib.util.spec_from_file_location("aether_build", ROOT / "packaging" / "build.py")
+_build = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_build)
+VERSION = _build.read_version(ROOT)
 
 import winpty as _winpty
 
@@ -33,46 +43,56 @@ datas.append((str(ROOT / "src" / "aethercfd" / "ml" / "pinn_worker.py"), "aether
 datas.append((str(ROOT / "src" / "aethercfd" / "services" / "cfd_agents" / "_runner.py"), "aethercfd/services/cfd_agents"))
 binaries = collect_dynamic_libs("winpty") + [(str(p), "winpty") for p in WINPTY.glob("*.exe")]
 
-# CUDA compute: CuPy + the CUDA runtime / NVRTC DLLs from the nvidia-* wheels, kept at the same relative
-# paths (nvidia/<lib>/bin) so CuPy's library finder locates them inside the bundle
+# CUDA compute (left out with CPU_ONLY): CuPy + the CUDA runtime / NVRTC DLLs from the nvidia-* wheels, kept at
+# the same relative paths (nvidia/<lib>/bin) so CuPy's library finder locates them inside the bundle
 import site
 
-for sp in site.getsitepackages():
+hidden += collect_submodules("cantera")
+binaries += collect_dynamic_libs("cantera")
+for sp in ([] if CPU_ONLY else site.getsitepackages()):
     nv = Path(sp) / "nvidia"
     if nv.is_dir():
         for dll in nv.glob("*/bin/*.dll"):
             binaries.append((str(dll), str(dll.parent.relative_to(Path(sp)))))
-hidden += (collect_submodules("cupy", filter=lambda m: ".testing" not in m and "tests" not in m)
+hidden += [] if CPU_ONLY else (
+             collect_submodules("cupy", filter=lambda m: ".testing" not in m and "tests" not in m)
            + collect_submodules("cupy_backends") + collect_submodules("cupyx", filter=lambda m: "tests" not in m)
-           + collect_submodules("cantera") + collect_submodules("cuda.pathfinder")
+           + collect_submodules("cuda.pathfinder")
            # stdlib imported only from CuPy's compiled Cython modules (invisible to the analysis):
            # without it "import cupy" fails in the bundle and every GPU feature silently uses the CPU
            + ["graphlib"]
            # "import cupy" registers cupy.testing as a lazy module (find_spec must succeed; never executed)
            + ["cupy.testing"])
 # CUDA headers for NVRTC kernel compilation (found by cuda.pathfinder under nvidia/<lib>/include)
-for sp in site.getsitepackages():
-    for inc in (Path(sp) / "nvidia").glob("*/include"):
-        datas.append((str(inc), str(inc.relative_to(Path(sp)))))
-datas += collect_data_files("cuda.pathfinder")
-datas += collect_data_files("cupy") + collect_data_files("cupyx")
-binaries += collect_dynamic_libs("cupy") + collect_dynamic_libs("cupy_backends") + collect_dynamic_libs("cantera")
+if not CPU_ONLY:
+    for sp in site.getsitepackages():
+        for inc in (Path(sp) / "nvidia").glob("*/include"):
+            datas.append((str(inc), str(inc.relative_to(Path(sp)))))
+    datas += collect_data_files("cuda.pathfinder")
+    datas += collect_data_files("cupy") + collect_data_files("cupyx")
+    binaries += collect_dynamic_libs("cupy") + collect_dynamic_libs("cupy_backends")
 excludes = ["tkinter", "PyQt5", "PyQt6", "IPython", "jupyter_client", "notebook", "pytest", "hypothesis",
             "foamlib", "import_linter", "importlinter", "PySide6.Qt3DCore", "PySide6.Qt3DRender",
             "PySide6.QtQuick3D", "PySide6.QtMultimedia", "PySide6.QtCharts", "PySide6.QtDataVisualization",
             "PySide6.QtGraphs", "PySide6.QtBluetooth", "PySide6.QtNfc", "PySide6.QtSensors",
             "PySide6.QtSerialPort", "PySide6.QtLocation", "PySide6.QtPositioning", "PySide6.QtPdf",
             "PySide6.QtSpatialAudio", "PySide6.QtTextToSpeech", "PySide6.QtRemoteObjects"]
+if CPU_ONLY:
+    excludes += ["cupy", "cupyx", "cupy_backends", "cuda", "fastrlock", "nvidia"]
 
 gui_a = Analysis([str(ROOT / "packaging" / "entry_gui.py")], pathex=[str(SRC)], binaries=binaries, datas=datas,
                  hiddenimports=hidden, excludes=excludes, noarchive=False)
 cli_a = Analysis([str(ROOT / "packaging" / "entry_cli.py")], pathex=[str(SRC)],
                  hiddenimports=collect_submodules("aethercfd.scripting") + collect_submodules("aethercfd.commands"),
-                 excludes=excludes + ["PySide6", "vtkmodules", "pyvista", "pyvistaqt", "pyqtgraph", "matplotlib"])
+                 excludes=excludes + ["PySide6", "vtkmodules", "pyvista", "pyvistaqt", "pyqtgraph", "matplotlib",
+                                     # `doctor` checks CUDA through AetherCFD.exe, which has the full CuPy
+                                     "cupy", "cupyx", "cupy_backends"])
 
 gui_exe = EXE(PYZ(gui_a.pure), gui_a.scripts, [], exclude_binaries=True, name="AetherCFD", icon=ICON,
-              console=False, upx=False)
+              console=False, upx=False,
+              version=_build.exe_version_info(VERSION, "AetherCFD", "AetherCFD Studio"))
 cli_exe = EXE(PYZ(cli_a.pure), cli_a.scripts, [], exclude_binaries=True, name="aethercfd-cli", icon=ICON,
-              console=True, upx=False)
+              console=True, upx=False,
+              version=_build.exe_version_info(VERSION, "aethercfd-cli", "AetherCFD Studio command line"))
 coll = COLLECT(gui_exe, gui_a.binaries, gui_a.datas, cli_exe, cli_a.binaries, cli_a.datas,
                name="AetherCFD", upx=False)

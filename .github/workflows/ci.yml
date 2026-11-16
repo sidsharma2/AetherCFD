@@ -69,6 +69,10 @@ jobs:
         with:
           pyvista: false
           install-mesa3d-offscreen: false
+      # The same check INSTALL.md asks a new user to run: required parts must pass on a fresh runner
+      # (no GPU, no OpenFOAM distro, no settings yet: those are warnings, or skipped with --no-backend).
+      - name: Doctor
+        run: uv run aethercfd doctor --no-backend --quick
       - name: Unit tests
         run: uv run pytest tests/unit -m "${{ env.MARKERS }}" --junitxml=build/junit-unit-windows.xml
       - name: Studio tests
