@@ -12,12 +12,27 @@ share it. Definitions:
 
 from __future__ import annotations
 
+import functools
 import math
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
 
 AIR = "O2:0.21, N2:0.79"
+# One Cantera calculation at a time. The panel, the copilot and scripts call these functions from pool
+# threads, and building Cantera objects on two threads at once crashed the process (an access violation
+# in a CI run: a calculation left by a closed panel was still running when the next one started).
+_CANTERA = threading.RLock()
+
+
+def _one_at_a_time(fn):
+    @functools.wraps(fn)
+    def locked(*args, **kwargs):
+        with _CANTERA:
+            return fn(*args, **kwargs)
+
+    return locked
 
 
 @dataclass
@@ -54,6 +69,7 @@ def _mix(st: Streams, phi: float):
     return gas
 
 
+@_one_at_a_time
 def stoichiometric(st: Streams) -> dict:
     """Z_st, the fuel/oxidizer mass ratio at stoichiometry, and the stream temperatures' mixing line."""
     gas = st.gas()
@@ -64,16 +80,19 @@ def stoichiometric(st: Streams) -> dict:
             "note": "Bilger mixture fraction; fuel stream Z = 1, oxidizer Z = 0"}
 
 
+@_one_at_a_time
 def phi_of_z(st: Streams, z: float) -> float:
     zst = stoichiometric(st)["Z_st"]
     return float(z / (1 - z) * (1 - zst) / zst)
 
 
+@_one_at_a_time
 def z_of_phi(st: Streams, phi: float) -> float:
     gas = _mix(st, phi)
     return float(gas.mixture_fraction(st.fuel, st.oxidizer, element="Bilger"))
 
 
+@_one_at_a_time
 def adiabatic_flame(st: Streams, phis: list[float] | None = None) -> dict:
     """Equilibrium (HP) temperature and major products vs equivalence ratio."""
     phis = phis or [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]
@@ -89,6 +108,7 @@ def adiabatic_flame(st: Streams, phis: list[float] | None = None) -> dict:
     return {"rows": rows, "peak": {"phi": peak["phi"], "T_ad": peak["T_ad"]}}
 
 
+@_one_at_a_time
 def flame_speed(st: Streams, phi: float = 1.0, *, width: float = 0.03, refine: tuple = (3, 0.1, 0.2),
                 loglevel: int = 0) -> FlameResult:
     """Freely propagating premixed flame (mixture-averaged transport)."""
@@ -106,6 +126,7 @@ def flame_speed(st: Streams, phi: float = 1.0, *, width: float = 0.03, refine: t
                        list(map(float, x)), list(map(float, T)), len(x))
 
 
+@_one_at_a_time
 def ignition_delay(st: Streams, phi: float, T0: float, p: float | None = None, t_end: float = 2.0) -> dict:
     """Constant-pressure adiabatic reactor; delay = time of max dT/dt."""
     import cantera as ct
@@ -130,6 +151,7 @@ def ignition_delay(st: Streams, phi: float, T0: float, p: float | None = None, t
             "T_final": float(T[-1]), "ignited": bool(ignited)}
 
 
+@_one_at_a_time
 def counterflow_flamelet(st: Streams, strain: float = 100.0, width: float = 0.02, loglevel: int = 0) -> dict:
     """Counterflow diffusion flame at a nominal strain rate a = (|u_f| + |u_o|)/width [1/s]."""
     import cantera as ct
@@ -159,6 +181,7 @@ def counterflow_flamelet(st: Streams, strain: float = 100.0, width: float = 0.02
             "Z": list(map(float, Zs)), "T": list(map(float, f.T)), "grid_points": len(f.grid)}
 
 
+@_one_at_a_time
 def transport(st: Streams, phi: float | None = None, T: float | None = None, X: str | None = None) -> dict:
     gas = st.gas()
     if X:
@@ -209,6 +232,7 @@ def resolution_advice(delta_L: float, cell: float) -> dict:
     return {"cells_per_flame_thickness": n, "verdict": verdict}
 
 
+@_one_at_a_time
 def gas_summary(mechanism: str) -> dict:
     import cantera as ct
 
