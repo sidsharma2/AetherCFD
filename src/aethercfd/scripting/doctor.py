@@ -76,11 +76,13 @@ def _first_line(text: str, limit: int = 160) -> str:
 
 
 def load_settings():
-    """(Settings, None) or (default Settings, error text) when settings.toml cannot be read."""
+    """(Settings, None), or (usable Settings, error text) when settings.toml cannot be read or held a value
+    that had to be dropped (Settings.load recovers from both and says so in ``load_problem``)."""
     from aethercfd.core.settings import Settings
 
     try:
-        return Settings.load(), None
+        s = Settings.load()
+        return s, s.load_problem
     except Exception as exc:
         return Settings(), f"{type(exc).__name__}: {exc}"
 
