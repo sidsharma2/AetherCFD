@@ -176,6 +176,51 @@ def test_worker_stops_when_the_app_is_gone(tmp_path):
     assert json.loads((jd / "result.json").read_text())["reason"] == "parent_gone"
 
 
+@pytest.mark.timeout(900)
+def test_cpu_run_with_the_gpu_hidden_outlasts_the_old_crash(tmp_path, monkeypatch):
+    """Regression (2026-11-15): with CUDA_VISIBLE_DEVICES=-1 the CUDA build of torch 2.14.1 crashed with an
+    access violation in autograd after 20 to 90 s of CPU training (no result, empty log). A Navier-Stokes run
+    of about 100 s on the CPU must now end with a result and its held-out error."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+    rng = np.random.default_rng(0)
+    x = rng.uniform(0, 1, (8000, 2))
+    u, v, p = _kovasznay(x[:, 0] - 0.5, x[:, 1] - 0.5, 1 / 20)
+    y = np.column_stack([u, v, p])
+    job = pinn.PinnJob("ns", x[:40], y[:40], x, x[:2000], {"nu": 1 / 20, "dim": 2, "epochs_adam": 1200,
+                                                          "lbfgs_steps": 0, "seed": 0, "val_source": "exact"},
+                       x_val=x[-500:], y_val=y[-500:], names=["Ux", "Uy", "p"])
+    jd = pinn.start(job, job_dir=tmp_path / "cpu")
+    res = pinn.wait(jd, timeout_s=850)
+    print(f"\nCPU run with the GPU hidden: {res.get('seconds')} s, ok {res['ok']}, {res.get('error')}")
+    assert res["ok"], res.get("error")
+    assert res["device"] == "cpu" and res["seconds"] > 60 and res["heldout"]["n"] == 500
+    assert any("GPU was hidden" in n for n in res["notes"])
+
+
+def test_parent_check_only_says_gone_when_the_parent_exited(tmp_path):
+    """The worker's parent check, in the real environment: the app alive for the whole run stays alive (the
+    handle is opened once), an exited parent is gone, and a pid that never existed is gone."""
+    import subprocess
+    import textwrap
+
+    code = textwrap.dedent(f"""
+        import os, subprocess, sys, time
+        sys.path.insert(0, {str(pinn.WORKER.parent)!r})
+        import pinn_worker as w
+        me = os.getpid()
+        assert all(w._process_alive(me) for _ in range(200))
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1.5)"])
+        assert w._process_alive(child.pid)
+        child.wait()
+        time.sleep(0.2)
+        assert not w._process_alive(child.pid)
+        assert not w._process_alive(0x7FFFFFFC)  # no such pid
+        print("ok")
+        """)
+    out = subprocess.run([str(ML_PY), "-I", "-c", code], capture_output=True, text=True, timeout=120)
+    assert out.stdout.strip() == "ok", out.stderr[-2000:]
+
+
 def test_setup_script_finds_and_checks_the_existing_environment():
     """Detection against the real environment: it works, so nothing is installed."""
     said, ran = [], []

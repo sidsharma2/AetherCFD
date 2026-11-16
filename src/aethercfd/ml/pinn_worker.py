@@ -186,26 +186,44 @@ def residuals(job, net, x, extra):
     return []
 
 
+_PARENT_HANDLES: dict[int, int] = {}
+
+
 def _process_alive(pid: int) -> bool:
-    """The app process still runs (a worker must not train on after the app crashed or was killed)."""
+    """The app process still runs (a worker must not train on after the app crashed or was killed).
+
+    Only a definite "gone" counts: on Windows the process object is signalled (it exited) or OpenProcess says
+    there is no such pid; a failed call or access denied counts as alive, so a long run is never stopped by a
+    check that merely failed. The handle is opened once and kept, so a pid reused by another process after the
+    app exits is not mistaken for the app."""
     if os.name == "nt":
         import ctypes
+        from ctypes import wintypes
 
-        k32 = ctypes.windll.kernel32
-        h = k32.OpenProcess(0x00100000 | 0x1000, False, pid)  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
-        if not h:
-            return k32.GetLastError() != 87  # ERROR_INVALID_PARAMETER: no such process; other errors: assume alive
-        try:
-            return k32.WaitForSingleObject(h, 0) == 0x102  # WAIT_TIMEOUT: still running
-        finally:
-            k32.CloseHandle(h)
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k32.WaitForSingleObject.restype = wintypes.DWORD
+        k32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        h = _PARENT_HANDLES.get(pid)
+        if h is None:
+            h = k32.OpenProcess(0x00100000 | 0x1000, False, pid)  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such process; else assume alive
+            _PARENT_HANDLES[pid] = h
+        return k32.WaitForSingleObject(h, 0) != 0  # WAIT_OBJECT_0: it exited; WAIT_TIMEOUT or WAIT_FAILED: alive
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    return os.getppid() == pid
+    # the app as the direct parent: reparenting means it exited (and its pid may be reused). Started through a
+    # wrapper (conda run, a launcher), the app is not the direct parent and its pid existing is all we know.
+    return os.getppid() == pid if pid == _START_PPID else True
+
+
+_START_PPID = os.getppid()
 
 
 def hyper(job: dict) -> dict:
@@ -421,8 +439,12 @@ def main(job_dir: str) -> int:
     t0 = time.time()
     job = json.loads((jd / "job.json").read_text(encoding="utf-8"))
     want_cpu = job.get("device", "auto") == "cpu"
-    dev = torch.device("cuda" if torch.cuda.is_available() and not want_cpu else "cpu")
+    dev = torch.device("cuda" if not want_cpu and torch.cuda.is_available() else "cpu")  # cpu: CUDA never asked
     notes = []
+    if os.environ.get("AETHERCFD_PINN_GPU_HIDDEN"):
+        notes.append(f"the GPU was hidden (CUDA_VISIBLE_DEVICES={os.environ['AETHERCFD_PINN_GPU_HIDDEN']}): trained "
+                     "on the CPU, with the empty mask instead (with a mask such as -1 the CUDA build of PyTorch "
+                     "crashed during CPU training)")
     try:
         res = None
         try:
@@ -452,6 +474,9 @@ def main(job_dir: str) -> int:
 
 
 if __name__ == "__main__":
+    import faulthandler
+
+    faulthandler.enable()  # a native crash (access violation in torch) leaves its stack in worker.log
     try:
         sys.exit(main(sys.argv[1]))
     except Exception as exc:  # report to the app instead of dying silently

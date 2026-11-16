@@ -10,9 +10,17 @@ hang   ignores everything and sleeps (cancel has to kill it)
 crash  prints a traceback and exits 1 without a result
 oom    prints a CUDA out-of-memory line and exits 1 without a result
 nan    a diverged result, as the real worker writes it
+segv   a native crash (access violation) after a few history rows, as torch crashed in the real worker
+masked trains for job "_seconds" (default 3) writing history rows; then, like the CUDA build of torch on
+       Windows, it crashes natively if CUDA_VISIBLE_DEVICES is an invalid id such as -1 (not when it is
+       empty), else writes an ok result that
+       reports the device asked for and the mask it saw
 """
 
+import ctypes
+import faulthandler
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -71,6 +79,27 @@ elif mode == "crash":
 elif mode == "oom":
     print("torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB", flush=True)
     sys.exit(1)
+elif mode in ("segv", "masked"):
+    t0, i = time.time(), 0
+    while i < 3 or (mode == "masked" and time.time() - t0 < float(job.get("_seconds", 3))):
+        row(i)
+        i += 1
+        time.sleep(0.05)
+    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+    first = (mask or "").split(",")[0].strip()
+    if mode == "segv" or (first and not (first.isdigit() or first.upper().startswith(("GPU-", "MIG-")))):
+        hist.close()
+        sys.stdout.flush()
+        # a real access violation / segmentation fault in the interpreter (ctypes would catch its own): point the
+        # list's type at an unmapped address, then use it. No result; a stack only with faulthandler on.
+        victim = [1]
+        ctypes.cast(id(victim), ctypes.POINTER(ctypes.c_void_p))[1] = 16
+        len(victim)
+    x = np.load(jd / "inputs.npz")
+    np.savez(jd / "outputs.npz", y_eval=np.zeros((len(x["x_eval"]), 1)), y_fit=np.zeros((len(x["x_data"]), 1)))
+    result({"ok": True, "final_data_loss": 0.01, "final_pde_loss": 0.02, "fit_rmse_over_std": [0.05], "n_data": 1,
+            "n_colloc": 1, "n_eval": 1, **common, "device": job.get("device", "auto"), "mask_seen": mask,
+            "hidden_note": os.environ.get("AETHERCFD_PINN_GPU_HIDDEN"), "faulthandler": faulthandler.is_enabled()})
 elif mode == "nan":
     row(0)
     result({"ok": False, "reason": "diverged", "error": "training diverged: the loss became NaN or infinite at "
