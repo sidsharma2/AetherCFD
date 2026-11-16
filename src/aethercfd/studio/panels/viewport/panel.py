@@ -121,7 +121,7 @@ class ViewportPanel(ViewToolsMixin, Panel):
 
     def __init__(self, ctx: PanelContext):
         super().__init__(ctx)
-        from pyvistaqt import QtInteractor
+        from aethercfd.studio.panels.viewport.interactor import ViewportInteractor
 
         sv = ctx.services
         self.vid = f"viewport{ctx.instance_id}"
@@ -212,7 +212,7 @@ class ViewportPanel(ViewToolsMixin, Panel):
         lay.addLayout(bar)
         # ---------------- view + sidebar
         split = QSplitter(Qt.Orientation.Horizontal)
-        self.plotter = QtInteractor(self, auto_update=False)
+        self.plotter = ViewportInteractor(self, auto_update=False)  # re-arms a lost GL context (interactor.py)
         from aethercfd.studio.panels.viewport.render_thread import guard_render_thread
 
         guard_render_thread(self.plotter.render_window, self.vid)  # ADR 0008: renders on the GUI thread only
