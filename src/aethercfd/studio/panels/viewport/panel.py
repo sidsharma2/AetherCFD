@@ -132,6 +132,7 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.scalar: str | None = None
         self.range: tuple[float, float] | None = None
         self.bounds = None
+        self.region_bounds: dict[str, list[float]] = {}  # each shown region's extent (from the last load)
         self._first_data = True
         self._is2d = False
         self._pending_state: dict | None = None
@@ -364,8 +365,9 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self._is2d = False
         self.case_root = Path(root) if root else None
         self._queued_show = None
-        self._showcase_pending = False
+        self._showcase_pending = self._showcase_waited = False
         self.bounds = None  # never the previous case's
+        self.region_bounds = {}
         for w in (self.field, self.time):  # never offer the previous case's fields and times
             w.blockSignals(True)
             w.clear()
@@ -700,6 +702,7 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.smoothed = bool(data.get("smoothed"))  # before drawing: the colour bar says "smoothed"
         self.stage_info = data.get("stage_info", {})
         self.block_regions = data.get("block_regions", {})
+        self.region_bounds = data.get("region_bounds", {})
         if data["bounds"] is not None:
             self.bounds = data["bounds"]
             if self.btn_ao.isChecked():
@@ -729,9 +732,10 @@ class ViewportPanel(ViewToolsMixin, Panel):
             else:
                 self._fit()
         self.comp.setVisible(data.get("components", 0) > 1)
-        if getattr(self, "_showcase_pending", False) and self.bounds is not None:
-            self._showcase_pending = False
-            QTimer.singleShot(0, lambda: self.ctx.services.notify("Viewport: " + self.showcase()))
+        if (getattr(self, "_showcase_pending", False) and self.bounds is not None
+                and not getattr(self, "_showcase_scheduled", False)):
+            self._showcase_scheduled = True  # pending stays set until it runs: waiters never see a gap
+            QTimer.singleShot(0, self._run_pending_showcase)
         edges = (data.get("overlays") or {}).get("edges")
         self.edge_mapper.SetInputData(edges if edges is not None else vtk.vtkPolyData())
         self.edge_actor.SetVisibility(edges is not None and self.look == "studio"
@@ -1142,10 +1146,17 @@ class ViewportPanel(ViewToolsMixin, Panel):
 
     def showcase(self, regions=None) -> str:
         """The best first view of the result, in one click (also the copilot's): the Studio look; a 3D
-        case gets a mid-plane slice through its long axis inside a glass shell, an isometric camera and
-        depth shading; a 2D case is framed flat. On a multi-region (CHT) case ``regions`` ('solids', a
-        region name, ...) picks what to show first: the slice then cuts through those regions' own
-        middle and the camera frames them."""
+        case gets a mid-plane slice inside a glass shell, an isometric camera and depth shading; a 2D case
+        is framed flat. On a multi-region (CHT) case ``regions`` ('solids', a region name, ...) picks what
+        to show first, and the camera frames them.
+
+        A showcase shows every selected region (all regions when none are chosen). The cut is a plane
+        normal to x, y or z that passes through each selected region: along that axis the regions' extents
+        must overlap, and the plane sits in the middle of the overlap. Of the axes where they overlap, the
+        one with the smallest combined extent is used (the plane then spans the two largest extents, which
+        shows the most of the flow). When no such plane exists (e.g. side-by-side regions that overlap on
+        no axis), there is no slice: the selected regions' surfaces are shown and the camera is framed on
+        them."""
         if self.case_root is None or not self.meta:
             return "no results are loaded yet"
         where = ""
@@ -1157,31 +1168,58 @@ class ViewportPanel(ViewToolsMixin, Panel):
             where = f" in {self._regions_label()}"
         if self.look != "studio":
             self.set_look("studio")
-        if self.bounds is None:  # nothing drawn yet: decide once the first data (and its size) arrive
+        selected = self._showcase_regions()
+        missing = not self._is2d and any(r not in self.region_bounds for r in selected)
+        if self.bounds is None or (missing and not getattr(self, "_showcase_waited", False)):
+            # nothing drawn yet, or not these regions: decide once their data (and sizes) arrive (once)
+            self._showcase_waited = self.bounds is not None
             self._showcase_pending = True
             self.request_load(reset_range=True)
             return f"showcase{where}: will frame the result as soon as it is loaded"
-        if not self._is2d and self.bounds is not None:
-            b = self.bounds
-            ext = [b[1] - b[0], b[3] - b[2], b[5] - b[4]]
-            # the plane spanning the two largest extents shows the most of the flow (along a pipe, through
-            # a box and the tube entering it): cut normal to the smallest extent, through the middle
-            normal = ext.index(min(ext))
+        self._showcase_waited = False
+        if not self._is2d:
+            extents = [self.region_bounds[r] for r in selected if r in self.region_bounds] or [self.bounds]
+            cut = showcase_cut(extents)
+            if cut is None:
+                self.slice_on.setChecked(False)
+                self._first_data = True  # frame the regions when their surfaces arrive
+                self.request_load(reset_range=True)
+                return (f"showcase{where}: no single plane passes through all of {', '.join(selected)}; showing "
+                        f"their surfaces in the Studio look ({self.field.currentText()})")
+            normal, pos = cut
+            self.slice_axis.blockSignals(True)
             self.slice_axis.setCurrentIndex(normal)
+            self.slice_axis.blockSignals(False)
             self.slice_pos.blockSignals(True)
-            self.slice_pos.setValue(500)
+            self.slice_pos.setValue(pos)
             self.slice_pos.blockSignals(False)
+            self.slice_on.blockSignals(True)
             self.slice_on.setChecked(True)
+            self.slice_on.blockSignals(False)
             self._first_data = True  # re-frame when the slice arrives
             self.request_load(reset_range=True)
             hint = ("; the case has regions: showcase(regions='solids') or a region name shows only those"
                     if self.regions() and self.region_sel is None else "")
-            return (f"showcase{where}: mid-plane slice normal to {'xyz'[normal]} in a glass shell, Studio look "
+            through = f" through {', '.join(selected)}" if len(selected) > 1 else ""
+            return (f"showcase{where}: slice normal to {'xyz'[normal]}{through} in a glass shell, Studio look "
                     f"({self.field.currentText()}){hint}")
         self.slice_on.setChecked(False)
         self._first_data = True
         self.request_load(reset_range=True)
         return f"showcase{where}: {self.field.currentText()} in the Studio look"
+
+    def _run_pending_showcase(self) -> None:
+        self._showcase_scheduled = False
+        if getattr(self, "_disposed", False) or not getattr(self, "_showcase_pending", False):
+            return
+        self._showcase_pending = False
+        self.ctx.services.notify("Viewport: " + self.showcase())
+
+    def _showcase_regions(self) -> list[str]:
+        """The regions a showcase must show: the chosen ones, else every region ('' for a single region)."""
+        if self.region_sel:
+            return list(self.region_sel)
+        return self.regions() or sorted(self.region_bounds) or [""]
 
     # ------------------------------------------------------------------ animation + ParaView
     def _out_dir(self, sub: str) -> Path:
@@ -2009,6 +2047,28 @@ PANELS = [PanelSpec("aether.viewport", "3D Viewport", "mdi6.cube-outline", "Visu
                     multi_instance=True, default_area=Area.CENTER, close_policy="destroy",
                     requires=frozenset({"vtk"}),
                     description="Results on the real finite-volume mesh: fields, time, slices, probe")]
+
+
+def showcase_cut(bounds: list[list[float]], steps: int = 1000) -> tuple[int, int] | None:
+    """The showcase's cut through regions with these extents ([xmin, xmax, ymin, ymax, zmin, zmax] each):
+    (normal axis, slider position 0..steps along the regions' combined extent), or None when no plane
+    normal to x, y or z passes through all of them (see ViewportPanel.showcase for the rule)."""
+    if not bounds:
+        return None
+    lo = [min(b[2 * k] for b in bounds) for k in range(3)]
+    hi = [max(b[2 * k + 1] for b in bounds) for k in range(3)]
+    ext = [hi[k] - lo[k] for k in range(3)]
+    tol = 1e-9 * max(max(ext), 1e-30)
+    for k in sorted(range(3), key=lambda k: ext[k]):
+        a = max(b[2 * k] for b in bounds)  # the overlap of every region's extent along k
+        z = min(b[2 * k + 1] for b in bounds)
+        if z - a <= tol or ext[k] <= tol:
+            continue
+        pos = round(((a + z) / 2 - lo[k]) / ext[k] * steps)  # the slider's resolution
+        at = lo[k] + pos / steps * ext[k]
+        if a < at < z:
+            return k, pos
+    return None
 
 
 def field_file_present(case_root, field: str, time: float | None) -> bool:
