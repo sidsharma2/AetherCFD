@@ -89,6 +89,25 @@ Three hardening passes on top of the features below, merged in `release/hardenin
 - The QoI report test no longer reads the user's settings.
 - The sweep drives the viewport at the latest time folder that holds files.
 
+#### After the first review of the merged branch
+
+- `aethercfd-cli ml-setup` runs the PINN environment setup from the CLI, so the installed app can do it too
+  (it has no `scripts` folder). The no-environment message names the command that fits how the app started.
+- PINN runs on the CPU with `CUDA_VISIBLE_DEVICES=-1` no longer die mid-run. The CUDA build of PyTorch
+  2.14.1 crashed in its backward pass with that value (10 of 11 test runs). The worker now gets an empty
+  value, which hides the GPU without the crash. A native crash inside PyTorch is now named as one, with its
+  exit code and stack, where the tab used to say "killed, or out of memory".
+- The 3D view recovers when it loses its OpenGL context. Switching perspectives (Post to Setup, Setup to
+  Meshing) could leave it blank for good. The recovery depends on internals of pyvistaqt 0.13.1.
+- The viewport toolbar wraps onto more rows in groups, so no label is cut at any width from 600 px up.
+- Showcase on a multi-region case cuts a plane through every selected region, or shows their surfaces when
+  no single plane passes through all of them. Before, the solids view of multiRegionHeater missed two of them.
+- The camera frames what is shown again after a stage, a view option or a resize changes it, unless you
+  moved the camera yourself.
+- `aethercfd doctor` reports a `settings.toml` that had to be recovered.
+- The PINN tab's buttons sit on two rows, so none is cut in a side dock.
+- `scripts/make_screenshots.py` regenerates every image in `docs/screenshots` from the running app.
+
 ### Added
 
 - **Several versions of one fork side by side (ESI v2306 + v2606).** Tested on LMAE-OpenFOAM with v2606 (2606.0~rc2

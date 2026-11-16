@@ -74,7 +74,7 @@ as numpy arrays, and Measurements compares experiment with simulation.
 
 ![POD of the velocity magnitude over the three saved pitzDaily times](docs/screenshots/09-analysis-pod.png)
 
-![The PINN tab before training: the PyTorch environment it found, the physics, the data and the training settings](docs/screenshots/10-analysis-pinn.png)
+![The PINN tab after a 36 s Navier-Stokes fit to 400 pitzDaily cells on the GPU, with its error on the cells it did not train on](docs/screenshots/10-analysis-pinn.png)
 
 ### The copilot and its approval rule
 
@@ -158,7 +158,7 @@ Copilot
   (journal, run records, provenance) sit in a `.aethercfd` folder inside the case.
 - Dictionary edits are lossless. An edit changes the value it targets and keeps every other byte, comment and
   blank line ([ADR 0002](docs/adr/0002-dictionary-roundtrip.md)). A corpus test round-trips every OpenFOAM file
-  in the owner's case collection.
+  in our case collection.
 - Every change is a plan first. A command shows its exact file diffs and shell commands, waits for approval,
   checks that the files did not change underneath, applies, and writes a journal entry with who, what, why and
   the diff. Journal entries can be reverted. Nothing is hard-deleted: removed files go to the project trash.
@@ -168,10 +168,10 @@ Copilot
   thread's stack, native faults go to `crash/faulthandler.log`, and an unhandled error is shown in the app and
   logged in `studio.log` (all in `%LOCALAPPDATA%\AetherCFD\Cache`).
 - Automated tests run on GitHub Actions for every push to `main` and every pull request: ruff and the import
-  contracts on Ubuntu, then the unit and studio tests and `aethercfd doctor` on Windows. This branch has 609
-  unit tests and 134 studio tests in that set, plus 28 live WSL tests and one corpus test that need OpenFOAM or
-  the owner's cases and run on his PC. The last CI run on GitHub, on 4 November 2026, passed 359 unit and 106
-  studio tests. The tests added since then have not run on GitHub yet.
+  contracts on Ubuntu, then the unit and studio tests and `aethercfd doctor` on Windows. That set holds 627
+  unit tests and 143 studio tests. On GitHub the PINN tests that train a real network are skipped, because
+  the runners have no PyTorch environment; they run on the development PC. Another 28 live WSL tests and one
+  corpus test need OpenFOAM or our own case collection and also run there.
 
 ## Known limits
 
@@ -182,6 +182,11 @@ Copilot
   turbulent 3-D jet of the REV B.1 case the temperature reconstruction reached only RMSE/std 0.78 to 0.81,
   about as good as predicting the mean everywhere.
 - The `--cpu-only` build of `packaging/build.py` is experimental and untested.
+- One native crash is not explained. In one of three full runs of the studio tests on the development PC,
+  VTK's OpenFOAM reader raised an access violation while it loaded a decomposed 1M-cell case. The same test
+  passed in every rerun. `crash/faulthandler.log` records such a crash with the stack of every thread.
+- The 3D view recovers a lost OpenGL context with code that depends on internals of pyvistaqt 0.13.1. Check
+  `tests/studio/test_viewport_gl_recovery.py` before you upgrade pyvistaqt.
 - GPU linear solvers for OpenFOAM are not included.
 
 ## Documentation
@@ -202,7 +207,7 @@ uv sync --locked
 uv run aethercfd-studio [case]                    # run from source (--reset-layout ignores saved layouts)
 uv run pytest tests/unit tests/studio -m "not wsl and not wsl_slow and not corpus and not gl"   # what CI runs
 uv run pytest tests/wsl -m "wsl or wsl_slow"      # live WSL tests (scratch copies only)
-uv run pytest tests/corpus -m corpus              # lossless round-trip over the owner's case collection
+uv run pytest tests/corpus -m corpus              # lossless round-trip over our case collection
 uv run ruff check src tests packaging scripts     # lint
 uv run lint-imports                               # import contracts
 uv run python -m aethercfd.studio <case> --smoke  # GUI smoke run with screenshots in build/smoke

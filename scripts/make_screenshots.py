@@ -808,4 +808,14 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     code = main()
     sys.stdout.flush()
-    os._exit(code)  # Qt/WebEngine teardown at interpreter exit can hang (see aethercfd.studio.__main__.run)
+    sys.stderr.flush()
+    if sys.platform == "win32":
+        # as aethercfd.studio.__main__.run does: os._exit still runs DLL detach, where QtWebEngine's Chromium
+        # can crash or hang (seen here: an access violation after every image was saved)
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        k32.TerminateProcess(k32.GetCurrentProcess(), code)
+    os._exit(code)

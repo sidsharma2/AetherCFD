@@ -367,11 +367,14 @@ class AnalysisPanel(Panel):
         self.p_compare.clicked.connect(self.compare_pinn)
         r.addWidget(self.p_go)
         r.addWidget(self.p_stop)
-        r.addWidget(self.p_write)
-        r.addWidget(self.p_compare)
         r.addWidget(self.p_recheck)
         r.addStretch(1)
         lay.addLayout(r)
+        r2 = QHBoxLayout()  # a second row: five buttons in one row were cut off in a side dock
+        r2.addWidget(self.p_write)
+        r2.addWidget(self.p_compare)
+        r2.addStretch(1)
+        lay.addLayout(r2)
         self.p_out = QTextBrowser()
         self.p_out.setMaximumHeight(160)
         lay.addWidget(self.p_out)
@@ -543,7 +546,8 @@ class AnalysisPanel(Panel):
                                  name="held-out RMSE/std")
             last = h[-1]
             held = f" · held-out {val[-1]:.3g}" if np.isfinite(val[-1]) else ""
-            self.p_status.setText(f"{last['stage']} step {last['step']} · data {last['data']:.3g} · physics "
+            where = "final" if last["stage"] == "final" else f"{last['stage']} step {last['step']}"
+            self.p_status.setText(f"{where} · data {last['data']:.3g} · physics "
                                   f"{last['pde']:.3g}{held} · {last['t']:.0f} s")
         if pr["done"]:
             self.p_timer.stop()
