@@ -580,18 +580,46 @@ class ResidualsPanel(Panel):
                 "x_label": "Time" if self.xmode.currentIndex() == 1 else "Iteration",
                 "title": None, "decimate": 4000}
         (tmp / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
-        r = subprocess.run(module_argv("aethercfd.studio.export_plot", str(tmp / "spec.json")),
-                           capture_output=True, text=True, timeout=120, creationflags=0x08000000)
-        if r.returncode == 0:
+        self.ctx.services.notify(f"Exporting the residual plot to {out}.pdf …")
+        # matplotlib in a subprocess takes seconds (a first font scan longer): never on the GUI thread
+        self.ctx.services.run_bg(partial(_export_residuals, tmp), partial(self._export_done, out))
+
+    def _export_done(self, out: str, result) -> None:
+        err, error = result
+        if error is not None:
+            err = str(error)
+        if err is None:
             self.ctx.services.notify(f"Exported {out}.pdf and .png")
         else:
-            QMessageBox.warning(self, "Export failed", r.stderr[-2000:])
+            last = err.strip().splitlines()[-1] if err.strip() else err
+            self.ctx.services.notify(f"Residual plot export failed: {last}", "error")
+            QMessageBox.warning(self, "Export failed", err[-2000:])
 
     def save_state(self) -> dict:
         return {"x": self.xmode.currentIndex()}
 
     def restore_state(self, state: dict) -> None:
         self.xmode.setCurrentIndex(int(state.get("x", 0)))
+
+
+
+def _export_residuals(tmp: Path) -> str | None:
+    """Draw the exported residual plot in a subprocess (worker thread); None on success, else the error text.
+    The temporary spec folder is removed either way."""
+    import shutil
+
+    try:
+        r = subprocess.run(module_argv("aethercfd.studio.export_plot", str(tmp / "spec.json")),
+                           capture_output=True, text=True, timeout=120, creationflags=0x08000000)
+        if r.returncode == 0:
+            return None
+        return (r.stderr or r.stdout or f"exit code {r.returncode}").strip()
+    except subprocess.TimeoutExpired:
+        return "matplotlib did not finish within 120 s"
+    except OSError as exc:
+        return f"could not start Python for the export: {exc}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ============================================================================ Solver log

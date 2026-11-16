@@ -194,12 +194,19 @@ class AppServices(QObject):
             s.runner, s.forks, s.runs = value
             s.context.backend, s.context.forks, s.context.run_manager = s.runner, s.forks, s.runs
             if s.runs is not None:
-                resumed = s.runs.reattach()
-                if resumed:
-                    self.notify(f"Re-attached to {len(resumed)} running job(s)")
+                # probes every active run: a WSL call each, an SSH call (up to its connect timeout) for a
+                # cluster run: never on the GUI thread
+                self.run_bg(s.runs.reattach, self._reattached)
             self.backend_ready.emit(s)
 
         self.run_bg(init_backend, done)
+
+    def _reattached(self, res) -> None:
+        resumed, err = res
+        if err is not None:
+            self.notify(f"Could not check the runs started before: {err}", "warn")
+        elif resumed:
+            self.notify(f"Re-attached to {len(resumed)} running job(s)")
 
     def ensure_project(self) -> bool:
         """Edits/runs need a project (journal). Create the sidecar on first need."""
