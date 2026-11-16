@@ -21,6 +21,7 @@ from aethercfd.templates.create import (
     family_of,
     new_value_text,
 )
+from tests.wsl._forks import by_family
 
 pytestmark = [pytest.mark.wsl, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL")]
 SCRATCH = Path(r"D:\OpenFOAM\_aethercfd_scratch\tests\templates")
@@ -29,7 +30,7 @@ SCRATCH = Path(r"D:\OpenFOAM\_aethercfd_scratch\tests\templates")
 @pytest.fixture(scope="module")
 def forks():
     r = WslRunner("LMAE-OpenFOAM")
-    return r, {f.family: f for f in probe_forks(r)}
+    return r, by_family(probe_forks(r))
 
 
 @pytest.mark.parametrize("family", [Family.ESI, Family.FOUNDATION])
@@ -90,3 +91,14 @@ def test_esi_zero_orig_is_restored(forks):
     copy_tutorial(runner, fk[Family.ESI], template("parcelInBox"), dest)
     assert (dest / "0.orig").is_dir() and (dest / "0" / "U").is_file()
     assert "endTime" in current_values(dest, template("parcelInBox"), "esi")
+
+
+def test_tutorial_symlinks_become_files_windows_can_read(forks):
+    runner, fk = forks
+    dest = SCRATCH / "multiRegionHeater_esi"
+    if dest.exists():
+        shutil.rmtree(dest)  # this test's own scratch copy
+    copy_tutorial(runner, fk[Family.ESI], template("multiRegionHeater"), dest)
+    # region dictionaries are symlinks in the tutorial (and v2606 links system/decomposeParDict too)
+    for f in [dest / "system" / "decomposeParDict", dest / "system" / "topAir" / "decomposeParDict"]:
+        assert not f.is_symlink() and "numberOfSubdomains" in f.read_text(encoding="utf-8")

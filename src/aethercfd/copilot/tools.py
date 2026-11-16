@@ -423,6 +423,10 @@ def log_note(name: str, text: str) -> str | None:
                 f"'failed lookup of {m.group(1)}' is OpenFOAM v2306 looking up the neighbour region of a mapped "
                 "(multi-region) patch while checking one region of a split mesh: not a mesh defect. Judge the mesh "
                 "by the report; checkMesh on the assembled single-region case does not hit it.")
+    if "Empty 'probeLocations' list" in text:
+        return ("OpenFOAM v2606 stops on a probes/patchProbes function object whose probeLocations list is empty; "
+                "v2306 accepted it and wrote nothing. Give it at least one location, or remove that function (for "
+                "example its #includeFunc line in system/controlDict). The case itself is not broken.")
     return None
 
 
