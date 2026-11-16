@@ -1,95 +1,215 @@
 # AetherCFD Studio
 
-A desktop workbench that drives OpenFOAM **without hiding it**. Every GUI action maps to real files and real
-commands; dictionaries stay byte-for-byte yours; the case on disk is the source of truth. Claude works next
-to you as a copilot that can see, explain and change the case — every change and run is shown as an exact
-plan you approve, and lands in the Command Journal.
+AetherCFD Studio is a Windows desktop app for OpenFOAM. OpenFOAM runs in WSL2, and the app sets up, meshes,
+checks, runs and post-processes cases around it. Every action in the app is a change to real case files or a
+real OpenFOAM command, and the case folder on disk stays the source of truth. An optional AI copilot (Claude Code
+or the OpenAI Codex CLI) can read a case and propose changes, and you approve each one. We wrote it for our
+research group: for students who know CFD and want to use OpenFOAM without hunting through dictionaries, and for
+anyone who wants to see exactly what changed in a case and why.
 
-**New to AetherCFD, or setting it up on another PC?** Start with [INSTALL.md](INSTALL.md) (release zip or
-source, WSL + OpenFOAM, the first-run setup wizard, the copilot sign-in).
+![AetherCFD Studio on the pitzDaily case: case files, the 3D viewport with the velocity magnitude, and the guided workflow](docs/screenshots/01-main-window.png)
 
-## Launch
+## What you can do
 
-- **Start menu / Desktop: "AetherCFD Studio"** (the packaged app,
-  `%LOCALAPPDATA%\Programs\AetherCFD\AetherCFD.exe`). Update it with `uv run python packaging/build.py`
-  then `uv run python packaging/install.py`; the build also writes the shareable
-  `build/AetherCFD-<version>-win64.zip`.
-- From the source tree: `uv run aethercfd-studio [case]` (add `--reset-layout` to ignore saved layouts),
-  or double-click `AetherCFD Studio.cmd`.
-- Headless: `aethercfd-cli doctor --probe`, `open`, `run`, `runs`, `control`, `set`, and
-  `aethercfd-cli copilot <case> "<question>" --approve none|edits|all [--provider claude|codex]` (packaged; from source:
-  `uv run aethercfd copilot ...`).
+### Set up a case with the guided workflow
 
-**Copilot providers and sign-in:** the copilot runs through Claude Code (default; the Claude desktop app
-ships it) or the OpenAI Codex CLI; pick the provider and model in the Copilot panel's top bar (settings
-`copilot_provider`, `copilot_model`). Sign in once from the panel ("Sign in to Claude" / "Sign in to
-Codex"), or run `claude auth login --claudeai` / `codex login`. Either way the AI only gets the AetherCFD tools:
-its own shell and file-writing tools are off, and every edit or run goes through the approval dialog.
-The Claude copilot only runs on a Claude subscription sign-in: API keys are stripped from its environment, a
-Console (API-billed) sign-in is refused, and **Switch account** (person icon in the Copilot panel) changes
-subscriptions. See [docs/copilot-accounts.md](docs/copilot-accounts.md).
+The Workflow panel splits a case into twelve stages, from geometry to post-processing and ML. Each stage shows
+its status, the next action and its correctness gates: dimensions, the pressure reference, U/p pairing, solver
+and scheme coverage, checkMesh, y+, species sums, Mach number against the solver, and convergence. Guided mode
+asks physical questions and writes the dictionaries as one plan that you approve. Advanced opens the expert
+panels and Raw shows the exact files. A stage cannot be marked done while one of its gates fails. To start a new
+case, New Case from Template (Ctrl+N) ranks the OpenFOAM tutorials of both forks against your physics.
 
-**GPU:** the app renders on the discrete NVIDIA GPU automatically (setting `gpu = "high-performance"`;
-`integrated` / `system` to change). CUDA compute (CuPy) is used when available (the very first GPU stage after an install compiles its kernels, about a minute; they are cached); everything falls back to
-the CPU.
+![The guided workflow on pitzDaily: the Models stage has an amber gate because y+ sits in the buffer layer on both walls](docs/screenshots/07-guided-workflow.png)
 
-## What is in it
+### Mesh and check before you run
 
-| Area | Panels / features |
-|---|---|
-| Find your way | command bar (case, perspectives, search, run state); Ctrl+K search that tolerates typos (`chek mesh`, `resdiuals`, `vortx`) and falls back to "Ask the copilot" |
-| Set up | **New Case from Template** (Ctrl+N): physics questions → ranked OpenFOAM tutorials (both forks) → parameters; **Workflow**: the guided, staged workspace (Geometry → Domain → Materials → Physics → Mesh → Models → BC/IC → Numerics → Run → Validation → Post → ML), each stage with a status, next action, dependencies and correctness gates (dimensions, pressure reference, U/p pairing, solver/scheme coverage, checkMesh, y+, species sum, Mach vs solver, convergence), a Guided mode of physical questions that writes the dictionaries as one approvable plan, Advanced (the expert panels) and Raw (the exact files); "Mark done" is refused while a gate fails; **Checks**: numerics lab + pre-run checks with one-click journalled fixes; Case Files; Editor (raw/form/split, lossless); Properties |
-| Mesh | **AetherMesh**: checkMesh-exact quality maps and hotspot clusters shown in 3D, blockMesh grading designer (no size jumps), **hole blocking** (O-grid in a box through several walls: H-O box per level, end slabs, ellipses, corner-misalignment check), y+ first-cell height and layers, STL intake (watertight, feature angle, extruded/axisymmetric) and ranked meshing strategies, **CAD import** through FreeCAD (STEP/IGES/BREP/FCStd, one patch per named part) and a one-click **snappyHexMesh setup** from them (background box sized from the cell budget, features, curvature-driven levels, layers, STL solids → patches; both forks, verified live); Mesh Quality (checkMesh log). Case-local mesh generators run as approvable, journalled scripts |
-| Physics | **Combustion** (Cantera): Z_st, T_ad(φ), transport, laminar flame speed and thickness, ignition delay, Peters regime and mesh resolution, model advisor (EDC, PaSR, laminar, flamelets) with exact dictionaries per fork, counterflow flamelets; CRECK and GRI mechanisms; **Physics Code**: your own models/solvers from templates (e.g. k-ε with Pope's round-jet correction), built with wmake in WSL, wired into the case |
-| Run | Run (plan-first; **Automatic** start does what the case needs: the tutorial's own `./Allrun`, or mesh + check + solve, or solve; write-now, stop & write, pause, kill; guards), Residuals, Solver Log, Terminal (WSL, one OpenFOAM version sourced) |
-| Visualize | 3D Viewport on the real FV mesh in two looks: **Studio** (AetherCFD's own post-processing: smooth shading with depth cues, crisp outlines, per-field colour maps, a slim colour bar with units and SI prefixes, a title line, a clickable orientation gizmo; colours smoothed from the cell values and always labelled as such) and **Classic** (ParaView-style true cell colours). **Showcase** (✦) gives the best first view in one click (3D: a mid-plane slice through the most of the flow inside a glass shell of the domain). **Animation**: turntable or time sweep as GIF/WebP. **Open in ParaView** hands the case, field and time to ParaView as the expert backup. + **Visualization** pipeline: Q-criterion vortices and isosurfaces on the GPU (CUDA marching tetrahedra on any polyhedral mesh), slices, clips, thresholds, contours, streamlines, glyphs, schlieren (exact with OpenFOAM's grad(rho)), mesh-quality maps, mirror/revolve, presentation smoothing; **Render image** up to 8K with 8× MSAA, or **ray-traced** through ParaView (OptiX path tracer on RTX) |
-| Analyse | **Python Console** (the open case as numpy: `data.fields()`, `data.residuals()`, plots inline, journalled `do(...)`); **Diff** (two files, vs another case, or before a journalled change); **Analysis**: POD/DMD modes of saved fields (growth rates of a diverging mode), a Gaussian-process surrogate over runs, and **PINNs** (PyTorch on the GPU, out of process: reconstruct a field from sparse data with advection-diffusion or Navier-Stokes physics; validated on Kovasznay flow to 0.06-0.4 %); **Measurements**: experiment vs simulation (bias, RMSE, R²) and optimal-interpolation data assimilation (corrected field + uncertainty, written as fields) |
-| Assist | **Copilot** (Claude): reads the case, logs and mesh, runs checks and pre-calculations, proposes edits/runs for approval, and drives the app in front of you (opens panels and cases, switches looks, makes Showcase views and animations, adds visualization stages, points at things); it renders the view and looks at the image itself before describing a result |
-| Agents | The research group's **cfd_agents**, run out of process in their own environment (`aethercfd.services.cfd_agents`): Murphy (failure diagnosis of a solver log), Connie (run health from fieldMinMax/solverInfo), Reggie (transient numerics design), Darwin (RANS-informed refinement plan, written outside the case). Their output is advice; applying it goes through an approvable plan. Betty/Bill/Bob/Larry are not called (they write the case directly, delete time folders, or need a local LLM). Settings `cfd_agents_python` / `cfd_agents_root` |
-| Record | Command Journal (who, what, why, diff — revertable) |
+AetherMesh shows checkMesh-exact quality maps and hotspot clusters in 3D. It designs blockMesh grading,
+estimates the first-cell height for a target y+, takes STL files and CAD (STEP, IGES, BREP and FCStd through
+FreeCAD), and sets up snappyHexMesh. The Checks panel runs the numerics lab and the pre-run checks. Each finding
+gives its reason and, where there is one, a fix. The fix opens as a plan with the exact diff, and nothing changes
+until you approve it.
 
-Ctrl+Alt+1…5 switch perspectives (Setup, Meshing, Run Monitor, Post-processing, Code).
+![Checks on buoyantCavity: a compressible SIMPLE run without pressure limits, and the plan its fix would apply](docs/screenshots/08-checks-fix.png)
 
-**PINN environment:** PINNs train in a separate PyTorch environment, so the app stays small. Create it once:
-`uv venv .ml-env --python 3.12` then `uv pip install --python .ml-env/Scripts/python.exe torch numpy --index-url https://download.pytorch.org/whl/cu126` (or point the `ml_python` setting at any python with torch).
+### Run and monitor with guards
 
-## Panels, monitors, layouts
+Start does what the case needs: the tutorial's own `./Allrun`, or mesh, check and solve, or only the solve. Runs
+are detached inside WSL, or go to a Slurm cluster, so closing the app does not stop them. When the app opens
+again it reattaches. Residuals and the solver log update while the solver runs, and Write now, Stop & write,
+Pause and Kill act on it. Guards stop a run when the log grows too fast or too large, or when free disk space
+falls below a reserve.
 
-Every panel docks, tabs, splits, auto-hides or floats onto another monitor (View ▸ Add Panel; Window ▸
-Move Focused Panel to Monitor N; Window ▸ Identify Monitors). Layouts are remembered **per perspective
-and per monitor setup** and restored when monitors are plugged/unplugged. Window ▸ Layout Diagnostics
-shows what was detected.
+![The Run Monitor on pitzDaily: run settings and history, residuals and the solver log](docs/screenshots/06-run-monitor.png)
 
-## Where things live
+### Post-process
 
-- `<case>/.aethercfd/` — project sidecar: `project.toml`, `local/` (journal, run records, provenance,
-  trash, renders, copilot session, combustion report). Added to `.git/info/exclude`.
-- `<case>/aether-code/` — your own OpenFOAM sources (Physics Code); libraries build into
-  `$FOAM_USER_LIBBIN` inside WSL.
-- `%APPDATA%\AetherCFD\` — settings and layouts. `%LOCALAPPDATA%\AetherCFD\Cache\` — fork/capability
-  cache, converted mechanisms, `studio.log`, crash logs.
-- Runs execute in the WSL distro chosen in the setup wizard (`wsl.default_distro`): in place under
-  `/mnt/<drive>/...` when the path is safe,
-  otherwise from a staged ext4 copy that syncs results back.
+The 3D viewport draws the real finite-volume mesh in two looks. Studio has smooth shading, outlines and a labelled
+colour bar. Classic shows the true cell colours, as ParaView does. Showcase gives a first view in one click; on a
+3D case that is a mid-plane slice inside a glass shell of the domain. The Visualization panel adds slices, clips,
+thresholds, contours, streamlines, glyphs, Q-criterion isosurfaces and schlieren. Render image goes up to 8K, and
+Open in ParaView hands the case, field and time to ParaView.
 
-## Safety rails
+![Showcase on multiRegionHeater: a mid-plane slice of the temperature inside a glass shell](docs/screenshots/02-showcase-heater.png)
 
-Only allow-listed distros; `wsl --shutdown/--terminate/--unregister/...` are refused in code; two OpenFOAM
-versions are never sourced in one shell; runaway-log, disk and memory guards stop a run before it can fill
-the disk; nothing is ever hard-deleted (trash in the sidecar); the copilot cannot run shell commands or
-edit files directly — only through approvable, journalled commands.
+![Flow paths from the pitzDaily inlet, coloured by velocity magnitude, with the stage settings](docs/screenshots/04-flow-paths.png)
+
+![Schlieren on the supersonic forward step: log scale, scaled by the 99th percentile of the density gradient](docs/screenshots/05-schlieren-forward-step.png)
+
+### Multi-region cases
+
+On a conjugate heat transfer case the viewport and the analysis tools know the regions. You can show the solids,
+the fluids or any set of regions, and slices and visualization stages use only the regions on screen.
+
+![multiRegionHeater at t = 0.4 s, solids only, seen from the front: the heater base has reached 345 K and the two plates are still at 300 K](docs/screenshots/03-regions-solids.png)
+
+### Analysis and PINNs
+
+The Analysis panel computes POD and DMD modes of the saved times, fits a Gaussian-process surrogate over a table
+of runs, and trains physics-informed neural networks (PINNs). A PINN rebuilds a field from sparse data, with
+advection-diffusion or incompressible Navier-Stokes as a penalty. It trains in a separate PyTorch environment,
+on the GPU when there is one. Every result reports its error against the CFD field on cells the network did not
+train on. Read [docs/pinn.md](docs/pinn.md) before you use a result. The Python Console gives you the open case
+as numpy arrays, and Measurements compares experiment with simulation.
+
+![POD of the velocity magnitude over the three saved pitzDaily times](docs/screenshots/09-analysis-pod.png)
+
+![The PINN tab before training: the PyTorch environment it found, the physics, the data and the training settings](docs/screenshots/10-analysis-pinn.png)
+
+### The copilot and its approval rule
+
+The copilot is Claude Code (the default) or the OpenAI Codex CLI, signed in with your own account. It reads the
+case, the logs and the mesh, runs checks, and drives the app: it opens panels, makes Showcase views and adds
+visualization stages. It cannot run shell commands or write files itself. Every edit or run it proposes opens
+the approval dialog with the exact plan: the summary, the risk, its reasons and confidence, the file diff and
+the commands. An approved change lands in the Command Journal, where you can revert it. The Claude copilot only
+runs on a Claude subscription sign-in. See [docs/copilot-accounts.md](docs/copilot-accounts.md).
+
+![The approval dialog for a proposed edit of fvSolution, next to the Copilot panel](docs/screenshots/11-copilot-approval.png)
+
+For this picture the screenshot script built the plan itself. No message went to an AI service.
+
+### Light and dark
+
+The app follows the Windows theme, or you pick light or dark. The theme changes live.
+
+<p>
+  <img src="docs/screenshots/12-theme-light.png" width="49%" alt="The pitzDaily pressure field and the guided workflow in the light theme">
+  <img src="docs/screenshots/12-theme-dark.png" width="49%" alt="The same window in the dark theme">
+</p>
+
+## Install
+
+The full steps, with a check after each one, are in [INSTALL.md](INSTALL.md). In short:
+
+1. Get the release zip `AetherCFD-<version>-win64.zip` and run `Install AetherCFD.cmd`, or clone the repository with `git clone https://github.com/sidsharma2/AetherCFD.git`.
+2. In a clone, check the PC with `powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1`.
+3. In a clone, install Python and the packages with `uv sync --locked`.
+4. Set up WSL and OpenFOAM as [INSTALL.md](INSTALL.md#wsl-and-openfoam) describes.
+5. Run `aethercfd doctor` (`uv run aethercfd doctor` in a clone). Each line must say `ok` or `warn`.
+
+This is `aethercfd doctor --quick` from source on the development laptop, shortened (the full output lists every
+Python package):
+
+```
+AetherCFD 0.1.0.dev0
+Python    3.12.13  (D:\Research-Software\AetherCFD\.venv\Scripts\python.exe)
+Platform  Windows-11-10.0.26300-SP0
+
+Qt and VTK
+  [ok  ] Qt widgets                   PySide6.QtWidgets
+  [ok  ] Qt web view (terminal)       PySide6.QtWebEngineWidgets
+  [ok  ] VTK OpenGL renderer          vtkmodules.vtkRenderingOpenGL2
+
+GPU
+  [ok  ] CUDA compute (CuPy)          NVIDIA GeForce RTX 3050 Ti Laptop GPU, 4.0 GB, CUDA runtime 12.9
+
+WSL and OpenFOAM
+  [ok  ] LMAE-OpenFOAM                stopped; OpenFOAM found at the last probe (2026-11-15): esi-v2306, esi-v2606, foundation-14
+
+Optional tools
+  [ok  ] ParaView                     C:\Program Files\ParaView 6.1.0\bin\paraview.exe
+  [ok  ] FreeCAD                      C:\Program Files\FreeCAD 1.1\bin\FreeCADCmd.exe
+  [warn] PyTorch environment (PINNs)  not found
+                                      fix: run `uv run python scripts/setup_ml_env.py` in the source folder (INSTALL.md, PINNs)
+
+Copilot
+  [ok  ] Claude                       2.1.317 (sign-in not checked: --quick)
+  [ok  ] Codex                        0.167.0-alpha.3.2 (sign-in not checked: --quick)
+
+34 ok, 1 warning(s), 0 problem(s): all required parts work
+```
+
+## Requirements
+
+- Windows 11, 64-bit.
+- WSL 2 with OpenFOAM ESI v2306 or v2606, or OpenFOAM Foundation 14. Without it you can still open cases and look
+  at results.
+- Optional: an NVIDIA GPU. The 3D view, GPU post-processing and PINN training use it, and fall back to the CPU
+  without it.
+- Optional: a PyTorch environment for PINNs. Make it with `aethercfd-cli ml-setup` (packaged app) or
+  `python scripts/setup_ml_env.py` (source).
+- Optional: ParaView for ray-traced renders and Open in ParaView, and FreeCAD for CAD import.
+- Optional: Claude Code or the OpenAI Codex CLI for the copilot, with your own account.
+
+## How it is built to be trusted
+
+- The case on disk is the source of truth. The app reads and writes the case files themselves. Its own records
+  (journal, run records, provenance) sit in a `.aethercfd` folder inside the case.
+- Dictionary edits are lossless. An edit changes the value it targets and keeps every other byte, comment and
+  blank line ([ADR 0002](docs/adr/0002-dictionary-roundtrip.md)). A corpus test round-trips every OpenFOAM file
+  in the owner's case collection.
+- Every change is a plan first. A command shows its exact file diffs and shell commands, waits for approval,
+  checks that the files did not change underneath, applies, and writes a journal entry with who, what, why and
+  the diff. Journal entries can be reverted. Nothing is hard-deleted: removed files go to the project trash.
+- Runs have guards for log growth rate, log size and free disk space. AetherCFD never runs
+  `wsl --shutdown`, `--terminate` or `--unregister`, and never sources two OpenFOAM versions in one shell.
+- Crashes and hangs leave records. A GUI thread that stops for 10 s writes `crash/hang-*.txt` with every
+  thread's stack, native faults go to `crash/faulthandler.log`, and an unhandled error is shown in the app and
+  logged in `studio.log` (all in `%LOCALAPPDATA%\AetherCFD\Cache`).
+- Automated tests run on GitHub Actions for every push to `main` and every pull request: ruff and the import
+  contracts on Ubuntu, then the unit and studio tests and `aethercfd doctor` on Windows. This branch has 609
+  unit tests and 134 studio tests in that set, plus 28 live WSL tests and one corpus test that need OpenFOAM or
+  the owner's cases and run on his PC. The last CI run on GitHub, on 4 November 2026, passed 359 unit and 106
+  studio tests. The tests added since then have not run on GitHub yet.
+
+## Known limits
+
+- Windows only.
+- Cluster runs support Slurm only, and they have not been tested on a real cluster yet. The tests use a fake
+  Slurm. [docs/cluster-runs.md](docs/cluster-runs.md) lists what to check on the first real job.
+- A PINN result is a reconstruction from sparse data, and only steady problems are supported. On the
+  turbulent 3-D jet of the REV B.1 case the temperature reconstruction reached only RMSE/std 0.78 to 0.81,
+  about as good as predicting the mean everywhere.
+- The `--cpu-only` build of `packaging/build.py` is experimental and untested.
+- GPU linear solvers for OpenFOAM are not included.
+
+## Documentation
+
+- [INSTALL.md](INSTALL.md): installing on a new PC, WSL and OpenFOAM, the setup wizard, troubleshooting,
+  building and releasing.
+- [docs/pinn.md](docs/pinn.md): PINN field reconstruction, its setup and its limits.
+- [docs/cluster-runs.md](docs/cluster-runs.md): running cases on a Slurm cluster.
+- [docs/copilot-accounts.md](docs/copilot-accounts.md): copilot providers, sign-in and switching accounts.
+- [docs/adr/](docs/adr/): design decisions.
+- [docs/vision/roadmap.md](docs/vision/roadmap.md): the roadmap.
+- [CHANGELOG.md](CHANGELOG.md): changes.
 
 ## Development
 
 ```
-uv sync
-uv run pytest tests/unit tests/studio            # fast suites
+uv sync --locked
+uv run aethercfd-studio [case]                    # run from source (--reset-layout ignores saved layouts)
+uv run pytest tests/unit tests/studio -m "not wsl and not wsl_slow and not corpus and not gl"   # what CI runs
 uv run pytest tests/wsl -m "wsl or wsl_slow"      # live WSL tests (scratch copies only)
-uv run pytest tests/corpus -m corpus              # lossless round-trip over every file in D:\OpenFOAM
+uv run pytest tests/corpus -m corpus              # lossless round-trip over the owner's case collection
+uv run ruff check src tests packaging scripts     # lint
+uv run lint-imports                               # import contracts
 uv run python -m aethercfd.studio <case> --smoke  # GUI smoke run with screenshots in build/smoke
-uv run python packaging/build.py                  # build + test the packaged app (dist/AetherCFD)
-uv run python packaging/install.py                # install it with Start-menu/Desktop shortcuts
+uv run python scripts/make_screenshots.py         # regenerate the images in docs/screenshots
+uv run python packaging/build.py                  # build and test the packaged app (dist/AetherCFD)
+uv run python packaging/install.py                # install it with Start-menu and Desktop shortcuts
 ```
 
-Design decisions: `docs/adr/`. Research notes: `docs/research/` (meshing survey; the REV B.1 hole-blocking case
-study that drove the AetherMesh hole tool).
+The headless CLI is `aethercfd` from source and `aethercfd-cli.exe` in the packaged app: `doctor`, `open`,
+`run`, `runs`, `control`, `set`, `report`, `clusters`, `copilot` and `ml-setup`.
