@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aethercfd.backend.wsl.forks import ForkProfile
-from aethercfd.backend.wsl.runner import WslRunner
+from aethercfd.backend.wsl.runner import ScriptResult, WslRunner
 from aethercfd.case.model import Case
 from aethercfd.core.events import BUS, EventBus
 from aethercfd.core.paths import win_to_wsl, wsl_to_win
@@ -258,10 +258,17 @@ class RunManager:
         if action in ("write_now", "stop_write") and not rec.signals_enabled:
             return False, ("this run was started without write-now signals; sending them would kill the solver. "
                            "Use 'stop' (temporary stopAt writeNow) instead")
+        before = (rec.state, rec.stop_reason)
         if action in ("stop_write", "terminate", "kill"):
             # before acting: the monitor may finish the run while the control script is still waiting
             self._set_state(rec, RunState.STOPPING, stop_reason=f"user: {action}")
-        res = self.runner.run_script(control_sh(action, rec.run_dir_wsl, rec.pgid), timeout_s=60)
+        try:
+            res = self.runner.run_script(control_sh(action, rec.run_dir_wsl, rec.pgid), timeout_s=60)
+        except Exception as exc:  # wsl.exe missing or stuck: nothing reached the run
+            log.exception("%s of run %s failed", action, rec.id)
+            if rec.state == RunState.STOPPING.value and (rec.state, rec.stop_reason) != before:
+                self._set_state(rec, RunState(before[0]), stop_reason=before[1])
+            return False, f"could not reach WSL to {action.replace('_', ' ')} the run: {exc}"
         if action == "pause" and res.ok:
             self._set_state(rec, RunState.PAUSED)
         elif action == "resume" and res.ok:
@@ -562,17 +569,22 @@ class RunManager:
             rec.save()
 
     def _sync_back(self, rec: RunRecord, *, skip_newest: bool) -> bool:
-        if _is_cluster(rec):
-            res = self.cluster.sync_back(rec, skip_newest=skip_newest)
-        else:
-            st = Stage(src_wsl=win_to_wsl(rec.case_root), stage_wsl=rec.exec_case_wsl)
-            res = self.runner.run_script(st.sync_back_sh(skip_newest=skip_newest), timeout_s=3600)
+        try:
+            if _is_cluster(rec):
+                res = self.cluster.sync_back(rec, skip_newest=skip_newest)
+            else:
+                st = Stage(src_wsl=win_to_wsl(rec.case_root), stage_wsl=rec.exec_case_wsl)
+                res = self.runner.run_script(st.sync_back_sh(skip_newest=skip_newest), timeout_s=3600)
+        except Exception as exc:  # a stuck or missing wsl.exe must not leave the run in "syncing" forever
+            log.exception("copying the results of run %s back failed", rec.id)
+            res = ScriptResult(1, "", f"copying the results back failed: {exc}")
         if res.ok:
             rec.last_synced_at = datetime.now(UTC).isoformat(timespec="seconds")
             rec.save()
             self._publish("run.synced", rec, final=not skip_newest)
         else:
-            self._publish("run.guard", rec, level="WARN", guard="sync", message=res.stderr.strip()[:300])
+            msg = (res.stderr or res.stdout).strip()[:300] or f"copying the results back failed (exit {res.returncode})"
+            self._publish("run.guard", rec, level="WARN", guard="sync", message=msg)
         return res.ok
 
     def _finish(self, m: _Monitor, run_dir: Path, code: int) -> bool:

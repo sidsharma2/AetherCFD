@@ -118,3 +118,44 @@ def test_clusters_dialog_add_validate_test_and_save(sv, qtbot, monkeypatch):
     assert [c.name for c in saved] == ["hpc", "narval"]
     assert saved[1].mpi_launcher == "mpirun" and saved[1].sbatch_extra == ["--constraint=cascade"]
     assert [c.name for c in sv.session.settings.clusters] == ["hpc", "narval"]  # the open session sees it at once
+
+
+def test_run_controls_run_off_the_gui_thread(sv, qtbot, monkeypatch):
+    """Stop & write on a cluster run goes through ssh (up to its connect timeout): the GUI must not wait for it."""
+    import threading
+    import time
+
+    s = sv.session
+    run_dir = s.project.runs_dir / "r2"
+    run_dir.mkdir(parents=True)
+    RunRecord(id="r2", case_root=str(s.root), exec_case_wsl="/scratch/case", run_dir=str(run_dir), run_dir_wsl="/x",
+              linux_run_dir="/scratch/runs/r2", fork={}, placement="cluster", placement_reason="hpc", steps=[],
+              nprocs=4, signals_enabled=True, created="2026-10-14T00:00:00+00:00", state=RunState.RUNNING.value,
+              target="cluster:hpc", job_id="41001", scheduler_state="RUNNING",
+              remote={"profile": HPC.model_dump()}).save()
+    from aethercfd.runs.manager import RunManager
+
+    s.runs = RunManager(s.project, None, settings=s.settings, bus=s.bus)  # type: ignore[arg-type]
+    s.context.run_manager = s.runs
+    release, called = threading.Event(), []
+
+    def slow_control(run_id, action):
+        called.append(threading.current_thread() is threading.main_thread())
+        release.wait(10)
+        return False, "cluster hpc unreachable: Connection timed out; nothing was sent to the job"
+
+    monkeypatch.setattr(s.runs, "control", slow_control)
+    notes = []
+    sv.notification.connect(lambda msg, level: notes.append((msg, level)))
+    p = RunPanel(PanelContext(sv, "#main"))
+    qtbot.addWidget(p)
+    p.run_id = "r2"
+    p._update_buttons()
+    t0 = time.monotonic()
+    p.control("stop_write")
+    assert time.monotonic() - t0 < 2.0  # returned while the control is still waiting on ssh
+    assert not p.btns["stop_write"].isEnabled()  # no second click while the first is in flight
+    release.set()
+    qtbot.waitUntil(lambda: any("unreachable" in m for m, _ in notes), timeout=10000)
+    assert called == [False]
+    assert p.btns["kill"].isEnabled()

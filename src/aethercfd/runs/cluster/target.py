@@ -35,8 +35,10 @@ from aethercfd.runs.cluster.scheduler import (
 )
 from aethercfd.runs.cluster.scripts import batch_script
 from aethercfd.runs.cluster.transport import (
+    UNREACHABLE,
     Transport,
     WslSshTransport,
+    failure_text,
     parse_work_dir,
     resolve_work_dir_script,
     unreachable,
@@ -98,9 +100,8 @@ class ClusterTarget:
             if rec is not None:
                 self._down_runs.add(rec.id)
         if tell and rec is not None:
-            err = (res.stderr or res.stdout).strip().splitlines()
             self.mgr._publish("run.guard", rec, level="REVIEW", guard="cluster",
-                              message=f"cluster {profile.name} unreachable ({err[-1][:160] if err else 'no reply'}); "
+                              message=f"cluster {profile.name} unreachable ({failure_text(res, limit=160)}); "
                                       "the job keeps running. Monitoring resumes when the connection is back "
                                       "(MFA clusters: Run > Clusters… > Connect)")
 
@@ -148,6 +149,13 @@ class ClusterTarget:
         return rec
 
     def launch(self, rec: RunRecord, *, start_time: str | None) -> RunRecord:
+        try:
+            return self._launch(rec, start_time=start_time)
+        except Exception as exc:  # wsl.exe missing or stuck, the distro stopped: a plain reason, never a traceback
+            log.exception("cluster launch of run %s failed", rec.id)
+            return self._fail(rec, f"cannot reach cluster {self.profile_of(rec).name}: {exc}")
+
+    def _launch(self, rec: RunRecord, *, start_time: str | None) -> RunRecord:
         from aethercfd.runs.manager import RunState
 
         profile = self.profile_of(rec)
@@ -159,7 +167,7 @@ class ClusterTarget:
         work = parse_work_dir(res.stdout) if res.ok else None
         if work is None:
             return self._fail(rec, f"cluster {profile.name}: cannot reach it or create work dir {profile.work_dir}: "
-                                   f"{(res.stderr or res.stdout).strip()[-300:]}")
+                                   f"{failure_text(res)}")
         self._up(profile, rec)
         case_dir, run_dir = remote_dirs(work, self.mgr.project.id, Path(rec.case_root), rec.id)
         rec.exec_case_wsl, rec.linux_run_dir = case_dir, run_dir
@@ -179,7 +187,7 @@ class ClusterTarget:
         # 3) upload inputs
         res = tr.upload_case(Path(rec.case_root), case_dir, start_time=start_time)
         if not res.ok:
-            return self._fail(rec, f"upload to {profile.name} failed: {(res.stderr or res.stdout).strip()[-300:]}")
+            return self._fail(rec, f"upload to {profile.name} failed: {failure_text(res)}")
         # 4) batch script (a copy stays in the local run folder)
         steps = tuple(RunStep(s["app"], tuple(s.get("args", ())), StepKind(s.get("kind", "utility")),
                               bool(s.get("parallel")), s.get("log")) for s in rec.steps)
@@ -232,8 +240,12 @@ class ClusterTarget:
         if action not in ("write_now", "stop_write", "terminate", "kill"):
             return False, f"unknown action {action!r}"
         profile = self.profile_of(rec)
+        if self._is_down(profile):  # no SSH call (and no wait) while the backoff says the cluster is down
+            return False, (f"cluster {profile.name} is unreachable just now; the job keeps running. Try again in a "
+                           "minute (MFA clusters: Run > Clusters… > Connect)")
         sched = get_scheduler(profile.scheduler)
         run_dir = (rec.remote or {}).get("run_dir") or rec.linux_run_dir
+        before = (rec.state, rec.stop_reason)
         if action in ("stop_write", "terminate", "kill"):
             self.mgr._set_state(rec, RunState.STOPPING, stop_reason=f"user: {action}")
         touch = f"touch {q(run_dir)}/stop_requested 2>/dev/null\n"
@@ -241,9 +253,16 @@ class ClusterTarget:
                   "stop_write": touch + sched.signal_batch_cmd(rec.job_id, "USR2") + "\n",
                   "terminate": touch + sched.cancel_cmd(rec.job_id) + "\n",
                   "kill": touch + sched.kill_cmd(rec.job_id) + "\n"}[action]
-        res = self.transport(profile).run(script, timeout_s=60)
+        try:
+            res = self.transport(profile).run(script, timeout_s=60)
+        except Exception as exc:
+            log.exception("%s of run %s failed", action, rec.id)
+            res = ScriptResult(UNREACHABLE, "", f"cannot run ssh in the WSL distro: {exc}")
         if unreachable(res):
             self._down(profile, rec, res)
+            if rec.state == RunState.STOPPING.value and (rec.state, rec.stop_reason) != before:
+                self.mgr._set_state(rec, RunState(before[0]), stop_reason=before[1])  # nothing reached the job
+            return False, f"cluster {profile.name} unreachable: {failure_text(res)}; nothing was sent to the job"
         return res.ok, (res.stderr or res.stdout).strip()
 
     # ------------------------------------------------------------------ liveness
@@ -353,8 +372,12 @@ class ClusterTarget:
         case_dir = (rec.remote or {}).get("case_dir")
         if not case_dir:
             return ScriptResult(1, "", "the run never reached the cluster: nothing to download")
-        res = self.transport(profile).download_results(case_dir, Path(rec.case_root), skip_newest=skip_newest,
-                                                       processor_dirs=profile.sync_processor_dirs)
+        try:
+            res = self.transport(profile).download_results(case_dir, Path(rec.case_root), skip_newest=skip_newest,
+                                                           processor_dirs=profile.sync_processor_dirs)
+        except Exception as exc:
+            log.exception("download for run %s failed", rec.id)
+            res = ScriptResult(UNREACHABLE, "", f"cannot run rsync in the WSL distro: {exc}")
         if unreachable(res):
             self._down(profile, rec, res)
         return res

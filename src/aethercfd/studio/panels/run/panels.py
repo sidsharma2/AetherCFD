@@ -8,10 +8,12 @@ run's solver log, or the newest log of an opened case), so finished cases plot i
 from __future__ import annotations
 
 import json
+import logging
 import math
 import subprocess
 import tempfile
 import time
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -52,6 +54,9 @@ plot_defaults()
 _STATE_TOKEN = {"running": "ok", "pending": "info", "paused": "warn", "stopping": "warn", "staging": "info", "launching": "info",
                 "syncing": "info", "finished": "text_dim", "failed": "error", "killed": "warn", "lost": "error",
                 "guard_stopped": "error", "queued": "text_dim"}
+
+
+log = logging.getLogger(__name__)
 
 
 def _state_color(state: str) -> str:
@@ -383,9 +388,30 @@ class RunPanel(Panel):
                 self, "Kill run", "Kill the run now? Progress since the last written time is lost.") \
                 != QMessageBox.StandardButton.Yes:
             return
-        plan = s.executor.plan("run.control", {"run_id": self.run_id, "action": action}, USER)
-        res = s.executor.execute("run.control", {}, USER, plan=plan, approved_hash=plan.plan_hash)
-        if not res.ok:
+        try:
+            plan = s.executor.plan("run.control", {"run_id": self.run_id, "action": action}, USER)
+        except Exception as exc:
+            log.exception("planning %s failed", action)
+            self.ctx.services.notify(f"{action}: {exc}", "warn")
+            return
+        if plan.blocked:
+            self.ctx.services.notify(f"{action}: {'; '.join(c.message for c in plan.blocked)}", "warn")
+            return
+        for b in self.btns.values():  # one control at a time; the reply re-enables them
+            b.setEnabled(False)
+
+        def work():
+            # a control script goes through wsl.exe, a cluster's through ssh (up to its connect timeout):
+            # never on the GUI thread
+            return s.executor.execute("run.control", {}, USER, plan=plan, approved_hash=plan.plan_hash)
+
+        self.ctx.services.run_bg(work, partial(self._control_done, action))
+
+    def _control_done(self, action: str, result) -> None:
+        res, err = result
+        if err is not None:
+            self.ctx.services.notify(f"{action}: {err}", "warn")
+        elif not res.ok:
             self.ctx.services.notify(f"{action}: {res.message}", "warn")
         self._update_buttons()
 

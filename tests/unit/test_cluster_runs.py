@@ -436,3 +436,83 @@ def test_local_runs_are_untouched_by_the_target_field(env):
     mgr, _fake, case = env
     plan = _executor(mgr).plan("run.start", {"case": str(case)}, USER)
     assert plan.params["target"] == "local" and plan.params["_resolved"]["placement"] in ("in-place", "staged")
+
+
+# ---------------------------------------------------------------------------------------------- failure paths
+class Exploding:
+    """A transport whose wsl.exe is missing or stuck: every call raises (WslRunner raises WslError then)."""
+
+    def __getattr__(self, name):
+        def boom(*a, **k):
+            from aethercfd.backend.wsl.runner import WslError
+
+            raise WslError("wsl.exe did not return within 150s")
+
+        return boom
+
+
+def test_control_of_an_unreachable_cluster_says_so_and_leaves_the_run_running(env):
+    mgr, fake, case = env
+    rec = _submit(mgr, case)
+    _run(mgr, fake, rec)
+    fake.down = True
+    ok, msg = mgr.control(rec.id, "stop_write")
+    assert not ok and "unreachable" in msg and "nothing was sent" in msg and "VPN" in msg
+    assert rec.state == RunState.RUNNING.value and rec.stop_reason is None  # not stuck in "stopping"
+    n = len(fake.scripts)
+    ok, msg = mgr.control(rec.id, "kill")  # backing off: answered at once, no second wait on ssh
+    assert not ok and "Try again in a minute" in msg and len(fake.scripts) == n
+    assert rec.state == RunState.RUNNING.value
+
+
+def test_a_transport_that_raises_never_escapes_control_launch_or_download(env):
+    mgr, fake, case = env
+    rec = _submit(mgr, case)
+    _run(mgr, fake, rec)
+    mgr._cluster.transport_factory = lambda p: Exploding()
+    ok, msg = mgr.control(rec.id, "terminate")
+    assert not ok and "did not return" in msg and rec.state == RunState.RUNNING.value
+    mgr._cluster._down_until.clear()
+    assert mgr._sync_back(rec, skip_newest=False) is False
+    sync = [p for p in mgr.bus.topics("run.guard") if p["guard"] == "sync"]
+    assert sync and "did not return" in sync[-1]["message"]
+    rec2 = _submit(mgr, case)
+    assert rec2.state == RunState.FAILED.value and "cannot reach cluster hpc" in rec2.stop_reason
+
+
+def test_a_stuck_wsl_never_escapes_local_control(env):
+    mgr, _fake, case = env
+
+    class StuckRunner:
+        distro = "LMAE-OpenFOAM"
+
+        def run_script(self, *a, **k):
+            from aethercfd.backend.wsl.runner import WslError
+
+            raise WslError("wsl.exe did not return within 90s")
+
+    mgr.runner = StuckRunner()
+    rec = RunRecord(id="r1", case_root=str(case), exec_case_wsl="/x", run_dir=str(mgr.project.runs_dir / "r1"),
+                    run_dir_wsl="/x/r", linux_run_dir="/x/r", fork=ESI.to_json(), placement="in-place",
+                    placement_reason="", steps=[], nprocs=1, signals_enabled=True, created="2026-11-15T00:00:00+00:00",
+                    state=RunState.RUNNING.value, pgid=1234)
+    Path(rec.run_dir).mkdir(parents=True)
+    rec.save()
+    ok, msg = mgr.control("r1", "terminate")
+    assert not ok and "could not reach WSL" in msg
+    assert mgr.get("r1").state == RunState.RUNNING.value
+
+
+def test_no_cluster_configured_is_inert(tmp_path, monkeypatch):
+    """No [[clusters]] profile: reattach and local planning never create the cluster target or call ssh."""
+    monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path / "cfg"))
+    case = tmp_path / "cavity"
+    shutil.copytree(FIX / "esi_cavity", case)
+    mgr = ManualManager(Project.create(case), NoLocalRunner(), settings=Settings(), bus=Bus())  # type: ignore[arg-type]
+    assert mgr.reattach() == []
+    assert "_cluster" not in mgr.__dict__
+    ex = _executor(mgr)
+    plan = ex.plan("run.start", {"case": str(case), "target": "cluster:hpc"}, USER)
+    assert any("no cluster profile named 'hpc'" in c.message and "Run > Clusters" in c.message
+               for c in plan.blocked)
+    assert "_cluster" not in mgr.__dict__
