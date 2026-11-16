@@ -303,6 +303,13 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.section_2d = None
         self._last_request = 0.0
         self._drag_timer = QTimer(self, singleShot=True, interval=90, timeout=self._drag_load)
+        # the camera stays framed on what is shown (a resize, a stage, the base mesh shown or hidden) until the
+        # user moves it: _framing says how it was framed ('fit', 'view', 'stage:<id>', 'section2d'; None once
+        # the user moved it or a saved view / hotspot placed it), _framed_on what it was framed on
+        self._framing: str | None = None
+        self._framed_on: tuple | None = None
+        self._refit_on_data = False
+        self._refit_timer = QTimer(self, singleShot=True, interval=60, timeout=self._refit)
         self._build_view_menus()
         # ---------------- wiring
         self._slice_timer = QTimer(self, singleShot=True, interval=150, timeout=self.request_load)
@@ -727,10 +734,15 @@ class ViewportPanel(ViewToolsMixin, Panel):
             self._quad_sync()
         if self._first_data:
             self._first_data = False
+            self._refit_on_data = False
             if self.section_2d:
                 self._frame_section_2d()
             else:
                 self._fit()
+        elif self._refit_on_data:  # a stage or a view option changed what is shown: keep it framed
+            self._refit_on_data = False
+            if self._framing is not None and self._shown_box() != self._framed_on:
+                self._refit(render=False)
         self.comp.setVisible(data.get("components", 0) > 1)
         if (getattr(self, "_showcase_pending", False) and self.bounds is not None
                 and not getattr(self, "_showcase_scheduled", False)):
@@ -1459,6 +1471,7 @@ class ViewportPanel(ViewToolsMixin, Panel):
         pad = size * padding
         self.plotter.renderer.ResetCamera([b[0] - pad, b[1] + pad, b[2] - pad, b[3] + pad, b[4] - pad, b[5] + pad])
         self.plotter.camera_set = True
+        self._framing = None  # a chosen spot, not "what is shown": never re-framed
         self.plotter.render()
 
     def frame_stage(self, stage_id: str | None = None, padding: float = 0.08) -> bool:
@@ -1470,16 +1483,19 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.plotter.renderer.ResetCamera([b[0] - pad[0], b[1] + pad[0], b[2] - pad[1], b[3] + pad[1],
                                            b[4] - pad[2], b[5] + pad[2]])
         self.plotter.camera_set = True
+        self._framed(f"stage:{stage_id or ''}")
         self.plotter.render()
         return True
 
     # ------------------------------------------------------------------ pipeline (Visualization panel)
     def set_stages(self, stages: list[dict]) -> None:
         self.stages = [dict(s) for s in stages]
+        self._refit_on_data = True
         self.request_load()
 
     def set_view_options(self, opts: dict) -> None:
         self.view_opts = dict(opts)
+        self._refit_on_data = True  # e.g. the base mesh hidden: frame what is left
         self.request_load()
 
     def set_bar_stage(self, stage_id: str | None) -> None:
@@ -1506,9 +1522,15 @@ class ViewportPanel(ViewToolsMixin, Panel):
     def eventFilter(self, obj, ev) -> bool:  # Qt override: a click/focus makes this the active viewport
         from PySide6.QtCore import QEvent
 
-        if ev.type() in (QEvent.Type.FocusIn, QEvent.Type.MouseButtonPress):
+        t = ev.type()
+        if t in (QEvent.Type.FocusIn, QEvent.Type.MouseButtonPress):
             self.ctx.services.set_active_viewport(self)
-        return self._pick_event(ev)  # picking points (sections, flow seeds, line probes) eats the clicks
+        if t == QEvent.Type.Resize and obj is self.plotter and self._framing is not None:
+            self._refit_timer.start()  # keep the framing for the new size (a panel opened or closed beside it)
+        eaten = self._pick_event(ev)  # picking points (sections, flow seeds, line probes) eats the clicks
+        if not eaten and (t == QEvent.Type.Wheel or (t == QEvent.Type.MouseMove and ev.buttons())):
+            self._framing = None  # the user moved the camera: leave it where they put it
+        return eaten
 
     def _on_fail(self, vid: str, gen: int, msg: str) -> None:
         if vid == self.vid:
@@ -1536,9 +1558,51 @@ class ViewportPanel(ViewToolsMixin, Panel):
                 self.plotter.view_isometric()  # a 3D case reads as 3D from the start
             self.plotter.reset_camera()
             self.plotter.camera_set = True
+        self._framed("fit")
         if self._quad:
             self._quad_fit()
         self.plotter.render()
+
+    def _shown_box(self) -> tuple | None:
+        """Bounds of the drawn blocks that are shown (what the camera should keep in view)."""
+        b = [float("inf"), float("-inf")] * 3
+        hit = False
+        for actor, mapper in self.actors.values():
+            poly = mapper.GetInput()
+            if not actor.GetVisibility() or poly is None or poly.GetNumberOfPoints() == 0:
+                continue
+            ab = actor.GetBounds()
+            for k in range(3):
+                b[2 * k] = min(b[2 * k], ab[2 * k])
+                b[2 * k + 1] = max(b[2 * k + 1], ab[2 * k + 1])
+            hit = True
+        return tuple(round(x, 12) for x in b) if hit else None
+
+    def _framed(self, how: str) -> None:
+        self._framing = how
+        self._framed_on = self._shown_box()
+
+    def _refit(self, render: bool = True) -> None:
+        """Frame the camera again the way it was framed (on what is shown now, at the widget's size now),
+        unless the user has moved it since. GUI thread; never once the viewport is closing (ADR 0008)."""
+        how = self._framing
+        if (how is None or getattr(self, "_disposed", False) or self._quad or getattr(self, "_linked", None)
+                or self._sweep is not None or not self.plotter.isVisible() or self.plotter.width() < 2
+                or self.plotter.height() < 2 or self.bounds is None):
+            return
+        box = self._shown_box()
+        if how == "section2d":
+            self._frame_section_2d()
+        elif how.startswith("stage:") and self.frame_stage(how.split(":", 1)[1] or None):
+            pass
+        elif self._is2d and how == "fit":
+            self._fit_2d()
+        elif box is not None:  # keep the viewing direction; fit what is shown
+            self.plotter.renderer.ResetCamera(list(box))
+            self.plotter.renderer.ResetCameraClippingRange()
+        self._framing, self._framed_on = how, box
+        if render:
+            self.plotter.render()
 
     def _view(self, plane: str) -> None:
         self.set_view(plane)
@@ -1546,18 +1610,21 @@ class ViewportPanel(ViewToolsMixin, Panel):
     def _fit_2d(self, padding: float = 0.04) -> None:
         """2D / wedge cases: look along the THINNEST axis (empty or wedge direction -- e.g. y for
         SandiaFlameD, whose axis is z), longest in-plane axis horizontal, parallel projection scaled so
-        the whole domain fills the widget."""
-        b = self.bounds
+        the whole domain fills the widget. It frames what is shown (e.g. a stage with the base mesh hidden,
+        or mirrored copies); the viewing direction comes from the domain."""
+        dom = self.bounds
+        dext = [dom[1] - dom[0], dom[3] - dom[2], dom[5] - dom[4]]
+        thin = dext.index(min(dext))
+        b = list(self._shown_box() or dom)
         ext = [b[1] - b[0], b[3] - b[2], b[5] - b[4]]
         c = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2]
-        thin = ext.index(min(ext))
         a, bb = [i for i in range(3) if i != thin]
         horiz, up = (a, bb) if ext[a] >= ext[bb] else (bb, a)
         w, h = max(ext[horiz], 1e-12), max(ext[up], 1e-12)
         aspect = max(self.plotter.width(), 1) / max(self.plotter.height(), 1)
         cam = self.plotter.renderer.GetActiveCamera()
         cam.ParallelProjectionOn()
-        dist = 10 * max(ext)
+        dist = 10 * max(max(dext), max(ext))
         pos = list(c)
         pos[thin] += dist
         vu = [0.0, 0.0, 0.0]
