@@ -234,7 +234,7 @@ class RunPanel(Panel):
     def _refresh(self) -> None:
         s = self._session()
         ready = s is not None and s.runner is not None and bool(s.forks)
-        self.start_btn.setEnabled(ready)
+        self.start_btn.setEnabled(ready and not getattr(self, "_starting", False))
         self.start_btn.setToolTip("" if ready else "Open a case; the OpenFOAM backend starts in the background")
         self._read_end_time()
         self._fill_history()
@@ -370,14 +370,29 @@ class RunPanel(Panel):
         dlg = PlanDialog(plan, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        res = s.executor.execute("run.start", params, USER, plan=plan, approved_hash=plan.plan_hash)
-        if not res.ok:
-            QMessageBox.warning(self, "Run did not start", res.message)
+        # a staged run copies the case to the Linux disk and the launch goes through wsl.exe: seconds to
+        # minutes for a big case, so never on the GUI thread
+        self._starting = True
+        self.start_btn.setEnabled(False)
+        self.start_btn.setText("Starting…")
+
+        def work():
+            return s.executor.execute("run.start", params, USER, plan=plan, approved_hash=plan.plan_hash)
+
+        sv.run_bg(work, self._started)
+
+    def _started(self, result) -> None:
+        res, err = result
+        self._starting = False
+        self.start_btn.setText("Start…")
+        if err is not None or not res.ok:
+            self._refresh()
+            QMessageBox.warning(self, "Run did not start", str(err) if err is not None else res.message)
             return
         self.run_id = res.data
         self._t0 = time.monotonic()
         self.guards.clear()
-        sv.notify(res.message)
+        self.ctx.services.notify(res.message)
         self._refresh()
 
     def control(self, action: str) -> None:

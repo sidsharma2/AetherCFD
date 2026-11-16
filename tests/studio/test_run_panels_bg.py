@@ -100,3 +100,36 @@ def test_reattach_after_opening_a_case_runs_off_the_gui_thread(sv, qtbot, tmp_pa
     sv.open_case(case, create_project=True)
     qtbot.waitUntil(lambda: any("Re-attached to 1" in m for m, _ in notes), timeout=10000)
     assert on_main == [False]
+
+
+def test_run_start_executes_off_the_gui_thread(sv, qtbot, tmp_path, monkeypatch):
+    """Start: a staged run copies the case to the Linux disk before it launches; the window must stay live."""
+    import shutil
+
+    from PySide6.QtWidgets import QDialog
+
+    from aethercfd.commands.base import CommandResult
+
+    case = tmp_path / "cavity"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "fixtures" / "cases" / "esi_cavity", case)
+    sv.open_case(case, create_project=True)
+    s = sv.session
+    p = P.RunPanel(PanelContext(sv, "#main"))
+    qtbot.addWidget(p)
+    monkeypatch.setattr(P.PlanDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+    plan = s.executor.plan("run.start", {"case": str(case)}, P.USER)
+    monkeypatch.setattr(s.executor, "plan", lambda *a, **k: plan)
+    release, on_main = threading.Event(), []
+
+    def slow_execute(*a, **k):
+        on_main.append(threading.current_thread() is threading.main_thread())
+        release.wait(10)
+        return CommandResult(True, plan, "run r9 started (in-place)", data="r9")
+
+    monkeypatch.setattr(s.executor, "execute", slow_execute)
+    t0 = time.monotonic()
+    p.start()
+    assert time.monotonic() - t0 < 2.0 and not p.start_btn.isEnabled() and p.start_btn.text() == "Starting…"
+    release.set()
+    qtbot.waitUntil(lambda: p.run_id == "r9", timeout=10000)
+    assert on_main == [False] and p.start_btn.text() == "Start…"
