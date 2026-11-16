@@ -114,6 +114,29 @@ def test_schema_export_for_mcp():
     assert "key" in schemas["dict.set"]["input_schema"]["properties"]
 
 
+def test_an_unexpected_error_in_apply_is_a_failed_result(setup):
+    from pydantic import BaseModel
+
+    from aethercfd.commands.base import Command, CommandPlan, CommandSpec
+
+    class P(BaseModel):
+        pass
+
+    class Boom(Command):
+        spec = CommandSpec("test.boom", P, Risk.EXECUTE, "boom")
+
+        def plan(self, ctx, params, actor):
+            return CommandPlan("test.boom", {}, actor, Risk.EXECUTE, "start the thing")
+
+        def apply(self, ctx, plan):
+            raise OSError("wsl.exe not found -- is WSL installed?")
+
+    _case, _proj, ex = setup
+    ex.registry.register(Boom())
+    res = ex.execute("test.boom", {}, USER)
+    assert not res.ok and res.message == "start the thing failed: wsl.exe not found -- is WSL installed?"
+
+
 def test_a_read_only_file_fails_the_command_cleanly(setup):
     import os
     import stat

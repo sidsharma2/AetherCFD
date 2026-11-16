@@ -193,6 +193,9 @@ class Executor:
             result = cmd.apply(self.ctx, plan)
         except (Conflict, WriteFailed) as exc:
             return CommandResult(False, plan, str(exc))
+        except Exception as exc:  # WSL gone, a folder that vanished...: a failed result, never a traceback
+            log.exception("command %s failed", name)
+            return CommandResult(False, plan, f"{plan.summary or name} failed: {exc}")
         result.journal_id = self._journal(plan, approval, result, time.perf_counter() - t0)
         self.ctx.emit("command.applied", {"command": name, "ok": result.ok, "journal_id": result.journal_id})
         return result
