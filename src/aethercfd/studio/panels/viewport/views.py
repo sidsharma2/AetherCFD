@@ -468,6 +468,7 @@ class ViewToolsMixin:
         cam.OrthogonalizeViewUp()
         self.plotter.renderer.ResetCamera(b)
         self.plotter.camera_set = True
+        self._framed("section2d")
         self.plotter.render()
 
     def line_probe(self, p1=None, p2=None, field: str | None = None, n: int = 300, *, plot: bool = True) -> str:
@@ -657,6 +658,7 @@ class ViewToolsMixin:
             return f"unknown view {name!r}: {', '.join(STANDARD_VIEWS)} or a saved view"
         self._place_camera(self.plotter.renderer, key, parallel=self._is2d)
         self.plotter.camera_set = True
+        self._framed("view")  # this direction, framed on what is shown (kept so on a resize or a new stage)
         self.plotter.render()
         return f"view: {VIEW_LABELS[key]}"
 
@@ -733,6 +735,7 @@ class ViewToolsMixin:
         cam.SetParallelScale(c.get("parallel_scale", 1.0))
         self.plotter.renderer.ResetCameraClippingRange()
         self.plotter.camera_set = True
+        self._framing = None  # a saved camera stays exactly as saved
         self.plotter.render()
         return f"view {hit!r}"
 
