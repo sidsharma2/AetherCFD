@@ -51,3 +51,44 @@ def test_install_script_finds_the_app_next_to_it(tmp_path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
     assert rel / "AetherCFD" == mod.DIST
+
+
+def _install_module(monkeypatch, dist: Path):
+    spec = importlib.util.spec_from_file_location("aether_install_t", ROOT / "packaging" / "install.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    monkeypatch.setattr(mod, "DIST", dist)
+    monkeypatch.setattr(mod, "_running_from", lambda target: False)
+    monkeypatch.setattr(mod, "_shortcut", lambda lnk, exe: pytest.fail("no shortcuts in tests"))
+    return mod
+
+
+def test_install_into_a_temp_target_keeps_the_previous_install(tmp_path, monkeypatch):
+    """install.py's copy logic, never against the real %LOCALAPPDATA% install."""
+    dist = tmp_path / "dist" / "AetherCFD"
+    (dist / "_internal").mkdir(parents=True)
+    (dist / "AetherCFD.exe").write_bytes(b"v1")
+    mod = _install_module(monkeypatch, dist)
+    target = tmp_path / "Programs" / "AetherCFD"
+    assert mod.main(["--target", str(target), "--no-shortcuts"]) == 0
+    assert (target / "AetherCFD.exe").read_bytes() == b"v1"
+    (dist / "AetherCFD.exe").write_bytes(b"v2")
+    assert mod.main(["--target", str(target), "--no-shortcuts"]) == 0
+    assert (target / "AetherCFD.exe").read_bytes() == b"v2"
+    assert (target.with_name("AetherCFD.previous") / "AetherCFD.exe").read_bytes() == b"v1"
+    assert not target.with_name("AetherCFD.new").exists()
+    (dist / "AetherCFD.exe").write_bytes(b"v3")
+    mod.main(["--target", str(target), "--no-shortcuts"])
+    assert (target.with_name("AetherCFD.previous") / "AetherCFD.exe").read_bytes() == b"v2"
+
+
+def test_install_refuses_while_running_and_without_a_build(tmp_path, monkeypatch):
+    mod = _install_module(monkeypatch, tmp_path / "nothing")
+    assert mod.main(["--target", str(tmp_path / "t"), "--no-shortcuts"]) == 1
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "AetherCFD.exe").write_bytes(b"MZ")
+    mod = _install_module(monkeypatch, dist)
+    monkeypatch.setattr(mod, "_running_from", lambda target: True)
+    assert mod.main(["--target", str(tmp_path / "t"), "--no-shortcuts"]) == 2
+    assert not (tmp_path / "t").exists()
