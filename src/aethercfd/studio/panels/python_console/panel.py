@@ -114,10 +114,14 @@ class PythonConsolePanel(Panel):
         split.addWidget(self.input)
         split.setSizes([400, 120])
         lay.addWidget(split, 1)
-        self.sv.case_changed.connect(lambda _s: self.restart())
+        self.sv.case_changed.connect(self._case_changed_slot)
         self.restart()
 
     # ------------------------------------------------------------------ namespace
+    def _case_changed_slot(self, s=None) -> None:
+        """services.case_changed -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        self.restart()
+
     def restart(self) -> None:
         from aethercfd.scripting.console import Console
 

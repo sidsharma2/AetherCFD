@@ -8,10 +8,12 @@ run's solver log, or the newest log of an opened case), so finished cases plot i
 from __future__ import annotations
 
 import json
+import logging
 import math
 import subprocess
 import tempfile
 import time
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -52,6 +54,9 @@ plot_defaults()
 _STATE_TOKEN = {"running": "ok", "pending": "info", "paused": "warn", "stopping": "warn", "staging": "info", "launching": "info",
                 "syncing": "info", "finished": "text_dim", "failed": "error", "killed": "warn", "lost": "error",
                 "guard_stopped": "error", "queued": "text_dim"}
+
+
+log = logging.getLogger(__name__)
 
 
 def _state_color(state: str) -> str:
@@ -229,7 +234,7 @@ class RunPanel(Panel):
     def _refresh(self) -> None:
         s = self._session()
         ready = s is not None and s.runner is not None and bool(s.forks)
-        self.start_btn.setEnabled(ready)
+        self.start_btn.setEnabled(ready and not getattr(self, "_starting", False))
         self.start_btn.setToolTip("" if ready else "Open a case; the OpenFOAM backend starts in the background")
         self._read_end_time()
         self._fill_history()
@@ -365,14 +370,29 @@ class RunPanel(Panel):
         dlg = PlanDialog(plan, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        res = s.executor.execute("run.start", params, USER, plan=plan, approved_hash=plan.plan_hash)
-        if not res.ok:
-            QMessageBox.warning(self, "Run did not start", res.message)
+        # a staged run copies the case to the Linux disk and the launch goes through wsl.exe: seconds to
+        # minutes for a big case, so never on the GUI thread
+        self._starting = True
+        self.start_btn.setEnabled(False)
+        self.start_btn.setText("Starting…")
+
+        def work():
+            return s.executor.execute("run.start", params, USER, plan=plan, approved_hash=plan.plan_hash)
+
+        sv.run_bg(work, self._started)
+
+    def _started(self, result) -> None:
+        res, err = result
+        self._starting = False
+        self.start_btn.setText("Start…")
+        if err is not None or not res.ok:
+            self._refresh()
+            QMessageBox.warning(self, "Run did not start", str(err) if err is not None else res.message)
             return
         self.run_id = res.data
         self._t0 = time.monotonic()
         self.guards.clear()
-        sv.notify(res.message)
+        self.ctx.services.notify(res.message)
         self._refresh()
 
     def control(self, action: str) -> None:
@@ -383,9 +403,30 @@ class RunPanel(Panel):
                 self, "Kill run", "Kill the run now? Progress since the last written time is lost.") \
                 != QMessageBox.StandardButton.Yes:
             return
-        plan = s.executor.plan("run.control", {"run_id": self.run_id, "action": action}, USER)
-        res = s.executor.execute("run.control", {}, USER, plan=plan, approved_hash=plan.plan_hash)
-        if not res.ok:
+        try:
+            plan = s.executor.plan("run.control", {"run_id": self.run_id, "action": action}, USER)
+        except Exception as exc:
+            log.exception("planning %s failed", action)
+            self.ctx.services.notify(f"{action}: {exc}", "warn")
+            return
+        if plan.blocked:
+            self.ctx.services.notify(f"{action}: {'; '.join(c.message for c in plan.blocked)}", "warn")
+            return
+        for b in self.btns.values():  # one control at a time; the reply re-enables them
+            b.setEnabled(False)
+
+        def work():
+            # a control script goes through wsl.exe, a cluster's through ssh (up to its connect timeout):
+            # never on the GUI thread
+            return s.executor.execute("run.control", {}, USER, plan=plan, approved_hash=plan.plan_hash)
+
+        self.ctx.services.run_bg(work, partial(self._control_done, action))
+
+    def _control_done(self, action: str, result) -> None:
+        res, err = result
+        if err is not None:
+            self.ctx.services.notify(f"{action}: {err}", "warn")
+        elif not res.ok:
             self.ctx.services.notify(f"{action}: {res.message}", "warn")
         self._update_buttons()
 
@@ -554,18 +595,46 @@ class ResidualsPanel(Panel):
                 "x_label": "Time" if self.xmode.currentIndex() == 1 else "Iteration",
                 "title": None, "decimate": 4000}
         (tmp / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
-        r = subprocess.run(module_argv("aethercfd.studio.export_plot", str(tmp / "spec.json")),
-                           capture_output=True, text=True, timeout=120, creationflags=0x08000000)
-        if r.returncode == 0:
+        self.ctx.services.notify(f"Exporting the residual plot to {out}.pdf …")
+        # matplotlib in a subprocess takes seconds (a first font scan longer): never on the GUI thread
+        self.ctx.services.run_bg(partial(_export_residuals, tmp), partial(self._export_done, out))
+
+    def _export_done(self, out: str, result) -> None:
+        err, error = result
+        if error is not None:
+            err = str(error)
+        if err is None:
             self.ctx.services.notify(f"Exported {out}.pdf and .png")
         else:
-            QMessageBox.warning(self, "Export failed", r.stderr[-2000:])
+            last = err.strip().splitlines()[-1] if err.strip() else err
+            self.ctx.services.notify(f"Residual plot export failed: {last}", "error")
+            QMessageBox.warning(self, "Export failed", err[-2000:])
 
     def save_state(self) -> dict:
         return {"x": self.xmode.currentIndex()}
 
     def restore_state(self, state: dict) -> None:
         self.xmode.setCurrentIndex(int(state.get("x", 0)))
+
+
+
+def _export_residuals(tmp: Path) -> str | None:
+    """Draw the exported residual plot in a subprocess (worker thread); None on success, else the error text.
+    The temporary spec folder is removed either way."""
+    import shutil
+
+    try:
+        r = subprocess.run(module_argv("aethercfd.studio.export_plot", str(tmp / "spec.json")),
+                           capture_output=True, text=True, timeout=120, creationflags=0x08000000)
+        if r.returncode == 0:
+            return None
+        return (r.stderr or r.stdout or f"exit code {r.returncode}").strip()
+    except subprocess.TimeoutExpired:
+        return "matplotlib did not finish within 120 s"
+    except OSError as exc:
+        return f"could not start Python for the export: {exc}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ============================================================================ Solver log

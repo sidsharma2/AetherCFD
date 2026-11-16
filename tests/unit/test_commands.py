@@ -112,3 +112,69 @@ def test_schema_export_for_mcp():
     schemas = {s["name"]: s for s in default_registry().export_json_schema()}
     assert {"dict.set", "dict.insert", "dict.remove", "file.save", "file.revert", "file.trash"} <= set(schemas)
     assert "key" in schemas["dict.set"]["input_schema"]["properties"]
+
+
+def test_an_unexpected_error_in_apply_is_a_failed_result(setup):
+    from pydantic import BaseModel
+
+    from aethercfd.commands.base import Command, CommandPlan, CommandSpec
+
+    class P(BaseModel):
+        pass
+
+    class Boom(Command):
+        spec = CommandSpec("test.boom", P, Risk.EXECUTE, "boom")
+
+        def plan(self, ctx, params, actor):
+            return CommandPlan("test.boom", {}, actor, Risk.EXECUTE, "start the thing")
+
+        def apply(self, ctx, plan):
+            raise OSError("wsl.exe not found -- is WSL installed?")
+
+    _case, _proj, ex = setup
+    ex.registry.register(Boom())
+    res = ex.execute("test.boom", {}, USER)
+    assert not res.ok and res.message == "start the thing failed: wsl.exe not found -- is WSL installed?"
+
+
+def test_a_read_only_file_fails_the_command_cleanly(setup):
+    import os
+    import stat
+
+    case, _proj, ex = setup
+    cd = case / "system" / "controlDict"
+    before = cd.read_bytes()
+    os.chmod(cd, stat.S_IREAD)
+    try:
+        res = ex.execute("dict.set", {"file": str(cd), "key": "endTime", "value": "1"}, USER)
+    finally:
+        os.chmod(cd, stat.S_IWRITE | stat.S_IREAD)
+    assert not res.ok and "read-only or open in another program" in res.message and "Nothing was changed" in res.message
+    assert cd.read_bytes() == before
+
+
+def test_a_plan_whose_second_file_fails_is_rolled_back(setup):
+    """Two files in one plan: the first written, the second read-only: the first is put back, the new file goes
+    to the project trash (never deleted), and nothing is half-applied."""
+    import os
+    import stat
+
+    from aethercfd.commands.base import CommandPlan, FileChange
+    from aethercfd.core.textio import sha256_bytes
+
+    case, proj, ex = setup
+    cd, fv, new = case / "system" / "controlDict", case / "system" / "fvSchemes", case / "system" / "extraDict"
+    cd0, fv0 = cd.read_bytes(), fv.read_bytes()
+    plan = CommandPlan("test", {}, USER, Risk.EDIT, "two files")
+    plan.file_changes = [FileChange(cd, sha256_bytes(cd0), cd0 + b"// a\n", before=cd0),
+                         FileChange(new, None, b"// new\n"),
+                         FileChange(fv, sha256_bytes(fv0), fv0 + b"// b\n", before=fv0)]
+    os.chmod(fv, stat.S_IREAD)
+    try:
+        with pytest.raises(Exception, match="Nothing was changed") as e:
+            ex.ctx.apply_file_changes(plan)
+    finally:
+        os.chmod(fv, stat.S_IWRITE | stat.S_IREAD)
+    assert type(e.value).__name__ == "WriteFailed"
+    assert cd.read_bytes() == cd0 and fv.read_bytes() == fv0 and not new.exists()
+    assert any(p.name.endswith("_extraDict") for p in proj.trash_dir.iterdir())

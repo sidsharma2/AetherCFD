@@ -147,6 +147,10 @@ class Conflict(CommandError):
     """A file changed between planning and applying."""
 
 
+class WriteFailed(CommandError):
+    """A file of the plan could not be written (read-only, locked, disk full); the message says what was undone."""
+
+
 class Command(ABC):
     spec: ClassVar[CommandSpec]
 

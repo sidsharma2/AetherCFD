@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     register_builtin_panels(services.panels)
     win = MainWindow(services)
     win.show()
+    services.report_startup_problems()
     if args.reset_layout:
         win.layouts.store = type(win.layouts.store)(Path(win.layouts.store.root) / "_ignored_reset")
     win.layouts.restore(args.perspective or "setup")

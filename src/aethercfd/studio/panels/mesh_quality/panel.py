@@ -61,7 +61,7 @@ class MeshQualityPanel(Panel):
         split.setSizes([300, 160])
         lay.addWidget(split, 1)
         self.report: CheckMeshReport | None = None
-        sv.case_changed.connect(lambda s: self.load_latest())
+        sv.case_changed.connect(self._case_changed_slot)
         sv.bridge.event.connect(self._on_event)
         self.load_latest()
 
@@ -73,6 +73,10 @@ class MeshQualityPanel(Panel):
         if (s.root / "logs").is_dir():
             cands += [p for p in (s.root / "logs").glob("log.checkMesh*") if p.is_file()]
         return max(cands, key=lambda p: p.stat().st_mtime) if cands else None
+
+    def _case_changed_slot(self, s=None) -> None:
+        """services.case_changed -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        self.load_latest()
 
     def load_latest(self) -> None:
         p = self._log_path()

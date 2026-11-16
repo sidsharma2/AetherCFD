@@ -145,3 +145,34 @@ def test_journal_and_objects(tmp_path):
         fh.write('{"torn": ')  # crash mid-write
     assert len(list(j.entries())) == 2
     assert j.find(e1["id"])["command"] == "dict.set"
+
+
+def test_load_case_accepts_a_relative_path(tmp_path, monkeypatch):
+    shutil.copytree(Path(__file__).resolve().parents[1] / "fixtures" / "cases" / "esi_cavity", tmp_path / "cav")
+    monkeypatch.chdir(tmp_path)
+    c = load_case("cav")  # raised PathTranslationError ("not an absolute drive path")
+    assert c.root == tmp_path / "cav" and c.root.is_absolute()
+
+
+def test_a_damaged_project_file_says_how_to_recover(tmp_path, monkeypatch):
+    monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path / "cfg"))
+    case = tmp_path / "cav"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "fixtures" / "cases" / "esi_cavity", case)
+    proj = Project.create(case)
+    pt = proj.meta_dir / "project.toml"
+    pt.write_text(pt.read_text(encoding="utf-8") + "<<<<<<< HEAD\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"is damaged.*fix it by hand.*rename the .aethercfd folder"):
+        Project.find(case)
+
+
+def test_a_damaged_external_project_does_not_hide_the_others(tmp_path, monkeypatch):
+    monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path / "cfg"))
+    a, b = tmp_path / "a", tmp_path / "b"
+    for c in (a, b):
+        shutil.copytree(Path(__file__).resolve().parents[1] / "fixtures" / "cases" / "esi_cavity", c)
+    pa = Project.create(a, mode=Mode.EXTERNAL)
+    Project.create(b, mode=Mode.EXTERNAL)
+    (pa.meta_dir / "project.toml").write_text("[project\n", encoding="utf-8")
+    pa.meta_dir.rename(pa.meta_dir.parent / "000-first")  # listed before b's folder
+    found = Project.find(b)
+    assert found is not None and found.root == b.resolve()

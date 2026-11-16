@@ -7,6 +7,7 @@ the command layer, this CLI is another (and the future MCP server is a third).
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from aethercfd import __version__
@@ -264,7 +265,20 @@ def main(argv: list[str] | None = None) -> int:
 
         return int(ml_setup_main(argv[1:], prog="aethercfd ml-setup") or 0)
     args = build_parser().parse_args(argv)
-    return int(args.func(args) or 0)
+    try:
+        return int(args.func(args) or 0)
+    except KeyboardInterrupt:
+        print("aethercfd: interrupted", file=sys.stderr)
+        return 130
+    except Exception as exc:  # a missing case, WSL not installed, a read-only file: one line, not a traceback
+        if os.environ.get("AETHERCFD_DEBUG"):
+            raise
+        import logging
+
+        logging.getLogger("aethercfd.cli").debug("command failed", exc_info=True)
+        print(f"aethercfd: error: {exc}", file=sys.stderr)
+        print("(set AETHERCFD_DEBUG=1 to see the full traceback)", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

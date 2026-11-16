@@ -12,6 +12,7 @@ Opening/browsing never writes: a project is only created by an explicit ``Projec
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import tomllib
 import uuid
@@ -27,6 +28,10 @@ from aethercfd.core.textio import atomic_write_bytes
 from aethercfd.project.journal import Journal, ObjectStore
 
 SIDECAR = ".aethercfd"
+
+
+class ProjectFileError(ValueError):
+    """project.toml cannot be read; the message says how to recover."""
 
 
 class Mode(StrEnum):
@@ -105,9 +110,15 @@ class Project:
             for d in idx.iterdir():
                 pt = d / "project.toml"
                 if pt.exists():
-                    with open(pt, "rb") as f:
-                        data = tomllib.load(f)
-                    if Path(data.get("project", {}).get("root", "")).resolve() == root:
+                    try:
+                        with open(pt, "rb") as f:
+                            data = tomllib.load(f)
+                        other = Path(data.get("project", {}).get("root", "")).resolve()
+                    except (OSError, ValueError, TypeError, AttributeError):  # another project's damaged file
+                        logging.getLogger(__name__).warning("skipping unreadable external project %s", pt,
+                                                            exc_info=True)
+                        continue
+                    if other == root:
                         return cls._load(root, d, Mode.EXTERNAL)
         return None
 
@@ -131,11 +142,17 @@ class Project:
 
     @classmethod
     def _load(cls, root: Path, meta: Path, mode: Mode) -> Project:
-        with open(meta / "project.toml", "rb") as f:
-            data = tomllib.load(f)
-        p = data.get("project", {})
-        cases = [CaseConfig(path=c["path"], fork=c.get("fork"), placement=Placement(c.get("placement", "auto")))
-                 for c in data.get("cases", [])]
+        pt = meta / "project.toml"
+        try:
+            with open(pt, "rb") as f:
+                data = tomllib.load(f)
+            p = data.get("project", {})
+            cases = [CaseConfig(path=c["path"], fork=c.get("fork"), placement=Placement(c.get("placement", "auto")))
+                     for c in data.get("cases", [])]
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:  # a hand edit or a git merge conflict
+            raise ProjectFileError(f"{pt} is damaged ({exc}). It is a small text file: fix it by hand (a git merge "
+                                   f"leaves <<<<<<< markers), or rename the {meta.name} folder to start a fresh "
+                                   "AetherCFD project for this case (the case files are not affected)") from exc
         return cls(root=root, meta_dir=meta, mode=mode, id=p.get("id", "?"), name=p.get("name", root.name),
                    created=p.get("created", ""), cases=cases)
 

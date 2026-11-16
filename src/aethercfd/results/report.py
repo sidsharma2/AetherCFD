@@ -20,6 +20,7 @@ the case is changed.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import subprocess
 from dataclasses import dataclass, field
@@ -34,6 +35,7 @@ from aethercfd.case.model import Case, load_case
 
 FORMAT = 1
 MAX_POINTS = 4000
+_log = logging.getLogger(__name__)
 _MARK = {"error": "FAIL", "warn": "WARN"}
 
 
@@ -228,7 +230,10 @@ def draw(figs: list[dict], arrays: dict[str, list], out_dir: Path, style: str | 
         (out_dir / "series.npz").unlink(missing_ok=True)
         (out_dir / "plots.json").unlink(missing_ok=True)
     if r.returncode != 0:
-        return [], [f"plots failed: {(r.stderr or r.stdout).strip()[-600:]}"]
+        err = (r.stderr or r.stdout).strip()
+        _log.warning("report plots failed:\n%s", err)
+        last = err.splitlines()[-1].strip() if err else f"exit code {r.returncode}"
+        return [], [f"plots failed: {last[:300]}"]
     try:
         made = json.loads(r.stdout.strip().splitlines()[-1])["figures"]
     except (ValueError, IndexError, KeyError):

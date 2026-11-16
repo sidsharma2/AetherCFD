@@ -741,8 +741,15 @@ class ViewportPanel(ViewToolsMixin, Panel):
         msg = (f"{data['n_cells']:,} cells read · {data['seconds']:.2f} s · t = {data['time']:g}"
                if data["time"] is not None else "")
         if self.field.currentText() and data["scalar"] is None:
-            msg += f" · '{self.field.currentText()}' is not written at this time"
-            self.ctx.services.notify(f"Viewport: '{self.field.currentText()}' is not written at t = {data['time']:g}")
+            name = self.field.currentText()
+            if field_file_present(self.case_root, name, data["time"]):
+                msg += f" · '{name}' could not be read at this time"
+                self.ctx.services.notify(
+                    f"Viewport: '{name}' at t = {data['time']:g} could not be read: the file is incomplete or "
+                    "damaged (a run stopped while writing it?). Pick another time, or run the case again", "warn")
+            else:
+                msg += f" · '{name}' is not written at this time"
+                self.ctx.services.notify(f"Viewport: '{name}' is not written at t = {data['time']:g}")
         if self.smoothed:
             msg += " · smoothed: colours interpolated from the cell values (Cells shows each cell's own value)"
         elif data["scalar"] is not None:
@@ -2004,3 +2011,25 @@ PANELS = [PanelSpec("aether.viewport", "3D Viewport", "mdi6.cube-outline", "Visu
                     multi_instance=True, default_area=Area.CENTER, close_policy="destroy",
                     requires=frozenset({"vtk"}),
                     description="Results on the real finite-volume mesh: fields, time, slices, probe")]
+
+
+def field_file_present(case_root, field: str, time: float | None) -> bool:
+    """True when a time folder equal to ``time`` holds a file named ``field`` (or field.gz), reconstructed or in
+    processor0, any region: a field the reader could not use although the file is there is damaged, not absent."""
+    if case_root is None or time is None:
+        return False
+    root = Path(case_root)
+    for base in (root, root / "processor0"):
+        try:
+            dirs = [d for d in base.iterdir() if d.is_dir()]
+        except OSError:
+            continue
+        for d in dirs:
+            try:
+                if float(d.name) != float(time):
+                    continue
+            except ValueError:
+                continue
+            if any(d.glob(f"{field}")) or any(d.glob(f"{field}.gz")) or any(d.glob(f"*/{field}")):
+                return True
+    return False

@@ -141,7 +141,13 @@ def run_sweep(app: QApplication, win, out: Path) -> int:
     case = load_case(root) if has_case else None
     times = [t for _, t in (case.times + case.processor_times)] if case else []
     has_results = any(float(t) > 0 for t in times)
-    latest = max(times, key=float) if times else None
+
+    def has_files(t: str) -> bool:  # an empty time folder (a run stopped mid-write) has nothing to show
+        dirs = [root / t, root / "processor0" / t]
+        return any(d.is_dir() and any(f.is_file() for f in d.iterdir()) for d in dirs)
+
+    written = [t for t in times if has_files(t)] if root is not None else []
+    latest = max(written or times, key=float) if times else None
 
     # ---------------------------------------------------------------- the restored layout is not an empty window
     def placed():

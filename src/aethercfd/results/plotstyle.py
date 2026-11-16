@@ -8,6 +8,28 @@ import importlib.util
 from pathlib import Path
 
 
+def repair_font_cache() -> bool:
+    """Rebuild matplotlib's font list in memory when its cache cannot find matplotlib's own bundled font.
+
+    matplotlib keeps one ``fontlist-v<version>.json`` per user (``~/.matplotlib``) and trusts it whenever the
+    version matches. A second matplotlib of the same version (another venv, the packaged app) can leave a list
+    without DejaVu Sans; every text draw then raises "Failed to find font DejaVu Sans ... fallback to the default
+    font was disabled" and no figure is saved. Returns True when the list was rebuilt. The user's cache file is
+    left alone (the other install may rely on it)."""
+    from matplotlib import font_manager as fm
+
+    try:
+        fm.fontManager.findfont("DejaVu Sans", fallback_to_default=False, rebuild_if_missing=False)
+        return False
+    except ValueError:
+        pass
+    fresh = fm.FontManager()  # scans matplotlib's bundled fonts and the system fonts
+    fm.fontManager.__dict__.update(fresh.__dict__)  # in place: other modules hold bound methods of this object
+    fm.FontManager._findfont_cached.cache_clear()
+    fm._get_font.cache_clear()
+    return True
+
+
 def load_style(style: str | None):
     """Apply ``apply_style()`` of the user's module, or the fallback; returns the module's
     ``save_fig(fig, out_without_extension)`` if it has one, else None (save .pdf and .png yourself)."""
@@ -15,6 +37,8 @@ def load_style(style: str | None):
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
+    repair_font_cache()
 
     path = Path(style or "")
     if path.is_file():

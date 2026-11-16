@@ -59,7 +59,10 @@ def _read_bytes(p: Path) -> bytes:
     gz = p.with_name(p.name + ".gz")
     if gz.exists():
         return gzip.decompress(gz.read_bytes())
-    raise FileNotFoundError(p)
+    if not p.parent.is_dir():
+        raise FileNotFoundError(f"no mesh yet ({p.parent} does not exist): run blockMesh or snappyHexMesh first")
+    raise FileNotFoundError(f"the mesh in {p.parent} has no {p.name} file: run the mesher again (blockMesh or "
+                            "snappyHexMesh), or check that the files were copied completely")
 
 
 def _header(data: bytes) -> tuple[dict[str, str], int]:

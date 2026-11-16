@@ -9,7 +9,7 @@ from pathlib import Path
 
 import tomli_w
 from platformdirs import user_cache_dir, user_config_dir
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError
 
 from aethercfd.core.clusters import ClusterProfile
 from aethercfd.core.textio import atomic_write_bytes
@@ -82,6 +82,17 @@ class Settings(BaseModel):
 
     paraview_exe: str | None = None  # paraview.exe (default: the newest ParaView found in Program Files)
 
+    _load_problem: str | None = PrivateAttr(default=None)
+
+    @property
+    def load_problem(self) -> str | None:
+        """Why settings.toml could not be used as written (None when it was fine); shown once at start."""
+        return self._load_problem
+
+    @load_problem.setter
+    def load_problem(self, value: str | None) -> None:
+        self._load_problem = value
+
     def add_recent(self, path: str, keep: int = 12) -> None:
         self.recent_cases = [path, *[p for p in self.recent_cases if p.lower() != path.lower()][:keep - 1]]
 
@@ -91,12 +102,72 @@ class Settings(BaseModel):
 
     @classmethod
     def load(cls) -> Settings:
+        """The user's settings. A hand-edit that broke the file never stops the app: a TOML syntax error gives
+        the defaults, a bad value is dropped (its default is used); either way the file is first copied to
+        ``settings.toml.broken-<time>`` (the next save would overwrite it) and :attr:`load_problem` says so."""
         p = cls.path()
-        if p.exists():
-            with open(p, "rb") as f:
-                return cls.model_validate(tomllib.load(f))
-        return cls()
+        if not p.exists():
+            return cls()
+        try:
+            data = tomllib.loads(p.read_bytes().decode("utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            out = cls()
+            out.load_problem = _set_aside(p, f"could not read {p.name} ({exc}): using the default settings")
+            return out
+        dropped: list[str] = []
+        for _ in range(50):
+            try:
+                out = cls.model_validate(data)
+                break
+            except ValidationError as exc:
+                err = exc.errors()[0]
+                dropped.append(".".join(str(x) for x in err["loc"]) + f" ({err['msg']})")
+                if not _drop(data, list(err["loc"]), missing=err["type"] == "missing"):
+                    out = cls()
+                    dropped.append("everything else")
+                    break
+        else:
+            out = cls()
+        if dropped:
+            out.load_problem = _set_aside(p, f"{p.name} had values AetherCFD cannot use; their defaults are used "
+                                             f"instead: {'; '.join(dropped[:6])}")
+        return out
 
     def save(self) -> None:
         # TOML has no null: unset optional settings (e.g. no claude_exe) are left out
         atomic_write_bytes(self.path(), tomli_w.dumps(self.model_dump(exclude_none=True)).encode("utf-8"))
+
+
+def _drop(data, loc: list, *, missing: bool) -> bool:
+    """Remove the value at ``loc`` (or, for a missing required key, the object that lacks it). False when there
+    is nothing left to remove."""
+    if missing:
+        loc = loc[:-1]
+    if not loc:
+        return False
+    parent = data
+    for k in loc[:-1]:
+        try:
+            parent = parent[k]
+        except (KeyError, IndexError, TypeError):
+            return False
+    try:
+        del parent[loc[-1]]
+    except (KeyError, IndexError, TypeError):
+        return False
+    return True
+
+
+def _set_aside(p: Path, message: str) -> str:
+    import logging
+    import shutil
+    from datetime import datetime
+
+    copy = p.with_name(f"{p.name}.broken-{datetime.now():%Y%m%d-%H%M%S}")
+    try:
+        shutil.copy2(p, copy)
+        message += f". Your file was copied to {copy}"
+    except OSError:
+        pass
+    logging.getLogger(__name__).warning("%s", message)
+    return message

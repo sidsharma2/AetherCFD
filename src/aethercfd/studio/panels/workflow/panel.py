@@ -202,13 +202,21 @@ class WorkflowPanel(Panel):
         lay.addWidget(split, 1)
 
         self._timer = QTimer(self, singleShot=True, interval=900, timeout=self.refresh)
-        self.sv.case_changed.connect(lambda _s: self.refresh())
-        self.sv.files_changed.connect(lambda _p: self._timer.start())
+        self.sv.case_changed.connect(self._case_changed_slot)
+        self.sv.files_changed.connect(self._files_changed_slot)
         self.refresh()
 
     # ------------------------------------------------------------------ state
     def _session(self):
         return self.sv.session
+
+    def _case_changed_slot(self, s=None) -> None:
+        """services.case_changed -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        self.refresh()
+
+    def _files_changed_slot(self, _paths=None) -> None:
+        """services.files_changed -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        self._timer.start()
 
     def refresh(self) -> None:
         s = self._session()

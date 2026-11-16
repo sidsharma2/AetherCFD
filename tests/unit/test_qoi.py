@@ -339,10 +339,12 @@ def _ran_case(tmp_path) -> Path:
 
 
 def test_report_markdown_json_and_figures(tmp_path):
+    from aethercfd.core.settings import Settings
     from aethercfd.results.report import build, latest
 
     root = _ran_case(tmp_path)
-    rep = build(root, renders=False)
+    rep = build(root, settings=Settings(), renders=False)  # not the user's real plot_style
+    assert rep.figures, rep.notes
     assert rep.dir.parent == Project.find(root).local / "reports"
     assert latest(root) == rep.markdown
     md = rep.markdown.read_text(encoding="utf-8")
@@ -395,3 +397,12 @@ def test_cli_report(tmp_path, capsys):
     out = capsys.readouterr().out
     assert code in (0, 3) and "verdict" in out and (tmp_path / "rep" / "report.md").is_file()
     assert "Flow rate through outlet" in out
+
+
+def test_cli_errors_are_one_line_not_a_traceback(tmp_path, capsys, monkeypatch):
+    from aethercfd.scripting.cli import main
+
+    monkeypatch.delenv("AETHERCFD_DEBUG", raising=False)
+    assert main(["report", str(tmp_path / "nope")]) == 2
+    err = capsys.readouterr().err
+    assert "aethercfd: error:" in err and "is not an OpenFOAM case" in err and "Traceback" not in err

@@ -39,6 +39,29 @@ def unreachable(res: ScriptResult) -> bool:
     return res.returncode in (UNREACHABLE, NO_SSH)
 
 
+def ssh_hint(err: str) -> str:
+    """What the user can do about a failed non-interactive SSH call ("" when the error says nothing known)."""
+    if "Host key verification failed" in err:
+        return " (unknown host key: use Run > Clusters… > Connect (interactive) once to check and accept it)"
+    if "Permission denied" in err or "keyboard-interactive" in err:
+        return (" (no usable key: set identity_file, load ssh-agent, or sign in with Run > Clusters… > "
+                "Connect (interactive))")
+    if "Could not resolve hostname" in err or "Name or service not known" in err:
+        return " (unknown host name: check the profile's host, and that this PC is online)"
+    if "timed out" in err or "No route to host" in err or "Connection refused" in err:
+        return " (no answer from the login node: check the host, the VPN and the jump host)"
+    return ""
+
+
+def failure_text(res: ScriptResult, *, limit: int = 300) -> str:
+    """The last line of a failed call's output, plus a hint for the usual SSH failures."""
+    err = (res.stderr or res.stdout).strip()
+    if res.timed_out:
+        return "no reply before the time limit"
+    last = err.splitlines()[-1].strip() if err else f"exit code {res.returncode}, no output"
+    return last[-limit:] + ssh_hint(err)
+
+
 class Transport(Protocol):
     def run(self, script: str, *, timeout_s: float = 120) -> ScriptResult:
         """Run a bash script on the login node."""
@@ -240,12 +263,7 @@ def parse_check(profile: ClusterProfile, res: ScriptResult) -> tuple[list[CheckL
     lines = [ln.strip() for ln in res.stdout.splitlines()]
     if CHECK_BEGIN not in lines or CHECK_END not in lines:
         err = (res.stderr or res.stdout).strip()
-        hint = ""
-        if "Host key verification failed" in err:
-            hint = " (unknown host key: use Connect (interactive) once to check and accept it)"
-        elif "Permission denied" in err or "keyboard-interactive" in err:
-            hint = " (no usable key: set identity_file, load ssh-agent, or sign in with Connect (interactive))"
-        return [CheckLine(False, f"cannot reach {profile.destination}: {err[-400:] or 'no reply'}{hint}")], None
+        return [CheckLine(False, f"cannot reach {profile.destination}: {err[-400:] or 'no reply'}{ssh_hint(err)}")], None
     body = lines[lines.index(CHECK_BEGIN) + 1:lines.index(CHECK_END)]
     kv: dict[str, list[str]] = {}
     for ln in body:

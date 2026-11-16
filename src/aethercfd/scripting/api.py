@@ -13,6 +13,7 @@ The GUI, the CLI and the future MCP server (copilot) all build on this same obje
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from aethercfd.backend.wsl.forks import ForkProfile, probe_forks
@@ -25,6 +26,7 @@ from aethercfd.commands.registry import default_registry
 from aethercfd.core.clusters import ClusterProfile
 from aethercfd.core.events import BUS, EventBus
 from aethercfd.core.settings import Settings, cache_dir
+from aethercfd.core.textio import atomic_write_bytes
 from aethercfd.documents.store import DocumentStore
 from aethercfd.project.project import Mode, Project
 from aethercfd.runs.manager import RunManager
@@ -35,10 +37,14 @@ SCRIPT = Actor(ActorKind.SCRIPT, "api")
 def load_forks(runner: WslRunner, *, refresh: bool = False) -> list[ForkProfile]:
     cache = cache_dir() / "forks" / f"{runner.distro}.json"
     if cache.exists() and not refresh:
-        return [ForkProfile.from_json(d) for d in json.loads(cache.read_text(encoding="utf-8"))]
+        try:
+            return [ForkProfile.from_json(d) for d in json.loads(cache.read_text(encoding="utf-8"))]
+        except (OSError, ValueError, TypeError, KeyError):  # cut short by a crash, or an older format: probe again
+            logging.getLogger(__name__).warning("unreadable fork cache %s: probing the distro again", cache,
+                                                exc_info=True)
     forks = probe_forks(runner)
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps([f.to_json() for f in forks], indent=2), encoding="utf-8")
+    atomic_write_bytes(cache, json.dumps([f.to_json() for f in forks], indent=2).encode("utf-8"))
     return forks
 
 

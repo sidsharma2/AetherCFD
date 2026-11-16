@@ -65,8 +65,8 @@ class CaseTreePanel(Panel):
         lay.addWidget(self.view, 1)
         self.root: Path | None = None
         self._refresh_timer = QTimer(self, singleShot=True, interval=400, timeout=self.refresh)
-        ctx.services.files_changed.connect(lambda _paths: self._refresh_timer.start())
-        ctx.services.case_changed.connect(lambda s: self.set_root(s.root if s else None))
+        ctx.services.files_changed.connect(self._files_changed_slot)
+        ctx.services.case_changed.connect(self._case_changed_slot)
         if ctx.services.session is not None:
             self.set_root(ctx.services.session.root)
 
@@ -95,6 +95,14 @@ class CaseTreePanel(Panel):
             with contextlib.suppress(OSError):
                 size.setText(_human(path.stat().st_size))
         return [name, size]
+
+    def _files_changed_slot(self, _paths=None) -> None:
+        """services.files_changed -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        self._refresh_timer.start()
+
+    def _case_changed_slot(self, s=None) -> None:
+        """services.case_changed -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        self.set_root(s.root if s else None)
 
     def set_root(self, root: Path | None) -> None:
         self.root = Path(root) if root else None

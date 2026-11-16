@@ -138,3 +138,45 @@ def test_copilot_enter_sends_and_shift_enter_adds_a_line(sv, qtbot, tmp_path, mo
     assert not sent and "\n" in p.input.toPlainText()
     qtbot.keyClick(p.input, Qt.Key.Key_Return)
     assert sent and sent[0].startswith("hello")
+
+
+def test_opening_something_that_is_not_a_case_says_what_to_do(sv, qtbot, tmp_path):
+    """A moved Recent entry, a file, or the parent folder of cases: a plain message, no case opened."""
+    notes = []
+    sv.notification.connect(lambda msg, level: notes.append((msg, level)))
+    parent = tmp_path / "my cases é"
+    shutil.copytree(FIX, parent / "cavity")
+    (parent / "readme.txt").write_text("x")
+    (tmp_path / "empty").mkdir()
+    for path, words in ((tmp_path / "gone", "does not exist"), (parent / "readme.txt", "is a file"),
+                        (parent, "holds 1: open one of them (cavity)"), (tmp_path / "empty", "no system/controlDict")):
+        notes.clear()
+        sv.open_case(path)
+        assert notes and notes[-1][1] == "error" and words in notes[-1][0], (path, notes)
+        assert sv.session is None
+        assert not (Path(path) / ".aethercfd").exists()
+    assert sv.settings.recent_cases == []
+    sv.open_case(parent / "cavity")
+    assert sv.session is not None and sv.session.root == (parent / "cavity").resolve()
+
+
+def test_a_broken_settings_file_is_reported_once_the_window_listens(tmp_path, monkeypatch, qtbot):
+    monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path / "cfg2"))
+    (tmp_path / "cfg2").mkdir()
+    (tmp_path / "cfg2" / "settings.toml").write_text("[wsl\n", encoding="utf-8")
+    s = AppServices()  # used to raise TOMLDecodeError: the windowed app closed with no message
+    notes = []
+    s.notification.connect(lambda msg, level: notes.append((msg, level)))
+    s.report_startup_problems()
+    assert notes and notes[0][1] == "error" and "settings.toml" in notes[0][0]
+
+
+def test_shutdown_stops_the_case_watcher(sv, qtbot, tmp_path):
+    case = tmp_path / "w"
+    shutil.copytree(FIX, case)
+    sv.open_case(case)
+    obs = sv._watcher._observer
+    assert obs.is_alive()
+    sv.shutdown()
+    assert not obs.is_alive() and sv._watcher is None
+    sv.shutdown()  # twice is harmless
