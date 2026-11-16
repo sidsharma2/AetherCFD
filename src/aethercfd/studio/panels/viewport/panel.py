@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
-    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -33,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from aethercfd.results.foam_reader import display_name
 from aethercfd.studio.panels.viewport import look as lk
+from aethercfd.studio.panels.viewport.toolbar import ToolGroup, ViewportToolbar
 from aethercfd.studio.panels.viewport.views import ViewToolsMixin
 from aethercfd.studio.panels.viewport.worker import shared_worker
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
@@ -142,10 +142,7 @@ class ViewportPanel(ViewToolsMixin, Panel):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        # ---------------- toolbar
-        bar = QHBoxLayout()
-        bar.setContentsMargins(6, 3, 6, 3)
-        bar.setSpacing(4)
+        # ---------------- toolbar (groups that wrap onto more rows when narrow: toolbar.py)
         self.field = QComboBox(minimumWidth=110, toolTip="Field (cell data on the real mesh)")
         self.comp = QComboBox(toolTip="Vector component")
         self.comp.addItems(["magnitude", "x", "y", "z"])
@@ -183,12 +180,6 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.region_sel: list[str] | None = None  # shown regions; None = all (or a single-region case)
         self.region_kinds: dict[str, str] = {}  # region -> 'fluid' | 'solid'
         self.block_regions: dict[str, str] = {}  # drawn block -> its region (per-region depth offsets)
-        for w in (QLabel("Field"), self.field, self.comp, self.region_btn, QLabel("  t"), self.prev_t, self.time,
-                  self.next_t,
-                  self.last_t, self.follow, QLabel("  "), self.look_box, self.btn_smooth, self.btn_cells,
-                  self.btn_edges, self.rep, self.cmap, self.lock):
-            bar.addWidget(w)
-        bar.addStretch(1)
         self.btn_fit = _tool("msc.screen-full", "Fit view")
         self.btn_views = _menu_tool("mdi6.cube-scan", "Views", "Standard views (front, top, right, iso...), saved "
                                                                "views and the quad view")
@@ -206,10 +197,17 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.btn_show = _tool("mdi6.creation", "Showcase: the best first view of this result (Studio look, "
                                                "mid-plane slice in a glass shell for 3D, isometric camera)")
         self.btn_pv = _tool("mdi6.alpha-p-box-outline", "Open this case in ParaView (with this field and time)")
-        for b in (self.btn_show, self.btn_sections, self.btn_flow, self.btn_views, self.btn_fit, self.btn_ao,
-                  self.btn_shot, self.btn_render, self.btn_rec, self.btn_pv, self.btn_side):
-            bar.addWidget(b)
-        lay.addLayout(bar)
+        for box in (self.field, self.comp, self.time, self.rep, self.look_box, self.cmap):
+            box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)  # never cut an item's text
+        self.toolbar = ViewportToolbar(
+            [ToolGroup([QLabel("Field"), self.field, self.comp, self.region_btn]),
+             ToolGroup([QLabel("t"), self.prev_t, self.time, self.next_t, self.last_t, self.follow]),
+             ToolGroup([self.look_box, self.btn_smooth, self.btn_cells, self.btn_edges]),
+             ToolGroup([self.rep, self.cmap, self.lock]),
+             ToolGroup([self.btn_show, self.btn_sections, self.btn_flow, self.btn_views, self.btn_fit, self.btn_ao,
+                        self.btn_shot, self.btn_render, self.btn_rec, self.btn_pv, self.btn_side], spacing=2)],
+            [self.btn_sections, self.btn_flow, self.btn_views])
+        lay.addWidget(self.toolbar)
         # ---------------- view + sidebar
         split = QSplitter(Qt.Orientation.Horizontal)
         self.plotter = ViewportInteractor(self, auto_update=False)  # re-arms a lost GL context (interactor.py)
