@@ -35,7 +35,9 @@ def test_viewports_keep_drawing_after_perspective_switches(tmp_path):
                           cwd=ROOT, env=env, capture_output=True, text=True, timeout=600)
     rows = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
     steps = [r for r in rows if r.get("viewport")]
-    assert rows and rows[-1].get("failures") == 0, "\n".join(map(json.dumps, steps)) + "\n" + proc.stderr[-3000:]
+    verdict = next((r["failures"] for r in rows if "failures" in r), None)
+    assert verdict == 0, "\n".join(map(json.dumps, steps)) + "\n" + proc.stderr[-3000:]
+    assert rows[-1] == {"closed": True}  # the window closed and the process ended normally
     # every perspective with a viewport was drawn, the revisited ones too
     assert {r["step"] for r in steps} == {"start", "meshing", "post", "setup"} and len(steps) == 8
     assert all(r["ok"] and r["current"] for r in steps), steps
