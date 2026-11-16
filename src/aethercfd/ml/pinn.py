@@ -122,6 +122,7 @@ def build_job(case: str | Path, *, physics: str, field: str, time: float | None 
     if region is not None and not isinstance(region, str):  # the old keyword: region=(lo, hi) was the box
         box, region = region, ""
     rng = np.random.default_rng(seed)
+    case = Path(case).resolve()  # a relative path from a script works too
     data = CaseData(case, region or "")
     if time is None:
         saved = [x for x in data.times() if x > 0]
@@ -443,8 +444,24 @@ def load(jd: str | Path) -> dict:
     res["names"] = job.get("names", [])
     res["kind"] = KIND
     res["job"] = {k: v for k, v in job.items() if not k.startswith("_") and k != "parent_pid"}
+    yd = None
+    with contextlib.suppress(OSError, KeyError, ValueError):
+        yd = np.load(jd / "inputs.npz")["y_data"]
+        for j in range(yd.shape[1]):
+            v = yd[np.isfinite(yd[:, j]), j]
+            if len(v) > 1 and np.ptp(v) <= 1e-6 * max(float(np.abs(v).max()), 1e-30):
+                res.setdefault("notes", []).append(
+                    f"all {len(v)} training values of {_name(res, j)} are the same ({v[0]:.6g}): the data carry no "
+                    "pattern to reconstruct; put the data points where the field varies")
     if (jd / "truth_eval.npy").is_file():
         truth = np.load(jd / "truth_eval.npy")
+        if yd is not None and yd.shape[1] == truth.shape[1]:
+            for j in range(truth.shape[1]):
+                sd_d, sd_t = np.nanstd(yd[:, j]), np.nanstd(truth[:, j])
+                if np.isfinite(sd_d) and sd_t > 0 and sd_d < 0.1 * sd_t and np.isfinite(yd[:, j]).sum() > 1:
+                    res.setdefault("notes", []).append(
+                        f"the training values of {_name(res, j)} spread over only {100 * sd_d / sd_t:.2g} % of the "
+                        "field's spread (std): the data points miss where the field varies")
         keep = np.ones(len(truth), bool)
         if res["eval_cells"] is not None and (jd / "train_cells.npy").is_file():
             keep = ~np.isin(res["eval_cells"], np.load(jd / "train_cells.npy"))
@@ -453,7 +470,12 @@ def load(jd: str | Path) -> dict:
             ok = np.isfinite(truth[:, j]) & keep
             if ok.any():
                 e = res["y_eval"][ok, j] - truth[ok, j]
-                errs.append(float(np.sqrt(np.mean(e ** 2)) / (np.std(truth[ok, j]) or 1.0)))
+                sd, mean = float(np.std(truth[ok, j])), float(np.mean(np.abs(truth[ok, j])))
+                errs.append(float(np.sqrt(np.mean(e ** 2)) / (sd or 1.0)))
+                if sd <= 1e-6 * max(mean, 1e-30):  # e.g. T = 300 K everywhere but for rounding
+                    res.setdefault("notes", []).append(
+                        f"{_name(res, j)} hardly varies in the box (std {sd:.3g} around {mean:.6g}), so an error relative "
+                        "to its spread is not meaningful; there is little for the PINN to reconstruct")
             else:
                 errs.append(None)
         res["rmse_over_std_vs_cfd"] = errs
@@ -463,6 +485,11 @@ def load(jd: str | Path) -> dict:
         (jd / "record.json").write_text(json.dumps(record, indent=1, default=_jsonable), encoding="utf-8")
     res["record"] = record
     return res
+
+
+def _name(res: dict, j: int) -> str:
+    names = res.get("names") or []
+    return names[j] if j < len(names) else f"output {j}"
 
 
 def _fmt(names: list[str], errs: list | None) -> str:

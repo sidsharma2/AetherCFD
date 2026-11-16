@@ -104,6 +104,15 @@ def test_measurement_points_keep_some_back(tmp_path):
     assert len(job.x_data) == 16 and len(job.x_val) == 4 and "measurement points" in job.params["val_source"]
 
 
+def test_data_that_miss_the_field_are_flagged(fake, tmp_path):
+    """bottomWater: T rises only near the heater; 40 random cells nearly all sit at 300 K."""
+    job = pinn.build_job(HEATER, physics="ad", field="T", region="bottomWater", n_data=40, n_colloc=200,
+                         diffusivity=1.43e-7)
+    res = pinn.wait(pinn.start(job, ml_python=fake, job_dir=tmp_path / "j"), timeout_s=60)
+    assert any("miss where the field varies" in n for n in res["notes"])
+    assert "Note: the training values of T" in " ".join(pinn.summary(res))
+
+
 def test_no_heldout_points_is_said(fake, tmp_path):
     jd = pinn.start(_job("ok"), ml_python=fake, job_dir=tmp_path / "j")
     res = pinn.wait(jd, timeout_s=60)
