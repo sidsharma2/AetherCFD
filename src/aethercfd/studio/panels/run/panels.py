@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QMessageBox,
     QPlainTextEdit,
@@ -48,7 +49,7 @@ from aethercfd.studio.theme.style import icon, mono_font, plot_defaults
 from aethercfd.studio.theme.tokens import T
 
 plot_defaults()
-_STATE_TOKEN = {"running": "ok", "paused": "warn", "stopping": "warn", "staging": "info", "launching": "info",
+_STATE_TOKEN = {"running": "ok", "pending": "info", "paused": "warn", "stopping": "warn", "staging": "info", "launching": "info",
                 "syncing": "info", "finished": "text_dim", "failed": "error", "killed": "warn", "lost": "error",
                 "guard_stopped": "error", "queued": "text_dim"}
 
@@ -87,7 +88,9 @@ class PlanDialog(QDialog):
             lines.append(f"{'ok     ' if c.ok else 'BLOCKED'}  {c.message}")
         if plan.shell_steps:
             lines.append("")
-            lines.append("Commands (run inside WSL with the case's OpenFOAM version):")
+            where = ("in the cluster job" if plan.params.get("_resolved", {}).get("placement") == "cluster"
+                     else "inside WSL")
+            lines.append(f"Commands (run {where} with the case's OpenFOAM version):")
             for s in plan.shell_steps:
                 lines.append(f"  $ {' '.join(s.argv)}" + (f"   > {s.log_name}" if s.log_name else ""))
         if plan.consequences:
@@ -133,16 +136,29 @@ class RunPanel(Panel):
             self.placement.addItem(label, key)
         self.signals = QCheckBox("Enable write-now / stop-and-write controls")
         self.signals.setChecked(True)
+        # where it runs: this PC (WSL) or a cluster profile (ADR 0007)
+        self.target = QComboBox(toolTip="This PC (WSL), or a Slurm job on a cluster profile")
+        self.clusters_btn = QPushButton("Clusters…", toolTip="Add, test or sign in to cluster profiles")
+        self.clusters_btn.clicked.connect(self._edit_clusters)
+        trow = QHBoxLayout()
+        trow.addWidget(self.target, 1)
+        trow.addWidget(self.clusters_btn)
+        self.walltime = QLineEdit(toolTip="Job time limit (HH:MM:SS or D-HH:MM:SS); empty: the profile's default")
+        self.target.currentIndexChanged.connect(lambda *_: self._on_target())
         form.addRow("Run", self.preset)
         self.preset_hint = QLabel()
         self.preset_hint.setWordWrap(True)
         self.preset_hint.setStyleSheet(f"color: {T.text_faint};")
         form.addRow("", self.preset_hint)
         self.preset.currentIndexChanged.connect(lambda *_: self._show_preset_hint())
+        form.addRow("Where", trow)
         form.addRow("MPI processes", self.nprocs)
         form.addRow("Placement", self.placement)
+        form.addRow("Walltime", self.walltime)
         form.addRow("", self.signals)
         lay.addLayout(form)
+        self._form = form
+        self._fill_targets()
         self.start_btn = QPushButton(icon("msc.play", T.ok), "Start…")
         self.start_btn.clicked.connect(self.start)
         lay.addWidget(self.start_btn)
@@ -221,7 +237,37 @@ class RunPanel(Panel):
         self._show_preset_hint()
 
     def _on_session(self, _s=None) -> None:
+        self._fill_targets()
         self._refresh()
+
+    # ------------------------------------------------------------------ targets (local WSL / clusters)
+    def _fill_targets(self) -> None:
+        keep = self.target.currentData()
+        self.target.blockSignals(True)
+        self.target.clear()
+        self.target.addItem("This PC (WSL)", "local")
+        for c in self.ctx.services.settings.clusters:
+            self.target.addItem(f"Cluster: {c.name} ({c.destination})", c.target)
+        i = self.target.findData(keep) if keep else 0
+        self.target.setCurrentIndex(max(0, i))
+        self.target.blockSignals(False)
+        self._on_target()
+
+    def _on_target(self) -> None:
+        target = self.target.currentData() or "local"
+        cluster = target != "local"
+        self._form.setRowVisible(self.placement, not cluster)  # a cluster run always uploads to its work dir
+        self._form.setRowVisible(self.walltime, cluster)
+        self.nprocs.setMaximum(4096 if cluster else 64)
+        if cluster:
+            prof = next((c for c in self.ctx.services.settings.clusters if c.target == target), None)
+            self.walltime.setPlaceholderText(prof.walltime if prof else "")
+
+    def _edit_clusters(self) -> None:
+        from aethercfd.studio.dialogs.clusters import ClusterProfilesDialog
+
+        if ClusterProfilesDialog(self.ctx.services, self).exec() == QDialog.DialogCode.Accepted:
+            self._fill_targets()
 
     def _on_files(self, _paths) -> None:
         # a run (or the user) meshed the case: what Start will do next may have changed
@@ -271,25 +317,30 @@ class RunPanel(Panel):
                 if col == 1:
                     it.setForeground(QColor(_state_color(r.state)))
                 self.history.setItem(row, col, it)
-            if self.run_id is None and r.state in ("running", "paused", "staging", "stopping", "syncing"):
+            if self.run_id is None and r.state in ("pending", "running", "paused", "staging", "stopping", "syncing"):
                 self.run_id = r.id
 
     def _update_buttons(self) -> None:
         s = self._session()
         rec = s.runs.get(self.run_id) if (s and s.runs and self.run_id) else None
-        active = rec is not None and rec.state in ("running", "paused", "stopping")
+        active = rec is not None and rec.state in ("pending", "running", "paused", "stopping")
         for _k, b in self.btns.items():
             b.setEnabled(active)
         if rec is not None:
-            self.btns["pause"].setVisible(rec.state != "paused")
-            self.btns["resume"].setVisible(rec.state == "paused")
-            sig = rec.signals_enabled
+            cluster = rec.is_cluster
+            self.btns["pause"].setVisible(rec.state != "paused" and not cluster)  # no suspend on clusters
+            self.btns["resume"].setVisible(rec.state == "paused" and not cluster)
+            sig = rec.signals_enabled and rec.state != "pending"  # a queued job has nothing to write yet
             self.btns["write_now"].setEnabled(active and sig)
             self.btns["stop_write"].setEnabled(active and sig)
             col = _state_color(rec.state)
             extra = f"  ·  {rec.stop_reason}" if rec.stop_reason else ""
+            where = rec.placement
+            if cluster:
+                where = f"{rec.target.split(':', 1)[1]} · job {rec.job_id or '…'}" + (
+                    f" · {rec.scheduler_state}" if rec.scheduler_state else "")
             self.state.setText(f"<span style='color:{col}'>● {rec.state}</span>  "
-                               f"<span style='color:{T.text_dim}'>{rec.placement}{extra}</span>")
+                               f"<span style='color:{T.text_dim}'>{where}{extra}</span>")
         else:
             self.btns["resume"].setVisible(False)
 
@@ -301,6 +352,11 @@ class RunPanel(Panel):
             return
         params = {"case": str(s.root), "preset": self.preset.currentData(), "nprocs": self.nprocs.value(),
                   "placement": self.placement.currentData(), "enable_signals": self.signals.isChecked()}
+        target = self.target.currentData() or "local"
+        if target != "local":
+            params["target"] = target
+            if self.walltime.text().strip():
+                params["walltime"] = self.walltime.text().strip()
         try:
             plan = s.executor.plan("run.start", params, USER)
         except Exception as exc:

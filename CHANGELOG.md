@@ -11,6 +11,18 @@
 - Copilot log note for OpenFOAM v2606's `Empty 'probeLocations' list` stop (a probes/patchProbes function with
   `probeLocations ()`, which v2306 accepted; seen on backwardFacingStep2D's sampleCp).
 
+- **Runs on a remote HPC cluster (Slurm), next to local WSL runs** (ADR 0007, guide in `docs/cluster-runs.md`).
+  Cluster profiles in settings (`[[clusters]]`: host, user, key, jump host, work dir, OpenFOAM `module load` line,
+  partition/account/walltime defaults; no password field). Run panel: *Where* picks *This PC (WSL)* or a cluster,
+  *Clusters…* adds, tests and signs in to profiles (*Connect (interactive)…* for MFA clusters). The case is uploaded
+  with rsync, the job is submitted with `sbatch`, and logs and run files are mirrored back every 15 s. Residuals,
+  the solver log and the guards then work as for local runs, and results download into the case folder.
+  Write now / Stop & write use `scancel --batch --signal=USR1/USR2`, and the solver writes and stops 5 min before
+  the walltime. A queued job shows as `pending`. An unreachable cluster never marks a run lost, and reattach after a
+  restart uses the job id. Scripting: `Session.run(target="cluster:<name>", walltime=...)`,
+  `Session.check_cluster(name)`; CLI: `aethercfd run --target cluster:<name>`, `aethercfd clusters --check <name>`;
+  copilot: `run_openfoam(target=...)`, `cluster_profiles`.
+
 ### Fixed
 - **Installing a newer OpenFOAM no longer moves existing cases onto it.** A case's fork is now the exact version in
   its file headers, else the closest installed version not newer than that (a v2412 case runs on v2306, not v2606),

@@ -79,6 +79,7 @@ markers = [
     "wsl_slow: needs WSL and runs a solver (minutes)",
     "gl: needs a real OpenGL context (not the offscreen platform)",
     "slow: takes more than a few seconds (e.g. a Cantera flame solve)",
+    "cluster_fake: runs the generated cluster batch script in a local bash (opt-in: AETHERCFD_FAKE_SLURM=1)",
 ]
 timeout = 300
 # thread: works the same on Windows and Linux, and prints every thread's stack before it kills a hung test

@@ -121,6 +121,12 @@ class WslRunner:
         return ScriptResult(proc.returncode, decode_output(out[-OUTPUT_CAP:]), decode_output(err[-OUTPUT_CAP:]),
                             truncated)
 
+    def open_console(self, inner: Sequence[str]) -> subprocess.Popen:
+        """Run ``inner`` in the distro in a new console window the user types into (e.g. an SSH sign-in with a
+        password and one-time code: AetherCFD never sees what is typed)."""
+        flags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0  # type: ignore[attr-defined]
+        return subprocess.Popen(self.argv(inner), env=self._env(), creationflags=flags)
+
     def popen_detached(self, inner: Sequence[str], *, cwd: str = "/") -> subprocess.Popen:
         """Start a wsl.exe client detached from our console (used only by explicit opt-in features)."""
         return subprocess.Popen(self.argv(inner, cwd=cwd), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

@@ -11,6 +11,7 @@ import tomli_w
 from platformdirs import user_cache_dir, user_config_dir
 from pydantic import BaseModel, Field
 
+from aethercfd.core.clusters import ClusterProfile
 from aethercfd.core.textio import atomic_write_bytes
 
 APP = "AetherCFD"
@@ -51,6 +52,7 @@ class GuardSettings(BaseModel):
 class Settings(BaseModel):
     wsl: WslSettings = Field(default_factory=WslSettings)
     guards: GuardSettings = Field(default_factory=GuardSettings)
+    clusters: list[ClusterProfile] = Field(default_factory=list)  # remote HPC targets (ADR 0007); no secrets
     plot_style: str = ""  # your matplotlib style module for publication plots (default: a bundled journal style)
     gpu: str = "high-performance"  # high-performance (discrete NVIDIA on Optimus laptops) | integrated | system
     gpu_compute: str = "auto"  # auto (CUDA via CuPy when available) | cuda | cpu

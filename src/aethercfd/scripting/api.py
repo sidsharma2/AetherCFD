@@ -5,6 +5,7 @@
     s.set("system/controlDict", "endTime", "500")          # journalled, minimal edit
     run_id = s.run(preset="solve")                          # detached WSL run
     s.runs.wait(run_id)
+    run_id = s.run(preset="solve", nprocs=64, target="cluster:hpc", walltime="12:00:00")  # Slurm job (ADR 0007)
 
 The GUI, the CLI and the future MCP server (copilot) all build on this same object.
 """
@@ -21,6 +22,7 @@ from aethercfd.case.model import Case, load_case
 from aethercfd.commands.base import Actor, ActorKind, CommandResult
 from aethercfd.commands.executor import ApprovalBroker, AutoApprove, Context, DenyAll, Executor
 from aethercfd.commands.registry import default_registry
+from aethercfd.core.clusters import ClusterProfile
 from aethercfd.core.events import BUS, EventBus
 from aethercfd.core.settings import Settings, cache_dir
 from aethercfd.documents.store import DocumentStore
@@ -81,11 +83,28 @@ class Session:
         base = Path(case) if case else self.root
         return self.do("dict.set", file=str(base / file), key=key, value=value, insert_if_missing=insert_if_missing)
 
-    def run(self, *, case: str | Path | None = None, **params) -> str:
-        res = self.do("run.start", case=str(Path(case) if case else self.root), **params)
+    def run(self, *, case: str | Path | None = None, target: str = "local", **params) -> str:
+        """Start a run; returns its id. ``target="cluster:<profile>"`` submits it to that cluster (ADR 0007), with
+        optional ``walltime``, ``nodes``, ``tasks_per_node``, ``partition``, ``account``, ``qos``, ``mem``."""
+        res = self.do("run.start", case=str(Path(case) if case else self.root), target=target, **params)
         if not res.ok:
             raise RuntimeError(res.message)
         return res.data
+
+    # ------------------------------------------------------------------ clusters (ADR 0007)
+    def clusters(self) -> list[ClusterProfile]:
+        """The cluster profiles in settings.toml (run targets "cluster:<name>")."""
+        return list(self.settings.clusters)
+
+    def check_cluster(self, name: str) -> list[str]:
+        """Reach the cluster non-interactively and report what works ("ok ..." / "PROBLEM ..." lines)."""
+        from aethercfd.runs.cluster.transport import check_connection
+        from aethercfd.runs.targets import find_profile
+
+        if self.runner is None:
+            raise RuntimeError("cluster access goes through the WSL distro: open the session with the backend")
+        lines, _ = check_connection(find_profile(self.settings.clusters, name), self.runner)
+        return [f"{'ok' if ln.ok else 'PROBLEM' if ln.ok is False else 'info'}  {ln.text}" for ln in lines]
 
 
 __all__ = ["AutoApprove", "DenyAll", "Session", "load_forks"]

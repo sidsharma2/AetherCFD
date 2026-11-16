@@ -216,6 +216,9 @@ def cmd_run(args: argparse.Namespace) -> int:
               "enable_signals": not args.no_signals}
     if args.fork:
         params["fork"] = args.fork
+    if args.target != "local":
+        params["target"] = args.target
+        params.update({k: v for k in ("walltime", "nodes", "partition", "account") if (v := getattr(args, k))})
     res = s.do("run.start", case=str(s.root), **params)
     print(res.message)
     if not res.ok:
@@ -238,6 +241,32 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_clusters(args: argparse.Namespace) -> int:
+    from aethercfd.core.settings import Settings
+
+    st = Settings.load()
+    if args.check:
+        from aethercfd.backend.wsl.runner import WslRunner
+        from aethercfd.runs.cluster.transport import check_connection
+        from aethercfd.runs.targets import TargetError, find_profile
+
+        try:
+            prof = find_profile(st.clusters, args.check)
+        except TargetError as exc:
+            print(exc, file=sys.stderr)
+            return 2
+        lines, _ = check_connection(prof, WslRunner(st.wsl.default_distro, allowed=st.wsl.allowed_distros))
+        for ln in lines:
+            print(f"{'ok     ' if ln.ok else 'PROBLEM' if ln.ok is False else 'info   '}  {ln.text}")
+        return 0 if all(ln.ok is not False for ln in lines) else 1
+    if not st.clusters:
+        print(f"no cluster profiles yet: add one in the Run panel (Clusters…) or as [[clusters]] in {Settings.path()}")
+    for c in st.clusters:
+        print(f"{c.target:<24} {c.destination:<32} {c.scheduler}  OpenFOAM {c.openfoam_version or '?'}  "
+              f"work {c.work_dir}")
+    return 0
+
+
 def cmd_runs(args: argparse.Namespace) -> int:
     s = _session(args)
     if s.runs is None:
@@ -245,7 +274,8 @@ def cmd_runs(args: argparse.Namespace) -> int:
         return 1
     for r in s.runs.runs():
         steps = " -> ".join(st["app"] for st in r.steps)
-        print(f"{r.id}  {r.state:<13} {r.placement:<9} exit={r.exit_code}  {steps}  {r.stop_reason or ''}")
+        where = f"{r.target} job {r.job_id}" if r.is_cluster else r.placement
+        print(f"{r.id}  {r.state:<13} {where:<9} exit={r.exit_code}  {steps}  {r.stop_reason or ''}")
     return 0
 
 
@@ -307,7 +337,16 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--yes", action="store_true", help="approve plans that need approval")
     r.add_argument("--wait", action="store_true")
     r.add_argument("--every", type=int, default=50, help="with --wait: print every N steps")
+    r.add_argument("--target", default="local", help="local (WSL) or cluster:<profile name> (see `clusters`)")
+    r.add_argument("--walltime", help="cluster runs: e.g. 12:00:00 (default: the profile's)")
+    r.add_argument("--nodes", type=int, help="cluster runs: number of nodes")
+    r.add_argument("--partition", help="cluster runs: partition / queue")
+    r.add_argument("--account", help="cluster runs: allocation account")
     r.set_defaults(func=cmd_run)
+
+    cl = sub.add_parser("clusters", help="list cluster profiles (settings.toml [[clusters]]); --check NAME tests one")
+    cl.add_argument("--check", metavar="NAME", help="reach the cluster non-interactively and report what works")
+    cl.set_defaults(func=cmd_clusters)
 
     rs = sub.add_parser("runs", help="list runs of a case/project")
     rs.add_argument("case")
