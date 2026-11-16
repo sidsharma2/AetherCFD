@@ -145,3 +145,10 @@ def test_journal_and_objects(tmp_path):
         fh.write('{"torn": ')  # crash mid-write
     assert len(list(j.entries())) == 2
     assert j.find(e1["id"])["command"] == "dict.set"
+
+
+def test_load_case_accepts_a_relative_path(tmp_path, monkeypatch):
+    shutil.copytree(Path(__file__).resolve().parents[1] / "fixtures" / "cases" / "esi_cavity", tmp_path / "cav")
+    monkeypatch.chdir(tmp_path)
+    c = load_case("cav")  # raised PathTranslationError ("not an absolute drive path")
+    assert c.root == tmp_path / "cav" and c.root.is_absolute()

@@ -177,7 +177,7 @@ def _regions(root: Path) -> list[str]:
 
 
 def load_case(root: str | Path) -> Case:
-    root = Path(root)
+    root = Path(root).absolute()  # a relative path (CLI: aethercfd-cli report mycase) has no WSL form
     if not (root / "system" / "controlDict").exists():
         raise FileNotFoundError(f"{root} is not an OpenFOAM case (no system/controlDict)")
     wsl = win_to_wsl(str(root))
