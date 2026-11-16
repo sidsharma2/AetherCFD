@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
+from aethercfd.case.discovery import case_folder_problem
 from aethercfd.core.events import BUS
 from aethercfd.core.settings import Settings
 from aethercfd.studio.bridge.qt_bridge import CoreEventBridge
@@ -144,6 +145,10 @@ class AppServices(QObject):
     def open_case(self, path: str | Path, *, create_project: bool = False) -> None:
         from aethercfd.scripting.api import Session
 
+        problem = case_folder_problem(path)
+        if problem is not None:  # a moved Recent entry, a file, a parent folder: say so, open nothing
+            self.notify(problem, "error")
+            return
         try:
             s = Session(path, create_project=create_project, with_backend=False)
         except Exception as exc:
