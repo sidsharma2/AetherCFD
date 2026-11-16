@@ -118,6 +118,16 @@ class AppServices(QObject):
         self.files_changed.emit(paths)
 
     # ------------------------------------------------------------------ notifications
+    def shutdown(self) -> None:
+        """App close: stop the case-folder watcher (its thread and debounce timer would otherwise emit into a
+        services object that is being destroyed)."""
+        if self._watcher is not None:
+            try:
+                self._watcher.stop()
+            except Exception:
+                log.exception("stopping the case watcher failed")
+            self._watcher = None
+
     def report_startup_problems(self) -> None:
         """Once the window listens: what went wrong before it existed (a settings.toml that could not be used)."""
         if self.settings.load_problem:

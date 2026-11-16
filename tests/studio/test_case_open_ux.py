@@ -169,3 +169,14 @@ def test_a_broken_settings_file_is_reported_once_the_window_listens(tmp_path, mo
     s.notification.connect(lambda msg, level: notes.append((msg, level)))
     s.report_startup_problems()
     assert notes and notes[0][1] == "error" and "settings.toml" in notes[0][0]
+
+
+def test_shutdown_stops_the_case_watcher(sv, qtbot, tmp_path):
+    case = tmp_path / "w"
+    shutil.copytree(FIX, case)
+    sv.open_case(case)
+    obs = sv._watcher._observer
+    assert obs.is_alive()
+    sv.shutdown()
+    assert not obs.is_alive() and sv._watcher is None
+    sv.shutdown()  # twice is harmless
