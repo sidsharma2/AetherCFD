@@ -158,3 +158,14 @@ def test_opening_something_that_is_not_a_case_says_what_to_do(sv, qtbot, tmp_pat
     assert sv.settings.recent_cases == []
     sv.open_case(parent / "cavity")
     assert sv.session is not None and sv.session.root == (parent / "cavity").resolve()
+
+
+def test_a_broken_settings_file_is_reported_once_the_window_listens(tmp_path, monkeypatch, qtbot):
+    monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path / "cfg2"))
+    (tmp_path / "cfg2").mkdir()
+    (tmp_path / "cfg2" / "settings.toml").write_text("[wsl\n", encoding="utf-8")
+    s = AppServices()  # used to raise TOMLDecodeError: the windowed app closed with no message
+    notes = []
+    s.notification.connect(lambda msg, level: notes.append((msg, level)))
+    s.report_startup_problems()
+    assert notes and notes[0][1] == "error" and "settings.toml" in notes[0][0]

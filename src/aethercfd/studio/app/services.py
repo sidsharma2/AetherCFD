@@ -118,6 +118,11 @@ class AppServices(QObject):
         self.files_changed.emit(paths)
 
     # ------------------------------------------------------------------ notifications
+    def report_startup_problems(self) -> None:
+        """Once the window listens: what went wrong before it existed (a settings.toml that could not be used)."""
+        if self.settings.load_problem:
+            self.notify(self.settings.load_problem, "error")
+
     def notify(self, message: str, level: str = "info") -> None:
         log.info("notify[%s]: %s", level, message)
         self.notification.emit(message, level)
