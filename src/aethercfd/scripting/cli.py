@@ -247,6 +247,9 @@ def build_parser() -> argparse.ArgumentParser:
     # listed for --help only; main() hands everything after "copilot" to aethercfd.copilot.headless
     sub.add_parser("copilot", help="ask the Claude copilot about a case, headless (copilot -h for options)",
                    add_help=False)
+    # listed for --help only; main() hands everything after "ml-setup" to aethercfd.ml.envsetup
+    sub.add_parser("ml-setup", help="create and check the PyTorch environment for PINNs (ml-setup -h for options)",
+                   add_help=False)
     return p
 
 
@@ -256,6 +259,10 @@ def main(argv: list[str] | None = None) -> int:
         from aethercfd.copilot.headless import main as copilot_main
 
         return int(copilot_main(argv[1:]) or 0)
+    if argv[:1] == ["ml-setup"]:
+        from aethercfd.ml.envsetup import main as ml_setup_main
+
+        return int(ml_setup_main(argv[1:], prog="aethercfd ml-setup") or 0)
     args = build_parser().parse_args(argv)
     return int(args.func(args) or 0)
 

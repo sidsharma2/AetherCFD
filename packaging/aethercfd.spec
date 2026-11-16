@@ -83,7 +83,8 @@ if CPU_ONLY:
 gui_a = Analysis([str(ROOT / "packaging" / "entry_gui.py")], pathex=[str(SRC)], binaries=binaries, datas=datas,
                  hiddenimports=hidden, excludes=excludes, noarchive=False)
 cli_a = Analysis([str(ROOT / "packaging" / "entry_cli.py")], pathex=[str(SRC)],
-                 hiddenimports=collect_submodules("aethercfd.scripting") + collect_submodules("aethercfd.commands"),
+                 hiddenimports=collect_submodules("aethercfd.scripting") + collect_submodules("aethercfd.commands")
+                 + ["aethercfd.ml.envsetup"],  # `aethercfd-cli ml-setup`
                  excludes=excludes + ["PySide6", "vtkmodules", "pyvista", "pyvistaqt", "pyqtgraph", "matplotlib",
                                      # `doctor` checks CUDA through AetherCFD.exe, which has the full CuPy
                                      "cupy", "cupyx", "cupy_backends"])

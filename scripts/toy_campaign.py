@@ -82,7 +82,7 @@ def run_toy(tid: str, family: str, edits: dict, timeout: float, root: Path, fork
         if times:
             f = dd.fields(times[-1], None)
             rec["fields"] = sorted(f)[:14]
-            rec["cells"] = int(len(dd.centres(times[-1])))
+            rec["cells"] = len(dd.centres(times[-1]))
             import numpy as np
 
             rec["finite"] = bool(all(np.isfinite(v).all() for v in f.values()))

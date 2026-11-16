@@ -137,8 +137,9 @@ def save_setting(py: Path) -> str:
 
 
 def main(argv: Sequence[str] | None = None, *, run: Callable = subprocess.run, which: Callable = shutil.which,
-         check: Callable = check_env, save: Callable = save_setting, out: Callable = print) -> int:
-    ap = argparse.ArgumentParser(prog="setup_ml_env.py", description="Set up the PyTorch environment for PINNs.")
+         check: Callable = check_env, save: Callable = save_setting, out: Callable = print,
+         prog: str = "setup_ml_env.py") -> int:
+    ap = argparse.ArgumentParser(prog=prog, description="Set up the PyTorch environment for PINNs.")
     ap.add_argument("--dir", type=Path, default=None, help=f"environment folder (default {default_env_dir()})")
     ap.add_argument("--cpu", action="store_true", help="the CPU build of PyTorch even with an NVIDIA GPU")
     ap.add_argument("--cuda", default=None, metavar="TAG", help="a specific CUDA build, e.g. cu126 or cu128")
@@ -171,7 +172,15 @@ def main(argv: Sequence[str] | None = None, *, run: Callable = subprocess.run, w
 
     index, why = choose_build(a.cpu, a.cuda, None if a.cpu or a.cuda else driver_cuda(run, which))
     uv = which("uv")
-    cmds = install_commands(env_dir, index, uv, sys.executable, create=not exists)
+    base = sys.executable
+    if not uv and getattr(sys, "frozen", False):
+        # the packaged app is not a Python that can make an environment: use uv, else a Python on PATH
+        base = which("python") or which("py")
+        if base is None:
+            out("No tool to create the environment was found. Install uv (winget install --id astral-sh.uv) or "
+                "Python 3.12, open a new terminal, then run this command again.")
+            return 1
+    cmds = install_commands(env_dir, index, uv, base, create=not exists)
     out(f"Installing PyTorch into {env_dir}: {why}. This downloads about "
         f"{'2.5 GB' if index and '/cu' in index else '200 to 800 MB'}.")
     for c in cmds:

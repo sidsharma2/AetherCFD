@@ -40,8 +40,10 @@ from aethercfd.ml.envsetup import check_env, default_env_dir, env_python
 WORKER = Path(__file__).with_name("pinn_worker.py")
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW; POSIX refuses any creationflags
 KIND = "PINN reconstruction (a neural-network fit to sparse data with the physics as a penalty; not a CFD solution)"
+SETUP_COMMAND = ("'aethercfd-cli ml-setup' from the AetherCFD install folder" if getattr(sys, "frozen", False)
+                 else "'python scripts/setup_ml_env.py' from the AetherCFD source folder")
 SETUP_HINT = ("PINN training needs a separate Python environment with PyTorch. Create it once with "
-              "'python scripts/setup_ml_env.py' from the AetherCFD source folder (it installs the CUDA build of "
+              f"{SETUP_COMMAND} (it installs the CUDA build of "
               "PyTorch when an NVIDIA GPU is present, the CPU build otherwise, checks it and saves its path in the "
               "settings). Or set the ml_python setting, or the AETHERCFD_ML_PYTHON environment variable, to the "
               "python of an environment that has torch and numpy. See docs/pinn.md.")
