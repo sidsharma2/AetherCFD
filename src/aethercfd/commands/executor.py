@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import time
 from collections.abc import Callable
@@ -19,11 +20,14 @@ from aethercfd.commands.base import (
     CommandResult,
     Conflict,
     Risk,
+    WriteFailed,
 )
 from aethercfd.commands.registry import Registry
-from aethercfd.core.textio import atomic_write_bytes, sha256_bytes
+from aethercfd.core.textio import atomic_write_bytes, sha256_bytes, write_error_text
 from aethercfd.project.journal import new_id
 from aethercfd.project.project import Project
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -95,13 +99,43 @@ class Context:
             if cur != fc.before_sha:
                 raise Conflict(f"{fc.path} changed since the plan was made (expected "
                                f"{(fc.before_sha or 'absent')[:12]}, found {(cur or 'absent')[:12]})")
+        done: list[tuple[Any, Path | None]] = []  # (file change, where it went in the trash)
         for fc in plan.file_changes:
-            if fc.after is None:
-                self.trash(fc.path)
-            else:
-                fc.path.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_bytes(fc.path, fc.after)
+            try:
+                if fc.after is None:
+                    done.append((fc, self.trash(fc.path)))
+                else:
+                    fc.path.parent.mkdir(parents=True, exist_ok=True)
+                    atomic_write_bytes(fc.path, fc.after)
+                    done.append((fc, None))
+            except OSError as exc:  # read-only, locked by another program, disk full: put back what was done
+                left = self._roll_back(done)
+                msg = write_error_text(fc.path, exc)
+                if left:
+                    raise WriteFailed(f"{msg}. Could not undo the earlier changes to {', '.join(left)}: restore "
+                                      "them from the History panel") from exc
+                raise WriteFailed(f"{msg}. Nothing was changed") from exc
+        for fc, _ in done:
             self.emit("file.changed", {"path": str(fc.path), "kind": fc.kind})
+
+    def _roll_back(self, done: list) -> list[str]:
+        """Undo applied file changes, newest first; the paths that could not be undone."""
+        left = []
+        for fc, trashed in reversed(done):
+            try:
+                if trashed is not None:
+                    shutil.move(str(trashed), str(fc.path))
+                elif fc.before_sha is None:
+                    if fc.path.exists():
+                        self.trash(fc.path)  # a file the plan created: never deleted outright
+                elif fc.before is not None:
+                    atomic_write_bytes(fc.path, fc.before)
+                else:
+                    raise CommandError("the old content was not kept")
+            except Exception:
+                log.exception("could not undo the change to %s", fc.path)
+                left.append(str(fc.path))
+        return left
 
     def trash(self, path: Path) -> Path:
         """Move a file/dir into the project trash (AetherCFD never hard-deletes user data)."""
@@ -157,7 +191,7 @@ class Executor:
         t0 = time.perf_counter()
         try:
             result = cmd.apply(self.ctx, plan)
-        except Conflict as exc:
+        except (Conflict, WriteFailed) as exc:
             return CommandResult(False, plan, str(exc))
         result.journal_id = self._journal(plan, approval, result, time.perf_counter() - t0)
         self.ctx.emit("command.applied", {"command": name, "ok": result.ok, "journal_id": result.journal_id})

@@ -127,18 +127,24 @@ def write_generated_text(path: str | os.PathLike, text: str) -> None:
 def save_user_file(path: str | os.PathLike, text: str) -> str | None:
     """Write a file the user asked for (an exported CSV or report) atomically. None on success, else a sentence
     that says what went wrong and what to do; a failed save leaves any earlier file untouched."""
-    import errno
-
     p = Path(path)
     try:
         atomic_write_bytes(p, text.encode("utf-8"))
         return None
-    except PermissionError:
+    except OSError as exc:
+        return write_error_text(p, exc)
+
+
+def write_error_text(path: str | os.PathLike, exc: OSError) -> str:
+    """A failed write as a sentence the user can act on."""
+    import errno
+
+    p = Path(path)
+    if isinstance(exc, PermissionError):
         return (f"cannot write {p}: the file is read-only or open in another program (Excel?), or the folder "
                 "is protected. Close it there, or save under another name or folder")
-    except FileNotFoundError:
+    if isinstance(exc, FileNotFoundError):
         return f"cannot write {p}: the folder {p.parent} does not exist"
-    except OSError as exc:
-        if exc.errno == errno.ENOSPC:
-            return f"cannot write {p}: the disk is full"
-        return f"cannot write {p}: {exc.strerror or exc}"
+    if exc.errno == errno.ENOSPC:
+        return f"cannot write {p}: the disk is full"
+    return f"cannot write {p}: {exc.strerror or exc}"
