@@ -339,10 +339,12 @@ def _ran_case(tmp_path) -> Path:
 
 
 def test_report_markdown_json_and_figures(tmp_path):
+    from aethercfd.core.settings import Settings
     from aethercfd.results.report import build, latest
 
     root = _ran_case(tmp_path)
-    rep = build(root, renders=False)
+    rep = build(root, settings=Settings(), renders=False)  # not the user's real plot_style
+    assert rep.figures, rep.notes
     assert rep.dir.parent == Project.find(root).local / "reports"
     assert latest(root) == rep.markdown
     md = rep.markdown.read_text(encoding="utf-8")
