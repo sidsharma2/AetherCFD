@@ -77,3 +77,47 @@ def test_rules_fire_and_fixes_apply(tmp_path):
 def test_clean_cavity_has_no_warnings():
     _, found = run_checks(load_case(FIX))
     assert not [f for f in found if f.severity in ("error", "warn")], found
+
+
+PITZ = Path(__file__).resolve().parents[1] / "fixtures" / "cases" / "esi_pitzDaily"
+
+
+def _simplec(tmp_path: Path, name: str, relax: str, consistent: str = "yes") -> Path:
+    c = tmp_path / name
+    shutil.copytree(PITZ, c)
+    sol = c / "system" / "fvSolution"
+    text = sol.read_text().replace("consistent      yes;", f"consistent      {consistent};")
+    text = text.replace("relaxationFactors\n{\n", "relaxationFactors\n{\n" + relax + "\n")
+    sol.write_text(text)
+    return c
+
+
+def test_simplec_with_relaxed_pressure_warns_and_the_fix_sets_it_to_1(tmp_path):
+    from aethercfd.foamdict.parser import parse
+
+    for name, relax, key in (("nested", "    fields { p 0.3; }", "relaxationFactors/fields/p"),
+                             ("flat", "    p 0.3;", "relaxationFactors/p")):
+        c = _simplec(tmp_path, name, relax)
+        _, found = run_checks(load_case(c))
+        hit = [f for f in found if f.id == "simplec-p-relaxed"]
+        assert len(hit) == 1, (name, [f.id for f in found])
+        assert hit[0].severity == "warn" and "0.3" in hit[0].title
+        assert [(e.file.replace("\\", "/"), e.key, e.value) for e in hit[0].edits] == [("system/fvSolution", key, "1")]
+        s = Session(c, create_project=True, with_backend=False)
+        e = hit[0].edits[0]
+        res = s.executor.execute("dict.set", {"file": str(c / e.file), "key": e.key, "value": e.value,
+                                              "insert_if_missing": e.insert_if_missing}, USER)
+        assert res.ok, res.message
+        text = (c / "system" / "fvSolution").read_text()
+        assert parse(text).ok
+        assert relax.replace("0.3", "1") in text, text
+        _, again = run_checks(load_case(c))
+        assert "simplec-p-relaxed" not in {f.id for f in again}, name
+
+
+def test_simplec_check_is_quiet_for_plain_simple_or_an_unrelaxed_pressure(tmp_path):
+    for name, relax, consistent in (("plain", "    fields { p 0.3; }", "no"),
+                                     ("unrelaxed", "    fields { p 1; }", "yes"),
+                                     ("none", "", "yes")):
+        _, found = run_checks(load_case(_simplec(tmp_path, name, relax, consistent)))
+        assert "simplec-p-relaxed" not in {f.id for f in found}, name
