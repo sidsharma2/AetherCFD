@@ -247,7 +247,8 @@ class PinnParams(Justified):
     region: str = _region_field()
     epochs: int = Field(3000, ge=100, le=100000)
     lbfgs: int = Field(400, ge=0, le=20000)
-    wait_min: float = Field(20, gt=0, le=240)
+    wait_min: float = Field(20, gt=0, le=240, description="minutes to wait; the run is stopped after that")
+    seed: int = Field(0, ge=0, description="random seed (data, held-out and collocation points, network); saved")
     write: bool = Field(False, description="write <field>Pinn and <field>PinnErr fields (approval)")
 
     @model_validator(mode="before")
@@ -259,9 +260,21 @@ class PinnParams(Justified):
 
 
 def pinn_train(ctx: ToolContext, p: PinnParams) -> dict:
-    from aethercfd.ml.pinn import build_job, parse_region, start, wait
+    from aethercfd.ml.pinn import (
+        SETUP_HINT,
+        build_job,
+        find_ml_python,
+        parse_region,
+        record_file,
+        start,
+        summary,
+        wait,
+    )
 
     data = _case_data(ctx, p.region)
+    ml_py = getattr(ctx.session.settings, "ml_python", None)
+    if find_ml_python(ml_py) is None:  # say how to get one before the case's fields are read
+        raise ToolError("No PyTorch environment found, so a PINN cannot be trained on this computer. " + SETUP_HINT)
     pts = vals = None
     if p.csv:
         from aethercfd.assim.measurements import load_measurements
@@ -278,22 +291,25 @@ def pinn_train(ctx: ToolContext, p: PinnParams) -> dict:
     except ValueError as exc:
         raise ToolError(str(exc)) from None
     params = {"epochs_adam": p.epochs, "lbfgs_steps": p.lbfgs, ("diffusivity" if p.physics == "ad" else "nu"):
-              p.coefficient}
+              p.coefficient, "seed": p.seed}
     try:
         job = build_job(ctx.root, physics=p.physics, field=p.field, box=box, region=p.region, n_data=p.n_data,
                         data_points=pts, data_values=vals, **params)
-        jd = start(job, ml_python=getattr(ctx.session.settings, "ml_python", None),
-                   job_dir=ctx.root / ".aethercfd" / "local" / "pinn" / "copilot")
+        jd = start(job, ml_python=ml_py, job_dir=ctx.root / ".aethercfd" / "local" / "pinn" / "copilot")
     except (ValueError, RuntimeError, OSError, KeyError, IndexError) as exc:
         raise ToolError(f"{type(exc).__name__}: {exc}" if isinstance(exc, (KeyError, IndexError)) else str(exc)) from None
     try:
-        res = wait(jd, timeout_s=p.wait_min * 60)
+        res = wait(jd, timeout_s=p.wait_min * 60)  # cancels the run on timeout: no orphan worker
     except TimeoutError as exc:
-        return {"ok": False, "note": str(exc), "job_dir": str(jd)}
+        return {"ok": False, "error": f"{exc}. Raise wait_min, or use fewer epochs or data points.", "job_dir": str(jd)}
     if not res.get("ok"):
-        return {"ok": False, "error": res.get("error"), "log": res.get("log", "")[-1500:]}
-    out = {k: res.get(k) for k in ("device", "gpu", "seconds", "final_data_loss", "final_pde_loss",
-                                   "rmse_over_std_vs_cfd", "n_data", "n_colloc", "n_eval")} | {"names": res["names"]}
+        return {"ok": False, "reason": res.get("reason"), "error": res.get("error"),
+                **({"log": res.get("log", "")[-1500:]} if res.get("reason") == "crash" else {})}
+    out = {k: res.get(k) for k in ("kind", "rmse_over_std_vs_cfd", "n_vs_cfd", "heldout", "fit_rmse_over_std",
+                                   "device", "gpu", "seconds", "seed", "torch", "hyper", "final_data_loss",
+                                   "final_pde_loss", "n_data", "n_colloc", "n_eval", "notes")} | {"names": res["names"]}
+    out["summary"] = " ".join(summary(res))
+    out["record"] = str(jd / "record.json")
     if p.region:
         out["region"] = p.region
     if p.write:
@@ -315,6 +331,7 @@ def pinn_train(ctx: ToolContext, p: PinnParams) -> dict:
                       or (ctx.root / "processor0" / d).is_dir()), f"{t:g}")
         files = field_files(ctx.root, tname, {f"{name}Pinn": pred, f"{name}PinnErr": pred - base}, like=name,
                             region=p.region)
+        files |= record_file(res, name, tname, p.region)
         out["write"] = ctx.execute("files.write", {"root": str(ctx.root), "files": files}, p)
     return out
 
@@ -322,5 +339,7 @@ def pinn_train(ctx: ToolContext, p: PinnParams) -> dict:
 ANALYSIS_TOOLS.append(Tool(
     "pinn_train", "Train a physics-informed neural network on the GPU (PyTorch, separate environment): reconstruct a "
     "scalar from sparse data with advection-diffusion physics using the CFD velocity, an incompressible flow (ns), or a "
-    "data-only fit; reports the error against the CFD field; write=true saves <field>Pinn fields (approval).",
+    "data-only fit. The result is a reconstruction, not a CFD solution: report its held-out error "
+    "(rmse_over_std_vs_cfd on cells it did not train on, and heldout) to the user, not only the loss. "
+    "write=true saves <field>Pinn fields (approval).",
     PinnParams, pinn_train, mutates=True))
