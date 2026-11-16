@@ -560,8 +560,10 @@ class ViewToolsMixin:
             start = str(self._out_dir("probes") / f"{self._safe_name(name)}_line.csv")
             f, _ = QFileDialog.getSaveFileName(dlg, "Save line probe", start, "CSV (*.csv)")
             if f:
-                Path(f).write_text(self.line_csv(res), encoding="utf-8")
-                self._notify(f"saved {f}")
+                from aethercfd.core.textio import save_user_file
+
+                err = save_user_file(f, self.line_csv(res))
+                self._notify(err or f"saved {f}")
 
         save.clicked.connect(write)
         dlg.resize(620, 400)
@@ -693,8 +695,11 @@ class ViewToolsMixin:
     def _write_bookmarks(self, marks: dict) -> None:
         allm = self._all_bookmarks()
         allm[str(self.case_root)] = marks
-        f = self._bookmark_file()
-        f.write_text(json.dumps(allm, indent=1), encoding="utf-8")
+        from aethercfd.core.textio import save_user_file
+
+        err = save_user_file(self._bookmark_file(), json.dumps(allm, indent=1))
+        if err:
+            self._notify(f"view not saved: {err}")
 
     def _camera_dict(self) -> dict:
         cam = self.plotter.renderer.GetActiveCamera()

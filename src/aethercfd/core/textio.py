@@ -122,3 +122,23 @@ def write_generated_text(path: str | os.PathLike, text: str) -> None:
     if "\r" in text:
         raise ValueError(f"generated text for {path} contains a carriage return")
     atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def save_user_file(path: str | os.PathLike, text: str) -> str | None:
+    """Write a file the user asked for (an exported CSV or report) atomically. None on success, else a sentence
+    that says what went wrong and what to do; a failed save leaves any earlier file untouched."""
+    import errno
+
+    p = Path(path)
+    try:
+        atomic_write_bytes(p, text.encode("utf-8"))
+        return None
+    except PermissionError:
+        return (f"cannot write {p}: the file is read-only or open in another program (Excel?), or the folder "
+                "is protected. Close it there, or save under another name or folder")
+    except FileNotFoundError:
+        return f"cannot write {p}: the folder {p.parent} does not exist"
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            return f"cannot write {p}: the disk is full"
+        return f"cannot write {p}: {exc.strerror or exc}"

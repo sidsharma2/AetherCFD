@@ -100,3 +100,23 @@ def test_atomic_write_and_generated_text(tmp_path):
     assert b"\r" not in (tmp_path / "run.sh").read_bytes()
     with pytest.raises(ValueError):
         write_generated_text(tmp_path / "bad.sh", "echo hi\r\n")
+
+
+def test_save_user_file_reports_a_read_only_target_and_keeps_it(tmp_path):
+    import os
+    import stat
+
+    from aethercfd.core.textio import save_user_file
+
+    f = tmp_path / "probe é.csv"
+    assert save_user_file(f, "a,b\n") is None and f.read_text(encoding="utf-8") == "a,b\n"
+    os.chmod(f, stat.S_IREAD)
+    try:
+        err = save_user_file(f, "c,d\n")
+        assert err and "read-only or open in another program" in err
+        assert f.read_text(encoding="utf-8") == "a,b\n"
+    finally:
+        os.chmod(f, stat.S_IWRITE | stat.S_IREAD)
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".aether-tmp")]
+    err = save_user_file(tmp_path / "nope" / "x.csv", "x")
+    assert err and "does not exist" in err
