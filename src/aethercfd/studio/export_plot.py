@@ -8,34 +8,19 @@ spec: {"npz": path, "out": path-without-extension, "style": path-to-plot_style.p
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 from pathlib import Path
 
 
 def main(spec_path: str) -> int:
-    spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
-    import matplotlib
+    from aethercfd.results.plotstyle import load_style
 
-    matplotlib.use("Agg")
+    spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+    save_fig = load_style(spec.get("style"))
     import matplotlib.pyplot as plt
     import numpy as np
 
-    style = Path(spec.get("style") or "")
-    save_fig = None
-    if style.is_file():
-        s = importlib.util.spec_from_file_location("user_plot_style", style)
-        mod = importlib.util.module_from_spec(s)
-        s.loader.exec_module(mod)  # type: ignore[union-attr]
-        if hasattr(mod, "apply_style"):
-            mod.apply_style()
-        save_fig = getattr(mod, "save_fig", None)
-    else:  # bundled fallback: same journal conventions
-        plt.rcParams.update({"font.family": "serif", "font.serif": ["STIXGeneral", "DejaVu Serif"],
-                             "mathtext.fontset": "stix", "font.size": 9, "axes.linewidth": 0.7,
-                             "xtick.direction": "in", "ytick.direction": "in", "xtick.top": True,
-                             "ytick.right": True})
     data = np.load(spec["npz"])
     x = data["x"]
     fig, ax = plt.subplots(figsize=(4.6, 3.2))

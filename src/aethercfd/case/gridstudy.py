@@ -34,6 +34,7 @@ DEFAULT_RATIO = 1.5
 SAFETY = 1.25  # Fs for three-grid studies (Roache)
 _SKIP_TOP = {STUDY_DIR, ".aethercfd", "postProcessing", "logs", "VTK", "dynamicCode", "__pycache__", ".git"}
 _NOT_QOI = {"solverInfo", "residuals", "fieldMinMax", "yPlus", "continuityError", "Co", "CourantNo"}
+_NOT_QOI_OBJ = {"aetherMin", "aetherMax"}  # the Foundation's field extremes (volFieldValue min/max)
 _HEX = re.compile(r"(hex\s*\([\d\s]+\)\s*(?:[A-Za-z_]\w*\s*)?)\(\s*([^()]*?)\s*\)", re.S)
 
 
@@ -233,6 +234,8 @@ def dat_values(case_root: Path, *, earlier: bool = False) -> dict[str, float]:
     if not pp.is_dir():
         return out
     for obj in sorted(p for p in pp.iterdir() if p.is_dir()):
+        if obj.name in _NOT_QOI_OBJ:
+            continue
         tdirs = sorted((float(t.name), t) for t in obj.iterdir() if t.is_dir() and is_time_dir(t.name))
         if not tdirs:
             continue

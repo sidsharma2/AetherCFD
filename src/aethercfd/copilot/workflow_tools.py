@@ -240,6 +240,42 @@ def grid_study_evaluate(ctx: ToolContext, p: Justified) -> dict:
     return out
 
 
+# ============================================================================ quantities of interest, report
+class ReportParams(BaseModel):
+    renders: bool = Field(True, description="ParaView pictures of p, |U|, T at the latest time (~10-30 s more)")
+
+
+def qoi_status(ctx: ToolContext, _p: NoParams) -> dict:
+    from aethercfd.case import qoi as Q
+    from aethercfd.case.checks import facts
+    from aethercfd.case.guided import load_state
+
+    case = _case(ctx)
+    answers = load_state(case.root).get("answers", {})
+    f = facts(case)
+    qp = Q.plan(case, answers, f)
+    series = Q.read_series(case.root, qp)
+    tol = float(answers.get("qoi_tolerance") or Q.DEFAULT_TOL_PCT)
+    gate, stats = Q.convergence_gate(case, f, qp, series, tol)
+    return {"monitored": Q.has_monitors(case), "monitor_objects": list(qp.objects),
+            "quantities": [q.as_dict() for q in qp.qois], "notes": qp.notes,
+            "values": [st.as_dict() for st in stats if not Q._negligible(st)], "tolerance_pct": tol,
+            "gates": [gate.as_dict()] + [g.as_dict() for g in Q.conservation_gates(case, f, qp, series)],
+            "how": "Add the monitors with workflow_answer(stage='run', answers={'qoi_monitors': true}); set the "
+                   "tolerance with workflow_answer(stage='validation', answers={'qoi_tolerance': 1})."}
+
+
+def run_report(ctx: ToolContext, p: ReportParams) -> dict:
+    from aethercfd.results.report import build
+
+    rep = build(ctx.root, renders=p.renders)
+    out = rep.as_dict()
+    out["verdict_reasons"] = rep.data["verdict_reasons"]
+    out["qois"] = rep.data["qois"][:20]
+    out["note"] = "Written to the project's local/reports folder; nothing in the case changed. Show the user report.md."
+    return out
+
+
 # ============================================================================ cfd_agents
 def _agents():
     from aethercfd.services.cfd_agents import CfdAgents
@@ -322,6 +358,14 @@ WORKFLOW_TOOLS: list[Tool] = [
     Tool("grid_study_evaluate", "Evaluate the study: quantities of interest on the three levels (patch means of p/T, "
          "postProcessing .dat values), observed order, Richardson extrapolation, GCI (Celik et al. 2008); stores the "
          "record (approved, journalled).", Justified, grid_study_evaluate, mutates=True),
+    Tool("qoi_status", "The case's quantities of interest (force on the walls, flow rate and mean p per open patch, "
+         "pressure drop, wall heat flow, other function-object scalars): whether they are monitored, each final value "
+         "and how much it still changes at the end of the run, and the integral-convergence and mass/energy-balance "
+         "gates. Judge convergence on these, not on residuals alone.", NoParams, qoi_status),
+    Tool("run_report", "Write the run report: verdict from the Validation gates, the quantities of interest with their "
+         "convergence, mass/heat balance, residuals, ParaView field pictures and provenance, as report.md + PDF/PNG "
+         "figures + report.json in the project's local/reports folder (the case is not changed).",
+         ReportParams, run_report),
     Tool("cfd_agents_status", "Which of the research group's cfd_agents can run here (Murphy, Connie, Reggie, Darwin "
          "are wired; Betty, Bill, Bob, Larry are not, with the reason), the interpreter and any setup problem.",
          NoParams, cfd_agents_status),

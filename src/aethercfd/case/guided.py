@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from aethercfd.case import gates as G
+from aethercfd.case import qoi as Q
 from aethercfd.case.checks import TURB_FIELDS, CaseFacts, facts
 from aethercfd.case.model import Case, load_case
 
@@ -221,11 +222,17 @@ class _Ctx:
     non_ortho: float | None = None
     findings: list = field(default_factory=list)  # aethercfd.case.checks findings, computed once
     _run: tuple | None = None
+    _qoi: Q.QoIPlan | None = None
 
     def run(self) -> tuple[G.Gate, G.RunSummary | None]:
         if self._run is None:
             self._run = G.run_gate(self.case)
         return self._run
+
+    def qoi_plan(self) -> Q.QoIPlan:
+        if self._qoi is None:
+            self._qoi = Q.plan(self.case, self.answers, self.facts, self.fields)
+        return self._qoi
 
 
 def _rel_existing(root: Path, *rels: str) -> list[Path]:
@@ -753,10 +760,23 @@ def _run(c: _Ctx):
                                "(the tutorial's 1e-2/1e-3 is loose).", writes=["system/fvSolution"]))
     has_mon = _has_monitors(case)
     q.append(Question("monitoring", "Add monitoring function objects (min/max of fields, residuals, y+)?", "bool",
-                      has_mon, help="fieldMinMax + solverInfo (ESI) / residuals (Foundation) + yPlus: lets the "
+                      has_mon, help="fieldMinMax + solverInfo (ESI) / volFieldValue min, max + residuals (Foundation) "
+                                    "+ yPlus: lets the "
                                     "Validation stage (and Connie) check the run's health.",
-                      writes=["system/controlDict" if not (case.root / "system/functions").is_file()
-                              else "system/functions"]))
+                      writes=[_functions_rel(case)]))
+    qp = c.qoi_plan()
+    if qp.objects:
+        what = []
+        if Q.FORCES in qp.objects:
+            what.append(f"force on the walls ({', '.join(qp.walls[:4])}{' …' if len(qp.walls) > 4 else ''})")
+        if qp.open_patches:
+            what.append(f"flow rate and mean pressure on {', '.join(qp.open_patches[:4])}")
+        if Q.HEAT in qp.objects:
+            what.append("heat flow through each wall")
+        q.append(Question("qoi_monitors", "Add integral monitors (the quantities you will report)?", "bool",
+                          Q.has_monitors(case), help="; ".join(what) + ". Every iteration/time step, so the Validation "
+                          "stage can judge convergence on them and audit the mass (and heat) balance.",
+                          writes=[_functions_rel(case)]))
     from aethercfd.commands.builtin.run_cmds import PRESETS, suggest_preset
 
     preset, why = suggest_preset(case)
@@ -774,7 +794,14 @@ def _run(c: _Ctx):
 
 def _has_monitors(case: Case) -> bool:
     texts = [G._read(case.root / "system/controlDict") or "", G._read(case.root / "system/functions") or ""]
-    return any("fieldMinMax" in t for t in texts)
+    return any("fieldMinMax" in t or "aetherMin" in t for t in texts)
+
+
+def _functions_rel(case: Case) -> str:
+    """Where function objects go: the Foundation reads system/functions (and then IGNORES controlDict/functions,
+    with only a warning), ESI reads controlDict/functions."""
+    return "system/functions" if (case.root / "system/functions").is_file() and not Q.fork_is_esi(case) else \
+        "system/controlDict"
 
 
 def _validation(c: _Ctx):
@@ -785,6 +812,11 @@ def _validation(c: _Ctx):
         gates.append(G.yplus_gate(case, f, c.fields, c.ref))
     from aethercfd.case import gridstudy
 
+    qp = c.qoi_plan()
+    series = Q.read_series(case.root, qp)
+    tol = float(c.answers.get("qoi_tolerance") or Q.DEFAULT_TOL_PCT)
+    gates.append(Q.convergence_gate(case, f, qp, series, tol)[0])
+    gates += Q.conservation_gates(case, f, qp, series)
     verdict = gridstudy.study_gate(case, c.answers)
     gates.append(verdict.gate)
     files = sorted((case.root / "postProcessing").glob("*")) if (case.root / "postProcessing").is_dir() else []
@@ -805,7 +837,12 @@ def _validation(c: _Ctx):
     acts += [Action("agent.connie", "Connie: run-health review of the telemetry",
                     "cfd_agents; reads postProcessing/*/fieldMinMax.dat, solverInfo.dat"),
              Action("agent.murphy", "Murphy: diagnose the solver log", "cfd_agents failure diagnosis")]
-    q = [Question("gci_tolerance", "Acceptable discretisation uncertainty (GCI) of the quantity you report", "number",
+    q = [Question("qoi_tolerance", "How much may a reported quantity still change at the end of the run?", "number",
+                  tol, "%", help="Steady: the band of each integral quantity over the last 10 % of the iterations; "
+                                 "transient: the drift of its mean between the last two quarters. Measured against the "
+                                 "largest value of its kind (|F|, the largest flow rate, ...). 1 % is a common target; "
+                                 "keep it well below the GCI you accept."),
+         Question("gci_tolerance", "Acceptable discretisation uncertainty (GCI) of the quantity you report", "number",
                   c.answers.get("gci_tolerance") or 5.0, "%",
                   help="The grid study gate fails when GCI_fine exceeds this. 1-5 % is typical for engineering "
                        "quantities; validation against experiments needs it well below the measurement error.")]
@@ -825,11 +862,23 @@ def _post(c: _Ctx):
     results = [t for _, t in case.times if t != "0"] + [t for _, t in case.processor_times if t != "0"]
     gates = [G.passed("results", "Results to look at", [f"latest {case.latest_time}"]) if results else
              G.Gate("results", False, "error", "No results yet", "Nothing to post-process.", "Run the case first.")]
-    acts = [Action("open.aether.viewport", "Show the result (3D Viewport, Showcase)", ""),
+    from aethercfd.results.report import latest
+
+    rep = latest(case.root)
+    if rep is not None:
+        gates.append(G.passed("report", "Run report written", [str(rep)]))
+    acts = [Action("report.build", "Write the run report (Markdown, plots, field pictures)",
+                   "Verdict from the Validation gates, every integral quantity with its convergence, the mass/heat "
+                   "balance, residuals, ParaView pictures of p, |U|, T and the run's provenance, in the project's "
+                   "local/reports folder (nothing is written into the case)."),
+            Action("open.aether.viewport", "Show the result (3D Viewport, Showcase)", ""),
             Action("open.aether.residuals", "Residuals", ""),
             Action("open.aether.python", "Python Console (the case as numpy)", "")]
+    qp = c.qoi_plan()
     summary = ("function-object output present; " if post else "") + (f"{len(results)} result time(s)" if results
                                                                         else "no results")
+    if qp.qois and Q.has_monitors(case):
+        summary += f"; {len(qp.qois)} integral quantities monitored"
     return summary, post, gates, [], acts, False
 
 
@@ -922,7 +971,7 @@ def plan_answers(case: Case | str | Path, stage: str, answers: dict, state: dict
 
 
 _SIDE_ONLY = {"geometry_source", "L_ref", "flow_kind", "T_ref", "U_ref", "time_dependence", "target_yplus",
-              "gci_tolerance", "grid_qoi"}
+              "gci_tolerance", "grid_qoi", "qoi_tolerance"}
 
 
 def _apply_answer(case: Case, f: CaseFacts, fields, stage: str, q: Question, val, gp: GuidedPlan, stored: dict):
@@ -1038,6 +1087,14 @@ def _apply_answer(case: Case, f: CaseFacts, fields, stage: str, q: Question, val
             _add_monitors(case, f, fields, gp)
         elif not val and _has_monitors(case):
             gp.notes.append("monitoring function objects kept (remove them in Raw mode)")
+        return
+    if qid == "qoi_monitors":
+        if val and not Q.has_monitors(case):
+            qp = Q.plan(case, stored, f, fields)
+            _function_edits(case, qp.objects, gp)
+            gp.notes.append(f"integral monitors: {len(qp.qois)} quantities")
+        elif not val and Q.has_monitors(case):
+            gp.notes.append("integral monitors kept (remove them in Raw mode)")
         return
     gp.errors.append(f"{qid}: no writer")
 
@@ -1245,27 +1302,38 @@ def _add_monitors(case: Case, f: CaseFacts, fields, gp: GuidedPlan) -> None:
     model = set(TURB_FIELDS.get(f.turbulence or "", []))
     names = [n for n in ("U", "p", "p_rgh", "T", "k", "epsilon", "omega", "nut", "nuTilda")
              if n in fields and (n in model or n in ("U", "p", "p_rgh") or (n == "T" and f.compressible))]
-    esi = (case.fork_guess.family if case.fork_guess else "") == "esi" or bool(case.application)
+    esi = Q.fork_is_esi(case)
     fl = f"({' '.join(names)})"
     solved = "(" + " ".join(n for n in names if n != "nut") + ")"
-    objs = {"aetherFieldMinMax": f"{{ type fieldMinMax; libs (fieldFunctionObjects); fields {fl}; mode magnitude; "
-                                 "writeControl timeStep; writeInterval 1; log false; }",
-            "aetherResiduals": (f"{{ type solverInfo; libs (utilityFunctionObjects); fields {solved}; "
-                                "writeResidualFields no; }") if esi else
-                               f"{{ type residuals; libs (utilityFunctionObjects); fields {solved}; }}"}
+    fields_lib, utility_lib = Q.libs_text(esi, "fieldFunctionObjects"), Q.libs_text(esi, "utilityFunctionObjects")
+    if esi:
+        objs = {"aetherFieldMinMax": f"{{ type fieldMinMax; libs {fields_lib}; fields {fl}; mode magnitude; "
+                                     "writeControl timeStep; writeInterval 1; log false; }",
+                "aetherResiduals": f"{{ type solverInfo; libs {utility_lib}; fields {solved}; writeResidualFields no; }}"}
+    else:  # Foundation 14 has no fieldMinMax ("Unknown function type"): volFieldValue min/max over all cells
+        vfv = f"type volFieldValue; libs {fields_lib}; cellZone all; writeFields false; writeControl timeStep; " \
+              "writeInterval 1; log false;"
+        objs = {"aetherMin": f"{{ {vfv} operation min; fields {fl}; }}",
+                "aetherMax": f"{{ {vfv} operation max; fields {fl}; }}",
+                "aetherResiduals": f"{{ type residuals; libs {utility_lib}; fields {solved}; }}"}
     if f.turbulence not in (None, "laminar") and G._wall_patches(case):
-        objs["aetherYPlus"] = "{ type yPlus; libs (fieldFunctionObjects); writeControl writeTime; }"
-    functions_file = case.root / "system" / "functions"
-    if functions_file.is_file() and not esi:
+        objs["aetherYPlus"] = f"{{ type yPlus; libs {fields_lib}; writeControl writeTime; }}"
+    _function_edits(case, objs, gp)
+    gp.notes.append("monitoring: " + ", ".join(objs))
+
+
+def _function_edits(case: Case, objs: dict[str, str], gp: GuidedPlan) -> None:
+    """Function objects into system/functions (Foundation, when it exists) or controlDict/functions."""
+    if _functions_rel(case) == "system/functions":
         for k, v in objs.items():
             gp.edits.append(_edit(case, "system/functions", k, v, insert=True))
-    elif G._dict_value(case, "system/controlDict", "functions") is not None:
+    elif G._dict_value(case, "system/controlDict", "functions") is not None or any(
+            e["file"].endswith("controlDict") and e["key"] == "functions" for e in gp.edits):
         for k, v in objs.items():
             gp.edits.append(_edit(case, "system/controlDict", f"functions/{k}", v, insert=True))
     else:
         body = " ".join(f"{k} {v}" for k, v in objs.items())
         gp.edits.append(_edit(case, "system/controlDict", "functions", f"{{ {body} }}", insert=True))
-    gp.notes.append("monitoring: " + ", ".join(objs))
 
 
 # ============================================================================ marking done
