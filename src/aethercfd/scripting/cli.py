@@ -112,6 +112,7 @@ def _doctor_backend(probe: bool) -> int:
     from aethercfd.backend.wsl.forks import probe_forks
     from aethercfd.backend.wsl.runner import WslRunner
     from aethercfd.core.settings import Settings, cache_dir
+    from aethercfd.core.textio import atomic_write_bytes
 
     settings = Settings.load()
     allowed = settings.wsl.allowed_distros
@@ -144,7 +145,7 @@ def _doctor_backend(probe: bool) -> int:
             continue
         forks = probe_forks(WslRunner(name, allowed=allowed))
         cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(json.dumps([f.to_json() for f in forks], indent=2), encoding="utf-8")
+        atomic_write_bytes(cache, json.dumps([f.to_json() for f in forks], indent=2).encode("utf-8"))
         if not forks:
             print(f"  [ERR] {name}: no OpenFOAM installation found")
             failures += 1
