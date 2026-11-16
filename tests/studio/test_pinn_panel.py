@@ -87,6 +87,18 @@ def test_stop_ends_the_worker(sv, qtbot, monkeypatch):
     assert not pinn._worker_alive(jd) and p.p_go.isEnabled()
 
 
+def test_a_run_with_the_gpu_hidden_ends_with_a_result(sv, qtbot, monkeypatch):
+    """Regression: with CUDA_VISIBLE_DEVICES=-1 the worker died natively mid-run and the tab said "stopped
+    without a result". The fake crashes the same way under that mask, after training for longer than a poll."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+    p = _panel(sv, qtbot, monkeypatch, "masked")
+    p.train_pinn()
+    qtbot.waitUntil(lambda: p.p_result is not None, timeout=60000)
+    text = p.p_out.toPlainText()
+    assert p.p_result["ok"] and "without a result" not in text and "did not train on" in text, text
+    assert p.p_result["device"] == "cpu" and "step" in p.p_status.text()
+
+
 def test_a_crash_is_shown_and_the_tab_recovers(sv, qtbot, monkeypatch):
     p = _panel(sv, qtbot, monkeypatch, "crash")
     p.train_pinn()

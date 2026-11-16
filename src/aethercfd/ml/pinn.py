@@ -258,6 +258,30 @@ def effective_diffusivity(data, t: float, *, prandtl: float = 0.71) -> tuple[np.
     return alpha / rho, L[:, 0, :] / rho[:, None]
 
 
+def gpus_hidden(value: str | None) -> bool:
+    """CUDA_VISIBLE_DEVICES hides every GPU: empty, or a first entry CUDA cannot use ("-1", "none", ...).
+    CUDA reads the list up to the first invalid entry, so only the first one decides "no GPU at all"."""
+    if value is None:
+        return False
+    first = value.split(",")[0].strip()
+    return not (first.isdigit() or first.upper().startswith(("GPU-", "MIG-")))
+
+
+def worker_env(base) -> dict[str, str]:
+    """The worker's environment. A CUDA_VISIBLE_DEVICES that hides every GPU becomes the empty mask, which
+    still hides them, and the job asks for the CPU. With CUDA_VISIBLE_DEVICES=-1 the CUDA build of torch on
+    Windows (2.14.1+cu126) dies with an access violation inside autograd after 20 to 90 s of CPU training, so
+    the run ends without a result or a log line (9 of 9 runs; with the empty mask or none, 6 of 6 finished).
+    The user's value is kept in AETHERCFD_PINN_GPU_HIDDEN for the result's notes."""
+    env = dict(base)
+    v = env.get("CUDA_VISIBLE_DEVICES")
+    env.pop("AETHERCFD_PINN_GPU_HIDDEN", None)
+    if gpus_hidden(v):
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        env["AETHERCFD_PINN_GPU_HIDDEN"] = v if v.strip() else "(empty)"
+    return env
+
+
 def start(job: PinnJob, *, ml_python: str | None = None, job_dir: str | Path | None = None) -> Path:
     py = find_ml_python(ml_python)
     if py is None:
@@ -284,10 +308,14 @@ def start(job: PinnJob, *, ml_python: str | None = None, job_dir: str | Path | N
     if job.train_cells is not None:
         np.save(jd / "train_cells.npy", job.train_cells)
     spec = {"physics": job.physics, "names": job.names, "seed": 0, **job.params, "parent_pid": os.getpid()}
+    env = worker_env(os.environ)
+    if env.get("AETHERCFD_PINN_GPU_HIDDEN"):
+        spec.setdefault("device", "cpu")  # the user hid the GPU: train on the CPU, without the crashing mask
     (jd / "job.json").write_text(json.dumps(spec, default=_jsonable, indent=1), encoding="utf-8")
     with open(jd / "worker.log", "w", encoding="utf-8") as log:  # the child keeps its own inherited handle
-        proc = subprocess.Popen([str(py), "-I", str(WORKER), str(jd)], cwd=str(jd), stdout=log,
-                                stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
+        # -X faulthandler: a native crash inside torch leaves its Python stack in worker.log (not an empty log)
+        proc = subprocess.Popen([str(py), "-I", "-X", "faulthandler", str(WORKER), str(jd)], cwd=str(jd),
+                                stdout=log, stderr=subprocess.STDOUT, creationflags=NO_WINDOW, env=env)
     _PROCS[str(jd)] = proc
     (jd / "worker.pid").write_text(f"{proc.pid} {_create_time(proc.pid)}")
     return jd
@@ -416,12 +444,35 @@ def wait(jd: str | Path, timeout_s: float = 3600, *, cancel_on_timeout: bool = T
                        (" and was stopped" if cancel_on_timeout else "") + f" ({jd})")
 
 
-def _crash_message(tail: str) -> str:
+NATIVE_CRASH = {0xC0000005: "access violation", 0xC0000409: "stack buffer overrun", 0xC00000FD: "stack overflow",
+                0xC000001D: "illegal instruction", -11: "segmentation fault", -6: "abort", -4: "illegal instruction"}
+
+
+def _exit_code(jd: Path) -> int | None:
+    """The worker's exit status when this process started it (else unknown)."""
+    proc = _PROCS.get(str(Path(jd).resolve()))
+    if proc is None or proc.poll() is None:
+        return None
+    return proc.returncode & 0xFFFFFFFF if os.name == "nt" and proc.returncode > 0 else proc.returncode
+
+
+def _crash_message(tail: str, code: int | None = None) -> str:
     last = next((ln for ln in reversed(tail.splitlines()) if ln.strip()), "")
     if "out of memory" in tail.lower() or "MemoryError" in tail:
         return "the PINN worker ran out of memory: use fewer collocation points or a smaller box"
-    return "the PINN worker stopped without a result" + (f": {last}" if last else
-                                                         " (it was killed, or the computer ran out of memory)")
+    fatal = next((ln.strip() for ln in tail.splitlines() if "fatal exception" in ln or "Fatal Python error" in ln), "")
+    if code in NATIVE_CRASH or fatal:
+        what = fatal or NATIVE_CRASH[code]
+        if code is not None and code > 0:
+            what += f", exit code {code:#x}"
+        where = next((ln.strip() for ln in tail.splitlines() if ln.strip().startswith("File ")), "")
+        return (f"the PINN worker crashed inside PyTorch ({what})" + (f", at {where}" if where else "")
+                + ". This is a crash of the native torch library, not of the training settings: try again, or "
+                "another PyTorch build (scripts/setup_ml_env.py)")
+    if last:
+        return f"the PINN worker stopped without a result: {last}"
+    code_txt = f", exit code {code}" if code not in (None, 0) else ""
+    return f"the PINN worker stopped without a result (it was killed, or the computer ran out of memory{code_txt})"
 
 
 def load(jd: str | Path) -> dict:
@@ -433,7 +484,8 @@ def load(jd: str | Path) -> dict:
         res = json.loads((jd / "result.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         tail = _log_tail(jd)
-        return {"ok": False, "reason": "crash", "error": _crash_message(tail), "traceback": tail, "log": tail,
+        return {"ok": False, "reason": "crash", "error": _crash_message(tail, _exit_code(jd)), "traceback": tail,
+                "log": tail, "exit_code": _exit_code(jd),
                 "history": progress(jd)["history"]}
     res.setdefault("reason", None)
     res["history"] = progress(jd)["history"]

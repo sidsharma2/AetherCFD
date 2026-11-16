@@ -187,6 +187,62 @@ def test_worker_killed_from_outside(fake, tmp_path):
     assert not res["ok"] and "stopped without a result" in res["error"]
 
 
+@pytest.mark.parametrize("mask", ["-1", "none", ""])
+def test_hidden_gpu_trains_on_the_cpu_without_the_crashing_mask(fake, tmp_path, monkeypatch, mask):
+    """Regression (2026-11-15): with CUDA_VISIBLE_DEVICES=-1 in the app's environment, the worker inherited it
+    and the CUDA build of torch died with an access violation in autograd after 20-80 s of CPU training, with
+    no result and an empty log (the empty mask hides the GPU too and does not crash). The fake crashes the same
+    way; the app must give the worker the empty mask and ask for the CPU, so a run longer than the failing time
+    ends with a result."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    job = _job("masked")
+    job.params["_seconds"] = 4
+    t0 = time.time()
+    jd = pinn.start(job, ml_python=fake, job_dir=tmp_path / "j")
+    res = pinn.wait(jd, timeout_s=60)
+    assert res["ok"], res.get("error")
+    assert time.time() - t0 >= 4 and len(res["history"]) > 10
+    assert res["mask_seen"] == "" and res["device"] == "cpu" and res["hidden_note"] == (mask or "(empty)")
+    assert json.loads((jd / "job.json").read_text())["device"] == "cpu"
+    assert pinn.os.environ["CUDA_VISIBLE_DEVICES"] == mask  # the app's own environment is left alone
+
+
+@pytest.mark.parametrize(("value", "hidden"), [(None, False), ("0", False), ("1,0", False), ("GPU-8f3e", False),
+                                               ("MIG-1", False), ("-1", True), ("", True), (" ", True),
+                                               ("none", True), ("-1,0", True)])
+def test_which_masks_hide_every_gpu(value, hidden):
+    assert pinn.gpus_hidden(value) is hidden
+    env = pinn.worker_env({} if value is None else {"CUDA_VISIBLE_DEVICES": value})
+    assert env.get("CUDA_VISIBLE_DEVICES") == ("" if hidden else value)
+    assert ("AETHERCFD_PINN_GPU_HIDDEN" in env) is hidden
+
+
+def test_a_mask_that_leaves_a_gpu_is_passed_on_unchanged(fake, tmp_path, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")  # a visible GPU: the mask stays and nothing is forced
+    jd = pinn.start(_job("masked"), ml_python=fake, job_dir=tmp_path / "j")
+    res = pinn.wait(jd, timeout_s=60)
+    assert res["ok"] and res["mask_seen"] == "0" and res["device"] == "auto" and res["hidden_note"] is None
+
+
+def test_a_native_crash_is_named_with_its_stack(fake, tmp_path):
+    """A crash inside torch leaves its Python stack in worker.log (faulthandler) and the message says what it
+    was, instead of an empty log and 'killed, or out of memory'."""
+    jd = pinn.start(_job("segv"), ml_python=fake, job_dir=tmp_path / "j")
+    res = pinn.wait(jd, timeout_s=60)
+    assert not res["ok"] and res["reason"] == "crash" and res["history"]
+    assert "crashed inside PyTorch" in res["error"] and "killed" not in res["error"], res["error"]
+    assert "fake_pinn_worker.py" in res["log"]  # the faulthandler stack
+    if sys.platform == "win32":
+        assert res["exit_code"] == 0xC0000005 and "access violation" in res["error"]
+
+
+def test_crash_message_from_the_exit_code_alone():
+    assert "access violation, exit code 0xc0000005" in pinn._crash_message("", 0xC0000005)
+    assert "segmentation fault" in pinn._crash_message("", -11)
+    assert pinn._crash_message("", 1).endswith("ran out of memory, exit code 1)")
+    assert "killed" in pinn._crash_message("", None)
+
+
 def test_a_new_run_clears_the_old_files(fake, tmp_path):
     jd = pinn.start(_job("slow"), ml_python=fake, job_dir=tmp_path / "j")
     pinn.cancel(jd)
