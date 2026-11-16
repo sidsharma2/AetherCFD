@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Sequence
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
     from aethercfd.runs.cluster.target import ClusterTarget
 
 log = logging.getLogger(__name__)
+_FPE = re.compile(r"sigFpe|Floating point exception", re.IGNORECASE)
 
 
 class RunState(StrEnum):
@@ -90,6 +92,7 @@ class RunRecord:
     job_id: str | None = None  # cluster runs: the scheduler's job id
     scheduler_state: str | None = None  # cluster runs: the scheduler's last word (PENDING, RUNNING, TIMEOUT, ...)
     remote: dict | None = None  # cluster runs: profile snapshot, resources, remote case/run dirs
+    divergence: dict | None = None  # the divergence guard's stop: time, last good time, sign, log (roadmap Q6)
 
     @property
     def is_cluster(self) -> bool:
@@ -126,6 +129,7 @@ class _Monitor:
     growth: guards.LogGrowthGuard = field(default_factory=guards.LogGrowthGuard)
     repeat: guards.RepetitionGuard = field(default_factory=guards.RepetitionGuard)
     stall: guards.StallGuard = field(default_factory=guards.StallGuard)
+    diverge: guards.DivergenceGuard | None = None
     last_sync: float = 0.0
     last_alive_check: float = 0.0
     dead_replies: int = 0  # definite DEAD replies in a row (an unknown reply neither counts nor resets)
@@ -462,8 +466,7 @@ class RunManager:
                 if ev.get("state") == "running" and ev.get("log"):
                     m.tail_log = ev["log"]
                     m.tail = LogTail(self.exec_case_win(rec) / ev["log"])
-                    m.parser = LogParser()
-                    m.repeat = guards.RepetitionGuard()
+                    self._new_log(m)
         # 1b) a tutorial script writes one log per application it runs: follow the newest of them
         script = m.tail_log is not None and any(
             s.get("kind") == "script" and s.get("log") == m.tail_log for s in rec.steps)
@@ -476,8 +479,7 @@ class RunManager:
                 newest = None
             if newest is not None and (m.tail is None or Path(m.tail.path) != newest):
                 m.tail = LogTail(newest)
-                m.parser = LogParser()
-                m.repeat = guards.RepetitionGuard()
+                self._new_log(m)
         # 2) log progress
         if m.tail is not None:
             lines = m.tail.read_new()
@@ -486,6 +488,10 @@ class RunManager:
                 for step in m.parser.feed(lines):
                     m.sim_time = step.time
                     self._publish("run.progress", rec, log=m.tail_log, step=step)
+                    if m.diverge is not None:
+                        v = m.diverge.feed(step)
+                        if v.level >= guards.Level.WARN:
+                            self._on_divergence(m, v)
                 v = m.repeat.feed(lines)
                 if v.level >= guards.Level.WARN:
                     self._on_guard(m, v)
@@ -556,6 +562,35 @@ class RunManager:
                 m.last_alive_check = now - self.ALIVE_EVERY_S + self.DEAD_RECHECK_S
         return False
 
+    def _new_log(self, m: _Monitor) -> None:
+        """A new log is being followed: start its parser and its per-log guards afresh."""
+        m.parser = LogParser()
+        m.repeat = guards.RepetitionGuard()
+        mode = self.settings.guards.divergence
+        m.diverge = None if mode == "off" else guards.DivergenceGuard(stop_enabled=mode == "stop")
+
+    def _on_divergence(self, m: _Monitor, v: guards.Verdict) -> None:
+        if v.level is guards.Level.STOP and RunState(m.rec.state) in (RunState.RUNNING, RunState.PAUSED):
+            d = v.detail
+            m.rec.divergence = {"message": v.message, "kind": d.get("kind"), "time": d.get("time"),
+                                "time_text": d.get("time_text"), "last_ok_time": d.get("last_ok_time"),
+                                "last_ok_text": d.get("last_ok_text"), "log": m.tail_log,
+                                "step": d.get("step"), "first_time": d.get("first_time")}
+        self._on_guard(m, v)
+
+    def _feed_ended(self, m: _Monitor, step) -> None:
+        """The rest of a finished run's log: the guard still judges it (for the last good time), but there is
+        no run left to stop."""
+        if m.diverge is None:
+            return
+        v = m.diverge.feed(step)
+        if v.level is guards.Level.STOP and m.rec.divergence is None:
+            d = v.detail
+            m.rec.divergence = {"message": v.message, "kind": d.get("kind"), "time": d.get("time"),
+                                "time_text": d.get("time_text"), "last_ok_time": d.get("last_ok_time"),
+                                "last_ok_text": d.get("last_ok_text"), "log": m.tail_log,
+                                "step": d.get("step"), "first_time": d.get("first_time")}
+
     def _on_guard(self, m: _Monitor, v: guards.Verdict) -> None:
         rec = m.rec
         self._publish("run.guard", rec, level=v.level.name, guard=v.guard, message=v.message, detail=v.detail)
@@ -597,9 +632,19 @@ class RunManager:
                 self._publish("run.log", rec, log=m.tail_log, lines=lines)
                 for step in m.parser.feed(lines):
                     self._publish("run.progress", rec, log=m.tail_log, step=step)
+                    self._feed_ended(m, step)
             last = m.parser.flush()
             if last is not None:
                 self._publish("run.progress", rec, log=m.tail_log, step=last)
+                self._feed_ended(m, last)
+        if code != 0 and m.diverge is not None and rec.divergence is None and not rec.stop_reason:
+            crash = next((e.text for e in m.parser.fatal if _FPE.search(e.text)), None)
+            if crash is not None:  # diverged faster than the guard could stop it: still offer the restart
+                g = m.diverge
+                rec.divergence = {"message": "the solver crashed with a floating-point error",
+                                  "kind": "crash", "time": m.sim_time, "time_text": None,
+                                  "last_ok_time": g.last_ok_time, "last_ok_text": g.last_ok_text, "log": m.tail_log,
+                                  "step": g.steps, "first_time": g.first_time}
         if rec.staged or _is_cluster(rec):
             self._set_state(rec, RunState.SYNCING)
             self._sync_back(rec, skip_newest=False)

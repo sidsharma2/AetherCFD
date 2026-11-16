@@ -133,3 +133,49 @@ def test_run_start_executes_off_the_gui_thread(sv, qtbot, tmp_path, monkeypatch)
     release.set()
     qtbot.waitUntil(lambda: p.run_id == "r9", timeout=10000)
     assert on_main == [False] and p.start_btn.text() == "Start…"
+
+
+def test_a_diverged_run_offers_a_restart_plan_from_its_last_good_time(sv, qtbot, tmp_path, monkeypatch):
+    """Roadmap Q6: after a divergence stop the Run panel plans the rollback off the GUI thread, shows it for
+    approval and applies it as one journalled change."""
+    import shutil
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QDialog
+
+    from aethercfd.studio.widgets import approval
+
+    case = tmp_path / "pitz"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "fixtures" / "cases" / "esi_pitzDaily", case)
+    for name in ("100", "180"):
+        shutil.copytree(case / "0", case / name)
+    p_file = case / "180" / "p"
+    p_file.write_text(p_file.read_text().replace("uniform 0;", "uniform nan;", 1))
+    sv.open_case(case, create_project=True)
+    s = sv.session
+    rec = SimpleNamespace(state="guard_stopped", is_cluster=False, placement="in-place", stop_reason=None,
+                          signals_enabled=True, divergence={"message": "divergence: NaN in p", "time": 181.0,
+                                                            "last_ok_time": 179.0, "last_ok_text": "179",
+                                                            "log": None})
+    s.runs = SimpleNamespace(get=lambda run_id: rec, exec_case_win=lambda r: case, runs=lambda: [],
+                             active_for_case=lambda root: [])
+    p = P.RunPanel(PanelContext(sv, "#main"))
+    qtbot.addWidget(p)
+    monkeypatch.setattr(p, "_fill_history", lambda: None)
+    p.run_id = "r1"
+    p._update_buttons()
+    assert p.restart_btn.isVisibleTo(p) and p.upwind.isVisibleTo(p)
+    shown = []
+    monkeypatch.setattr(approval.ApprovalDialog, "exec",
+                        lambda self: shown.append(self.windowTitle()) or QDialog.DialogCode.Accepted)
+    notes = []
+    sv.notification.connect(lambda msg, level: notes.append((msg, level)))
+    p.plan_restart()
+    qtbot.waitUntil(lambda: any("Restart prepared from time 100" in m for m, _ in notes), timeout=10000)
+    assert shown and "Restart from the last good time 100" in shown[0]
+    cd = (case / "system" / "controlDict").read_text()
+    assert "startTime       100;" in cd or "startTime 100;" in cd
+    assert "0.63" in (case / "system" / "fvSolution").read_text()
+    rec.state, rec.divergence = "running", None
+    p._update_buttons()
+    assert not p.restart_btn.isVisibleTo(p)

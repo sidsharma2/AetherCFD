@@ -38,7 +38,9 @@ Start does what the case needs: the tutorial's own `./Allrun`, or mesh, check an
 are detached inside WSL, or go to a Slurm cluster, so closing the app does not stop them. When the app opens
 again it reattaches. Residuals and the solver log update while the solver runs, and Write now, Stop & write,
 Pause and Kill act on it. Guards stop a run when the log grows too fast or too large, or when free disk space
-falls below a reserve.
+falls below a reserve. A divergence watchdog stops a run that is clearly diverging, before NaN reaches a
+written time, and offers one plan to restart from the last good time with gentler numerics
+([docs/divergence.md](docs/divergence.md)).
 
 ![The Run Monitor on pitzDaily: run settings and history, residuals and the solver log](docs/screenshots/06-run-monitor.png)
 
@@ -162,7 +164,7 @@ Copilot
 - Every change is a plan first. A command shows its exact file diffs and shell commands, waits for approval,
   checks that the files did not change underneath, applies, and writes a journal entry with who, what, why and
   the diff. Journal entries can be reverted. Nothing is hard-deleted: removed files go to the project trash.
-- Runs have guards for log growth rate, log size and free disk space. AetherCFD never runs
+- Runs have guards for log growth rate, log size, free disk space and divergence. AetherCFD never runs
   `wsl --shutdown`, `--terminate` or `--unregister`, and never sources two OpenFOAM versions in one shell.
 - Crashes and hangs leave records. A GUI thread that stops for 10 s writes `crash/hang-*.txt` with every
   thread's stack, native faults go to `crash/faulthandler.log`, and an unhandled error is shown in the app and

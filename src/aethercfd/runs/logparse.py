@@ -26,6 +26,7 @@ _PIMPLE = re.compile(r"^PIMPLE: [Ii]teration (\d+)")
 _MINMAX1 = re.compile(r"^min/max\(([^)]+)\) = ([^,]+), (\S+)")
 _MINMAX2 = re.compile(r"^Min/max (\w+):\s*(\S+)\s+(\S+)")
 _REGION = re.compile(r"^Solving for (?:fluid|solid) region (\S+)")
+_BOUNDING = re.compile(r"^bounding ([^,\s]+), min: (\S+) max: (\S+)")
 _HEADER = re.compile(r"^(Build|Exec|Date|Time|Host|PID|Case|nProcs|Arch)\s*:\s*(.*)$")
 
 
@@ -61,6 +62,7 @@ class StepRecord:
     clock_time: float | None = None
     minmax: dict[str, tuple[float, float]] = field(default_factory=dict)
     outer_iters: int = 0
+    bounded: dict[str, float] = field(default_factory=dict)  # field -> largest |min| or |max| in its "bounding" line
 
 
 @dataclass
@@ -189,6 +191,11 @@ class LogParser:
             return None
         if c == "b" and s.startswith("bounding "):
             self.bounding += 1
+            m = _BOUNDING.match(s)
+            if m and cur is not None:
+                name = f"{self._region}/{m.group(1)}" if self._region else m.group(1)
+                size = max(abs(_f(m.group(2))), abs(_f(m.group(3))))
+                cur.bounded[name] = max(cur.bounded.get(name, 0.0), size) if size == size else math.nan
             if self.bounding <= 50:
                 self.events.append(LogEvent("bounding", self.line_no, s))
             return None

@@ -205,3 +205,83 @@ def test_an_empty_exit_code_file_is_read_again_not_taken_as_failure(tmp_path):
     assert mgr._tick(m, run_dir) is False and finished == []
     (run_dir / "exit_code").write_text("0\n")
     assert mgr._tick(m, run_dir) is True and finished == [0]
+
+
+def _diverging_log(n_good: int = 30) -> str:
+    out = []
+    for i in range(1, n_good + 1):
+        r = 10 ** (-3 * i / n_good)
+        out += [f"Time = {i}", f"GAMG:  Solving for p, Initial residual = {r:.3g}, Final residual = {r / 100:.3g}, "
+                "No Iterations 3", "ExecutionTime = 0.1 s  ClockTime = 0 s", ""]
+    out += [f"Time = {n_good + 1}", "GAMG:  Solving for p, Initial residual = nan, Final residual = nan, "
+            "No Iterations 1000", "ExecutionTime = 0.1 s  ClockTime = 0 s", ""]
+    return "\n".join(out)
+
+
+@pytest.mark.parametrize("mode", ["stop", "warn", "off"])
+def test_the_manager_stops_a_diverging_run_and_records_the_last_good_time(tmp_path, mode):
+    import json
+
+    from aethercfd.core.settings import Settings
+    from aethercfd.runs.manager import RunManager, RunRecord, RunState, _Monitor
+
+    case, run_dir = tmp_path / "case", tmp_path / "run"
+    case.mkdir()
+    run_dir.mkdir()
+    (case / "log.simpleFoam").write_text(_diverging_log(), encoding="utf-8")
+    (run_dir / "steps.jsonl").write_text(json.dumps({"state": "running", "log": "log.simpleFoam"}) + "\n")
+    rec = RunRecord("r1", str(case), "/mnt/x", str(run_dir), "/mnt/x/run", "/tmp/run", {}, "in-place", "", [], 1,
+                    True, "now", state=RunState.RUNNING.value)
+    mgr = RunManager.__new__(RunManager)
+    mgr._monitors, mgr.bus = {}, None
+    mgr.settings = Settings()
+    mgr.settings.guards.divergence = mode
+    events, controls = [], []
+    mgr._publish = lambda topic, rec, **p: events.append((topic, p))
+    mgr.control = lambda run_id, action: controls.append(action) or (True, "")
+    mgr.exec_case_win = lambda rec: case
+    m = _Monitor(rec)
+    m.last_alive_check = time.monotonic()
+    mgr._tick(m, run_dir)
+    div = [p for t, p in events if t == "run.guard" and p.get("guard") == "divergence"]
+    if mode == "off":
+        assert div == [] and controls == [] and rec.divergence is None
+        return
+    assert len(div) == 1 and "NaN" in div[0]["message"]
+    if mode == "warn":
+        assert div[0]["level"] == "WARN" and controls == [] and rec.divergence is None
+        return
+    assert div[0]["level"] == "STOP" and controls == ["stop_write"]
+    assert rec.divergence["last_ok_time"] == 30.0 and rec.divergence["log"] == "log.simpleFoam"
+    assert rec.guard_stop.startswith("divergence:")
+    saved = RunRecord.load(run_dir)
+    assert saved.divergence["time"] == 31.0
+
+
+def test_a_run_that_crashes_before_the_guard_can_stop_it_still_gets_a_restart_offer(tmp_path):
+    import json
+
+    from aethercfd.core.settings import Settings
+    from aethercfd.runs.manager import RunManager, RunRecord, RunState, _Monitor
+
+    case, run_dir = tmp_path / "case", tmp_path / "run"
+    case.mkdir()
+    run_dir.mkdir()
+    healthy = _diverging_log().rsplit("Time = 31", 1)[0]
+    crash = healthy + "Time = 31\n#0  Foam::error::printStack(Foam::Ostream&) at ??:?\n#1  Foam::sigFpe::sigHandler(int) at ??:?\n"
+    (case / "log.simpleFoam").write_text(crash, encoding="utf-8")
+    (run_dir / "steps.jsonl").write_text(json.dumps({"state": "running", "log": "log.simpleFoam"}) + "\n")
+    (run_dir / "exit_code").write_text("136\n")
+    rec = RunRecord("r1", str(case), "/mnt/x", str(run_dir), "/mnt/x/run", "/tmp/run", {}, "in-place", "", [], 1,
+                    True, "now", state=RunState.RUNNING.value)
+    mgr = RunManager.__new__(RunManager)
+    mgr._monitors, mgr.bus = {}, None
+    mgr.settings = Settings()
+    mgr._publish = lambda *a, **k: None
+    mgr.exec_case_win = lambda rec: case
+    m = _Monitor(rec)
+    m.last_alive_check = time.monotonic()
+    assert mgr._tick(m, run_dir) is True
+    assert rec.state == RunState.FAILED.value
+    assert rec.divergence["kind"] == "crash" and rec.divergence["last_ok_time"] == 30.0
+    assert RunRecord.load(run_dir).divergence["kind"] == "crash"
