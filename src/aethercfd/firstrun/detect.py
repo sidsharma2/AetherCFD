@@ -36,6 +36,7 @@ OpenFOAM ESI v2306 (openfoam.com), Ubuntu 20.04/22.04:
     curl -s https://dl.openfoam.com/add-debian-repo.sh | sudo bash
     sudo apt-get install -y openfoam2306-default
   (installs to /usr/lib/openfoam/openfoam2306; details: develop.openfoam.com > wiki > precompiled > debian)
+  Newer ESI releases install the same way next to it (e.g. openfoam2606-default) and show up as their own version.
 
 OpenFOAM Foundation 14 (openfoam.org), Ubuntu 22.04/24.04:
     sudo sh -c "wget -O - https://dl.openfoam.org/gpg.key > /etc/apt/trusted.gpg.d/openfoam.asc"
@@ -49,10 +50,9 @@ TOOL_HINTS = {
     "paraview": "Optional: the expert post-processor and ray-traced renders. Download the Windows installer from "
                 "paraview.org/download (any 5.11+; 6.x recommended).",
     "freecad": "Optional: CAD import (STEP/IGES/BREP). Download FreeCAD from freecad.org/downloads.",
-    "ml_python": "Optional: PINN training needs a separate Python with PyTorch. With uv: "
-                 "uv venv %LOCALAPPDATA%\\AetherCFD\\ml-env --python 3.12, then "
-                 "uv pip install --python %LOCALAPPDATA%\\AetherCFD\\ml-env\\Scripts\\python.exe torch numpy "
-                 "--index-url https://download.pytorch.org/whl/cu126",
+    "ml_python": "Optional: PINN training needs a separate Python with PyTorch. Create it once with "
+                 "'aethercfd-cli ml-setup' (installed app) or 'python scripts/setup_ml_env.py' (source folder). "
+                 "It picks the CUDA or CPU build, checks it and saves the path. See docs/pinn.md.",
 }
 
 

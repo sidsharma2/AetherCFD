@@ -56,6 +56,16 @@ def test_checkmesh_region_mapped_lookup_note():
     assert log_note("log.checkMesh", "Checking geometry...\n    Mesh OK.\n") is None
 
 
+def test_v2606_empty_probe_locations_note():
+    from aethercfd.copilot.tools import log_note
+
+    # seen 2026-11-02: backwardFacingStep2D's sampleCp (patchProbes, probeLocations ()) under v2606
+    text = ("--> FOAM FATAL IO ERROR: (openfoam-2606)\nEmpty 'probeLocations' list.\n\n"
+            "file: system/controlDict/functions/sampleCp at line 1 to 7.\n")
+    note = log_note("log.simpleFoam", text)
+    assert note and "v2606" in note and "#includeFunc" in note
+
+
 def test_snappy_setup_tool_writes_one_plan(tmp_path):
     from tests.unit.test_mesh_snappy import _sphere
 

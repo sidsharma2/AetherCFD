@@ -6,3 +6,5 @@ tests/fixtures/** -text
 *.pdf binary
 *.cmd text eol=crlf
 *.bat text eol=crlf
+# vendored xterm.js: keep byte-exact (vendor.json holds their sha256)
+src/aethercfd/studio/resources/xterm/dist/** -text

@@ -2,6 +2,7 @@
 
     uv run python packaging/install.py            # in the source tree, after packaging/build.py
     python install.py                             # in an unzipped release (AetherCFD-<version>-win64.zip)
+    python install.py --target D:\\Apps\\AetherCFD --no-shortcuts   # another folder, no shortcuts
 
 - copies the app folder (dist/AetherCFD in the source tree, or the AetherCFD folder next to this script in a
   release) to %LOCALAPPDATA%\\Programs\\AetherCFD (the previous install is kept as AetherCFD.previous until
@@ -30,7 +31,7 @@ def _find_dist() -> Path:
 
 
 DIST = _find_dist()
-TARGET = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "AetherCFD"
+TARGET = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Programs" / "AetherCFD"
 NAME = "AetherCFD Studio"
 
 
@@ -54,33 +55,44 @@ def _folder(name: str) -> Path:
     return Path(out)
 
 
-def main() -> int:
+def install_files(dist: Path, target: Path) -> Path:
+    """Copy ``dist`` to ``target`` through target.new; the old install becomes target.previous. Returns the exe."""
+    new = target.with_name(target.name + ".new")
+    prev = target.with_name(target.name + ".previous")
+    if new.exists():
+        shutil.rmtree(new)
+    print(f"copying {dist} -> {new}")
+    shutil.copytree(dist, new)
+    if target.exists():
+        if prev.exists():
+            shutil.rmtree(prev)  # our own previous build output, not user data
+        target.rename(prev)
+    new.rename(target)
+    return target / "AetherCFD.exe"
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Install the packaged AetherCFD Studio for this Windows user.")
+    ap.add_argument("--target", type=Path, default=TARGET, help=f"install folder (default {TARGET})")
+    ap.add_argument("--no-shortcuts", action="store_true", help="do not create Start menu and Desktop shortcuts")
+    a = ap.parse_args(argv)
+    target = a.target.resolve()
     exe_src = DIST / "AetherCFD.exe"
     if not exe_src.is_file():
         print(f"no build at {DIST}: in the source tree run packaging/build.py first; in a release, keep install.py "
               "next to the AetherCFD folder", file=sys.stderr)
         return 1
-    if _running_from(TARGET):
+    if _running_from(target):
         print("AetherCFD is running from the install folder; close it and run again", file=sys.stderr)
         return 2
-    new = TARGET.with_name("AetherCFD.new")
-    prev = TARGET.with_name("AetherCFD.previous")
-    if new.exists():
-        shutil.rmtree(new)
-    print(f"copying {DIST} -> {new}")
-    shutil.copytree(DIST, new)
-    if TARGET.exists():
-        if prev.exists():
-            shutil.rmtree(prev)  # our own previous build output, not user data
-        TARGET.rename(prev)
-    new.rename(TARGET)
-    exe = TARGET / "AetherCFD.exe"
-    start_menu = _folder("Programs")
-    desktop = _folder("Desktop")
-    for folder in (start_menu, desktop):
-        lnk = folder / f"{NAME}.lnk"
-        _shortcut(lnk, exe)
-        print(f"shortcut {lnk}")
+    exe = install_files(DIST, target)
+    if not a.no_shortcuts:
+        for folder in (_folder("Programs"), _folder("Desktop")):
+            lnk = folder / f"{NAME}.lnk"
+            _shortcut(lnk, exe)
+            print(f"shortcut {lnk}")
     print(f"installed {exe}")
     return 0
 

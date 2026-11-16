@@ -81,6 +81,8 @@ PARAMS: dict[str, list[tuple[str, str, str, object]]] = {
     "glyphs": [("field", "Vector field", "vfield", "U"), ("max_points", "Max arrows", "int", 2000),
                ("scale", "Scale", "float", 1.0)],
     "schlieren": [("source", "Density field", "field", "rho"), ("k", "Contrast k", "float", 12.0),
+                  ("scale", "Gradient (log: plumes, wide density range)", "choice:linear|log", "linear"),
+                  ("percentile", "Scale by percentile (blank = max)", "optfloat", None),
                   ("axis", "Slice normal", "axis", "z"), ("pos", "Slice position", "frac", 0.5)],
     "quality": [("metric", "Metric", "choice:" + "|".join(METRICS), "nonOrthogonality"),
                 ("min", "Only cells >=", "optfloat", None), ("max", "Only cells <=", "optfloat", None)],

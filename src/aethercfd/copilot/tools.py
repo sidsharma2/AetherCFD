@@ -105,7 +105,11 @@ class RunParams(Justified):
                                                  "./Allrun, or blockMesh + checkMesh + solver when there is no mesh "
                                                  "yet, else the solver) | solve | mesh-check-solve | mesh | check | "
                                                  "allrun")
-    nprocs: int = Field(1, ge=1, le=64, description="MPI processes for parallel solver steps")
+    nprocs: int = Field(1, ge=1, le=4096, description="MPI processes for parallel solver steps")
+    target: str = Field("local", description="local (WSL on this PC) or cluster:<profile> (a Slurm job on an HPC "
+                                             "cluster; see cluster_profiles)")
+    walltime: str | None = Field(None, description="Cluster runs: job time limit, e.g. 12:00:00 (default: the "
+                                                   "profile's)")
     wait: bool = Field(True, description="Wait for the run to end (up to timeout_min) and return the outcome")
     timeout_min: float = Field(60.0, gt=0, le=24 * 60)
 
@@ -374,7 +378,9 @@ def dict_get(ctx: ToolContext, p: DictGetParams) -> dict:
 def _run_summary(r) -> dict:
     return {"run_id": r.id, "state": r.state, "steps": [s.get("label") or s.get("app") for s in r.steps],
             "exit_code": r.exit_code, "stop_reason": r.stop_reason, "guard_stop": r.guard_stop,
-            "placement": r.placement, "created": r.created, "finished": r.finished_at}
+            "placement": r.placement, "created": r.created, "finished": r.finished_at,
+            **({"target": r.target, "job_id": r.job_id, "scheduler_state": r.scheduler_state}
+               if getattr(r, "is_cluster", False) else {})}
 
 
 def run_status(ctx: ToolContext, p: RunStatusParams) -> dict:
@@ -398,11 +404,13 @@ def run_status(ctx: ToolContext, p: RunStatusParams) -> dict:
 def _step_logs(ctx: ToolContext, rec, *, lines: int) -> dict:
     out = {}
     base = Path(rec.case_root)
+    # a cluster run's live logs are mirrored into <run dir>/case (the case folder may hold an older local log)
+    first = (Path(rec.run_dir) / "case",) if getattr(rec, "is_cluster", False) else ()
     for s in rec.steps:
         name = s.get("log")
         if not name:
             continue
-        for cand in (base / name, Path(rec.run_dir) / name):
+        for cand in (*(d / name for d in first), base / name, Path(rec.run_dir) / name):
             if cand.is_file():
                 text = _tail_text(cand, 512 * 1024)
                 out[name] = "\n".join(text.rstrip("\n").split("\n")[-lines:])
@@ -423,6 +431,10 @@ def log_note(name: str, text: str) -> str | None:
                 f"'failed lookup of {m.group(1)}' is OpenFOAM v2306 looking up the neighbour region of a mapped "
                 "(multi-region) patch while checking one region of a split mesh: not a mesh defect. Judge the mesh "
                 "by the report; checkMesh on the assembled single-region case does not hit it.")
+    if "Empty 'probeLocations' list" in text:
+        return ("OpenFOAM v2606 stops on a probes/patchProbes function object whose probeLocations list is empty; "
+                "v2306 accepted it and wrote nothing. Give it at least one location, or remove that function (for "
+                "example its #includeFunc line in system/controlDict). The case itself is not broken.")
     return None
 
 
@@ -484,6 +496,16 @@ def mesh_quality(ctx: ToolContext, p: MeshQualityParams) -> dict:
             "sets_written": [{"kind": s.kind, "name": s.name, "count": s.count, "reason": s.reason} for s in r.sets]}
 
 
+def cluster_profiles(ctx: ToolContext, p: NoParams) -> dict:
+    settings = getattr(ctx.session, "settings", None)
+    return {"profiles": [{"target": c.target, "host": c.destination, "scheduler": c.scheduler,
+                          "openfoam": c.openfoam_version, "partition": c.partition, "account": c.account,
+                          "walltime": c.walltime, "mpi_launcher": c.mpi_launcher}
+                         for c in (getattr(settings, "clusters", None) or [])],
+            "note": "pass target='cluster:<name>' to run_openfoam; profiles are added by the user (Run panel > "
+                    "Clusters…), never by the copilot"}
+
+
 def journal(ctx: ToolContext, p: JournalParams) -> dict:
     proj = getattr(ctx.session, "project", None)
     if proj is None:
@@ -527,6 +549,12 @@ def run_openfoam(ctx: ToolContext, p: RunParams) -> dict:
         return app.endswith("Foam") or app in ("foamRun", "foamMultiRun")
 
     params = {"case": str(ctx.root), "nprocs": p.nprocs}
+    if p.target != "local":
+        params["target"] = p.target
+        if p.walltime:
+            params["walltime"] = p.walltime
+    elif p.nprocs > 64:
+        raise ToolError("more than 64 MPI processes only on a cluster target")
     if p.steps:
         params["steps"] = [{"app": s.app, "args": s.args, "kind": "solver" if solver(s.app) else "utility",
                             "parallel": p.nprocs > 1 and solver(s.app)} for s in p.steps]
@@ -550,7 +578,7 @@ def run_openfoam(ctx: ToolContext, p: RunParams) -> dict:
         return {**out, "note": "run record disappeared"}
     out["run"] = _run_summary(rec)
     out["logs"] = _step_logs(ctx, rec, lines=30)
-    if rec.state in ("running", "paused", "staging", "launching", "stopping", "syncing"):
+    if rec.state in ("pending", "running", "paused", "staging", "launching", "stopping", "syncing"):
         out["note"] = (f"still {rec.state} after {p.timeout_min:g} min; use run_status / solver_progress to follow it, "
                        "or run_control to stop it")
     return out
@@ -622,7 +650,8 @@ class AddStageParams(BaseModel):
         "Stage parameters, e.g. slice {'axis':'z','pos':0.5}; isosurface {'field':'T','value':1500,'color_by':'U'}; "
         "qcriterion {'percentile':97,'color_by':'U','smooth':20,'subdivide':1}; streamlines {'field':'U','seed':"
         "'line','axis':'x','pos':0.05,'n':60}; threshold {'field':'T','lo':1500}; quality {'metric':"
-        "'nonOrthogonality','min':60}; schlieren {'source':'rho','axis':'z'}. smooth/subdivide are presentation-only."))
+        "'nonOrthogonality','min':60}; schlieren {'source':'rho','axis':'z'} (add 'scale':'log','percentile':99,"
+        "'k':4 for jets and plumes whose density spans orders of magnitude). smooth/subdivide are presentation-only."))
     wait_s: float = Field(60.0, ge=0, le=600, description="Wait for the stage to be computed and report its result")
     smoothing: str | None = Field(None, description=SMOOTHING_HELP + " (applies to slices, clips, contours and "
                                                                      "isosurfaces)")
@@ -926,6 +955,8 @@ BASE_TOOLS: list[Tool] = [
     Tool("run_status", "State of a run (or the latest run of this case) with the tail of each step's log.",
          RunStatusParams, run_status),
     Tool("journal", "Recent changes made in AetherCFD (who, what, why).", JournalParams, journal),
+    Tool("cluster_profiles", "HPC cluster profiles the user has set up (run targets 'cluster:<name>' for "
+         "run_openfoam).", NoParams, cluster_profiles),
     Tool("dict_set", "Change one keyword's value in a dictionary with a minimal, comment-preserving edit. "
          "Needs the user's approval.", DictSetParams, dict_set, mutates=True),
     Tool("dict_insert", "Add a keyword to a (sub-)dictionary. Needs the user's approval.", DictInsertParams,
@@ -934,7 +965,8 @@ BASE_TOOLS: list[Tool] = [
          dict_remove, mutates=True),
     Tool("write_file", "Create a file or replace a file's whole content (the user sees the diff and approves). "
          "Prefer dict_set for single values.", WriteFileParams, write_file, mutates=True),
-    Tool("run_openfoam", "Run OpenFOAM applications in the case in WSL with the case's OpenFOAM version (e.g. "
+    Tool("run_openfoam", "Run OpenFOAM applications in the case in WSL with the case's OpenFOAM version, or as a "
+         "Slurm job on a cluster with target='cluster:<name>' (e.g. "
          "blockMesh, checkMesh -allGeometry -allTopology, topoSet, snappyHexMesh -overwrite, rhoSimpleFoam). Needs "
          "approval; re-meshing a case that has results is flagged as destructive. With wait=true returns the outcome "
          "and log tails.", RunParams, run_openfoam, mutates=True),

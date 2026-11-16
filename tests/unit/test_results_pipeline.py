@@ -81,6 +81,72 @@ def test_schlieren_marks_the_shock(internal):
     assert vals[np.abs(x - 0.05) < 0.003].mean() < 0.3 < vals[np.abs(x - 0.05) > 0.03].mean()
 
 
+def _schlieren_x(s):
+    vals = nps.vtk_to_numpy(s.poly.GetCellData().GetArray("schlieren"))
+    cells = vtk.vtkCellCenters()
+    cells.SetInputData(s.poly)
+    cells.Update()
+    return nps.vtk_to_numpy(cells.GetOutput().GetPoints().GetData())[:, 0], vals
+
+
+def test_log_schlieren_shows_waves_at_every_density_level(internal):
+    # density falls 4 orders of magnitude (a plume-like expansion) with two equal jumps in ln(rho):
+    # at x = 0.075 rho is ~3e-4 of its value at x = 0.025, so |grad rho| there is invisible on a linear scale
+    ds = internal[0].NewInstance()
+    ds.DeepCopy(internal[0])
+    cc = vtk.vtkCellCenters()
+    cc.SetInputData(ds)
+    cc.Update()
+    x = nps.vtk_to_numpy(cc.GetOutput().GetPoints().GetData())[:, 0]
+    lnrho = 3.0 - 100.0 * x - 1.5 * (np.tanh((x - 0.025) / 0.002) + 1) - 1.5 * (np.tanh((x - 0.075) / 0.002) + 1)
+    arr = nps.numpy_to_vtk(np.ascontiguousarray(np.exp(lnrho)), deep=True)
+    arr.SetName("rho")
+    ds.GetCellData().AddArray(arr)
+    spec = {"type": "schlieren", "source": "rho", "k": 10, "axis": "z", "pos": 0.5}
+    xl, lin = _schlieren_x(pl.run_stage(spec, [ds], None))
+    log = pl.run_stage({**spec, "scale": "log"}, [ds], None)
+    assert "ln rho" in log.label
+    xg, lg = _schlieren_x(log)
+    first, second, between = (np.abs(xl - 0.025) < 0.006), (np.abs(xl - 0.075) < 0.006), (np.abs(xl - 0.05) < 0.006)
+    assert lin[first].mean() < 0.3 and lin[second].mean() > 0.9  # linear: the low-density wave is lost
+    first, second, between = (np.abs(xg - 0.025) < 0.006), (np.abs(xg - 0.075) < 0.006), (np.abs(xg - 0.05) < 0.006)
+    assert lg[first].mean() < 0.3 and lg[second].mean() < 0.3 < lg[between].mean()
+
+
+def test_schlieren_percentile_reference(internal):
+    spec = {"type": "schlieren", "source": "rho", "k": 10, "axis": "z", "pos": 0.5}
+    by_max = _schlieren_x(pl.run_stage(spec, internal, None))[1]
+    p90 = pl.run_stage({**spec, "percentile": 90}, internal, None)
+    assert any("90th percentile" in n for n in p90.notes)
+    assert _schlieren_x(p90)[1].mean() < by_max.mean()
+
+
+def test_schlieren_zero_percentile_falls_back_to_the_data_maximum(internal):
+    # 398 of 400 cells without gradient: the 99th percentile is 0; the two real waves (0.001, a small absolute
+    # value) must still be dark, which a dimensional fallback reference of 1.0 would not give
+    ds = internal[0].NewInstance()
+    ds.DeepCopy(internal[0])
+    g = np.zeros((ds.GetNumberOfCells(), 3))
+    g[[37, 211], 0] = 1e-3
+    arr = nps.numpy_to_vtk(np.ascontiguousarray(g), deep=True)
+    arr.SetName("grad(rho)")
+    ds.GetCellData().AddArray(arr)
+    s = pl.run_stage({"type": "schlieren", "source": "rho", "k": 4, "percentile": 99, "axis": "z", "pos": 0.5},
+                     [ds], None, smooth=False)
+    assert any("scaled by its maximum" in n for n in s.notes) and not s.interpolated
+    vals = np.sort(nps.vtk_to_numpy(s.poly.GetCellData().GetArray("schlieren")))  # one slice polygon per cell
+    assert len(vals) == 400 and vals[:2] == pytest.approx(np.exp(-4.0)) and vals[2] == 1.0
+
+
+def test_schlieren_follows_smooth_or_cells(internal):
+    spec = {"type": "schlieren", "source": "rho", "k": 10, "axis": "z", "pos": 0.5}
+    cells = pl.run_stage(spec, internal, None, smooth=False)
+    smooth = pl.run_stage(spec, internal, None, smooth=True)
+    assert cells.association == "cell" and smooth.association == "point" and smooth.interpolated
+    pts = nps.vtk_to_numpy(smooth.poly.GetPointData().GetArray("schlieren"))
+    assert pts.min() >= 0.0 and pts.max() <= 1.0 and len(pts) == smooth.poly.GetNumberOfPoints()
+
+
 def test_quality_stage_attaches_metrics(internal):
     q = pl.run_stage({"type": "quality", "metric": "aspectRatio"}, internal, None,
                      mesh_dirs=[CASE / "constant" / "polyMesh"])

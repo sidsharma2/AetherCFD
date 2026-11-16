@@ -86,9 +86,13 @@ class MeasurementsPanel(Panel):
         self.plot.setLabel("bottom", "measured")
         self.plot.setLabel("left", "simulated")
         lay.addWidget(self.plot, 1)
-        self.sv.case_changed.connect(lambda _s: self._on_case())
+        self.sv.case_changed.connect(self._case_changed_slot)
         self.region.reload(self.sv.session.root if self.sv.session else None)
         self._times()
+
+    def _case_changed_slot(self, s=None) -> None:
+        """services.case_changed -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        self._on_case()
 
     def _on_case(self) -> None:
         # an assimilated field belongs to the mesh it was computed on: never write it into another case

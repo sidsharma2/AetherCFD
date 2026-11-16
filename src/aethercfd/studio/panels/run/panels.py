@@ -8,10 +8,12 @@ run's solver log, or the newest log of an opened case), so finished cases plot i
 from __future__ import annotations
 
 import json
+import logging
 import math
 import subprocess
 import tempfile
 import time
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +30,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QMessageBox,
     QPlainTextEdit,
@@ -48,9 +51,12 @@ from aethercfd.studio.theme.style import icon, mono_font, plot_defaults
 from aethercfd.studio.theme.tokens import T
 
 plot_defaults()
-_STATE_TOKEN = {"running": "ok", "paused": "warn", "stopping": "warn", "staging": "info", "launching": "info",
+_STATE_TOKEN = {"running": "ok", "pending": "info", "paused": "warn", "stopping": "warn", "staging": "info", "launching": "info",
                 "syncing": "info", "finished": "text_dim", "failed": "error", "killed": "warn", "lost": "error",
                 "guard_stopped": "error", "queued": "text_dim"}
+
+
+log = logging.getLogger(__name__)
 
 
 def _state_color(state: str) -> str:
@@ -87,7 +93,9 @@ class PlanDialog(QDialog):
             lines.append(f"{'ok     ' if c.ok else 'BLOCKED'}  {c.message}")
         if plan.shell_steps:
             lines.append("")
-            lines.append("Commands (run inside WSL with the case's OpenFOAM version):")
+            where = ("in the cluster job" if plan.params.get("_resolved", {}).get("placement") == "cluster"
+                     else "inside WSL")
+            lines.append(f"Commands (run {where} with the case's OpenFOAM version):")
             for s in plan.shell_steps:
                 lines.append(f"  $ {' '.join(s.argv)}" + (f"   > {s.log_name}" if s.log_name else ""))
         if plan.consequences:
@@ -133,16 +141,29 @@ class RunPanel(Panel):
             self.placement.addItem(label, key)
         self.signals = QCheckBox("Enable write-now / stop-and-write controls")
         self.signals.setChecked(True)
+        # where it runs: this PC (WSL) or a cluster profile (ADR 0007)
+        self.target = QComboBox(toolTip="This PC (WSL), or a Slurm job on a cluster profile")
+        self.clusters_btn = QPushButton("Clusters…", toolTip="Add, test or sign in to cluster profiles")
+        self.clusters_btn.clicked.connect(self._edit_clusters)
+        trow = QHBoxLayout()
+        trow.addWidget(self.target, 1)
+        trow.addWidget(self.clusters_btn)
+        self.walltime = QLineEdit(toolTip="Job time limit (HH:MM:SS or D-HH:MM:SS); empty: the profile's default")
+        self.target.currentIndexChanged.connect(lambda *_: self._on_target())
         form.addRow("Run", self.preset)
         self.preset_hint = QLabel()
         self.preset_hint.setWordWrap(True)
         self.preset_hint.setStyleSheet(f"color: {T.text_faint};")
         form.addRow("", self.preset_hint)
         self.preset.currentIndexChanged.connect(lambda *_: self._show_preset_hint())
+        form.addRow("Where", trow)
         form.addRow("MPI processes", self.nprocs)
         form.addRow("Placement", self.placement)
+        form.addRow("Walltime", self.walltime)
         form.addRow("", self.signals)
         lay.addLayout(form)
+        self._form = form
+        self._fill_targets()
         self.start_btn = QPushButton(icon("msc.play", T.ok), "Start…")
         self.start_btn.clicked.connect(self.start)
         lay.addWidget(self.start_btn)
@@ -213,7 +234,7 @@ class RunPanel(Panel):
     def _refresh(self) -> None:
         s = self._session()
         ready = s is not None and s.runner is not None and bool(s.forks)
-        self.start_btn.setEnabled(ready)
+        self.start_btn.setEnabled(ready and not getattr(self, "_starting", False))
         self.start_btn.setToolTip("" if ready else "Open a case; the OpenFOAM backend starts in the background")
         self._read_end_time()
         self._fill_history()
@@ -221,7 +242,37 @@ class RunPanel(Panel):
         self._show_preset_hint()
 
     def _on_session(self, _s=None) -> None:
+        self._fill_targets()
         self._refresh()
+
+    # ------------------------------------------------------------------ targets (local WSL / clusters)
+    def _fill_targets(self) -> None:
+        keep = self.target.currentData()
+        self.target.blockSignals(True)
+        self.target.clear()
+        self.target.addItem("This PC (WSL)", "local")
+        for c in self.ctx.services.settings.clusters:
+            self.target.addItem(f"Cluster: {c.name} ({c.destination})", c.target)
+        i = self.target.findData(keep) if keep else 0
+        self.target.setCurrentIndex(max(0, i))
+        self.target.blockSignals(False)
+        self._on_target()
+
+    def _on_target(self) -> None:
+        target = self.target.currentData() or "local"
+        cluster = target != "local"
+        self._form.setRowVisible(self.placement, not cluster)  # a cluster run always uploads to its work dir
+        self._form.setRowVisible(self.walltime, cluster)
+        self.nprocs.setMaximum(4096 if cluster else 64)
+        if cluster:
+            prof = next((c for c in self.ctx.services.settings.clusters if c.target == target), None)
+            self.walltime.setPlaceholderText(prof.walltime if prof else "")
+
+    def _edit_clusters(self) -> None:
+        from aethercfd.studio.dialogs.clusters import ClusterProfilesDialog
+
+        if ClusterProfilesDialog(self.ctx.services, self).exec() == QDialog.DialogCode.Accepted:
+            self._fill_targets()
 
     def _on_files(self, _paths) -> None:
         # a run (or the user) meshed the case: what Start will do next may have changed
@@ -271,25 +322,30 @@ class RunPanel(Panel):
                 if col == 1:
                     it.setForeground(QColor(_state_color(r.state)))
                 self.history.setItem(row, col, it)
-            if self.run_id is None and r.state in ("running", "paused", "staging", "stopping", "syncing"):
+            if self.run_id is None and r.state in ("pending", "running", "paused", "staging", "stopping", "syncing"):
                 self.run_id = r.id
 
     def _update_buttons(self) -> None:
         s = self._session()
         rec = s.runs.get(self.run_id) if (s and s.runs and self.run_id) else None
-        active = rec is not None and rec.state in ("running", "paused", "stopping")
+        active = rec is not None and rec.state in ("pending", "running", "paused", "stopping")
         for _k, b in self.btns.items():
             b.setEnabled(active)
         if rec is not None:
-            self.btns["pause"].setVisible(rec.state != "paused")
-            self.btns["resume"].setVisible(rec.state == "paused")
-            sig = rec.signals_enabled
+            cluster = rec.is_cluster
+            self.btns["pause"].setVisible(rec.state != "paused" and not cluster)  # no suspend on clusters
+            self.btns["resume"].setVisible(rec.state == "paused" and not cluster)
+            sig = rec.signals_enabled and rec.state != "pending"  # a queued job has nothing to write yet
             self.btns["write_now"].setEnabled(active and sig)
             self.btns["stop_write"].setEnabled(active and sig)
             col = _state_color(rec.state)
             extra = f"  ·  {rec.stop_reason}" if rec.stop_reason else ""
+            where = rec.placement
+            if cluster:
+                where = f"{rec.target.split(':', 1)[1]} · job {rec.job_id or '…'}" + (
+                    f" · {rec.scheduler_state}" if rec.scheduler_state else "")
             self.state.setText(f"<span style='color:{col}'>● {rec.state}</span>  "
-                               f"<span style='color:{T.text_dim}'>{rec.placement}{extra}</span>")
+                               f"<span style='color:{T.text_dim}'>{where}{extra}</span>")
         else:
             self.btns["resume"].setVisible(False)
 
@@ -301,6 +357,11 @@ class RunPanel(Panel):
             return
         params = {"case": str(s.root), "preset": self.preset.currentData(), "nprocs": self.nprocs.value(),
                   "placement": self.placement.currentData(), "enable_signals": self.signals.isChecked()}
+        target = self.target.currentData() or "local"
+        if target != "local":
+            params["target"] = target
+            if self.walltime.text().strip():
+                params["walltime"] = self.walltime.text().strip()
         try:
             plan = s.executor.plan("run.start", params, USER)
         except Exception as exc:
@@ -309,14 +370,29 @@ class RunPanel(Panel):
         dlg = PlanDialog(plan, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        res = s.executor.execute("run.start", params, USER, plan=plan, approved_hash=plan.plan_hash)
-        if not res.ok:
-            QMessageBox.warning(self, "Run did not start", res.message)
+        # a staged run copies the case to the Linux disk and the launch goes through wsl.exe: seconds to
+        # minutes for a big case, so never on the GUI thread
+        self._starting = True
+        self.start_btn.setEnabled(False)
+        self.start_btn.setText("Starting…")
+
+        def work():
+            return s.executor.execute("run.start", params, USER, plan=plan, approved_hash=plan.plan_hash)
+
+        sv.run_bg(work, self._started)
+
+    def _started(self, result) -> None:
+        res, err = result
+        self._starting = False
+        self.start_btn.setText("Start…")
+        if err is not None or not res.ok:
+            self._refresh()
+            QMessageBox.warning(self, "Run did not start", str(err) if err is not None else res.message)
             return
         self.run_id = res.data
         self._t0 = time.monotonic()
         self.guards.clear()
-        sv.notify(res.message)
+        self.ctx.services.notify(res.message)
         self._refresh()
 
     def control(self, action: str) -> None:
@@ -327,9 +403,30 @@ class RunPanel(Panel):
                 self, "Kill run", "Kill the run now? Progress since the last written time is lost.") \
                 != QMessageBox.StandardButton.Yes:
             return
-        plan = s.executor.plan("run.control", {"run_id": self.run_id, "action": action}, USER)
-        res = s.executor.execute("run.control", {}, USER, plan=plan, approved_hash=plan.plan_hash)
-        if not res.ok:
+        try:
+            plan = s.executor.plan("run.control", {"run_id": self.run_id, "action": action}, USER)
+        except Exception as exc:
+            log.exception("planning %s failed", action)
+            self.ctx.services.notify(f"{action}: {exc}", "warn")
+            return
+        if plan.blocked:
+            self.ctx.services.notify(f"{action}: {'; '.join(c.message for c in plan.blocked)}", "warn")
+            return
+        for b in self.btns.values():  # one control at a time; the reply re-enables them
+            b.setEnabled(False)
+
+        def work():
+            # a control script goes through wsl.exe, a cluster's through ssh (up to its connect timeout):
+            # never on the GUI thread
+            return s.executor.execute("run.control", {}, USER, plan=plan, approved_hash=plan.plan_hash)
+
+        self.ctx.services.run_bg(work, partial(self._control_done, action))
+
+    def _control_done(self, action: str, result) -> None:
+        res, err = result
+        if err is not None:
+            self.ctx.services.notify(f"{action}: {err}", "warn")
+        elif not res.ok:
             self.ctx.services.notify(f"{action}: {res.message}", "warn")
         self._update_buttons()
 
@@ -498,18 +595,46 @@ class ResidualsPanel(Panel):
                 "x_label": "Time" if self.xmode.currentIndex() == 1 else "Iteration",
                 "title": None, "decimate": 4000}
         (tmp / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
-        r = subprocess.run(module_argv("aethercfd.studio.export_plot", str(tmp / "spec.json")),
-                           capture_output=True, text=True, timeout=120, creationflags=0x08000000)
-        if r.returncode == 0:
+        self.ctx.services.notify(f"Exporting the residual plot to {out}.pdf …")
+        # matplotlib in a subprocess takes seconds (a first font scan longer): never on the GUI thread
+        self.ctx.services.run_bg(partial(_export_residuals, tmp), partial(self._export_done, out))
+
+    def _export_done(self, out: str, result) -> None:
+        err, error = result
+        if error is not None:
+            err = str(error)
+        if err is None:
             self.ctx.services.notify(f"Exported {out}.pdf and .png")
         else:
-            QMessageBox.warning(self, "Export failed", r.stderr[-2000:])
+            last = err.strip().splitlines()[-1] if err.strip() else err
+            self.ctx.services.notify(f"Residual plot export failed: {last}", "error")
+            QMessageBox.warning(self, "Export failed", err[-2000:])
 
     def save_state(self) -> dict:
         return {"x": self.xmode.currentIndex()}
 
     def restore_state(self, state: dict) -> None:
         self.xmode.setCurrentIndex(int(state.get("x", 0)))
+
+
+
+def _export_residuals(tmp: Path) -> str | None:
+    """Draw the exported residual plot in a subprocess (worker thread); None on success, else the error text.
+    The temporary spec folder is removed either way."""
+    import shutil
+
+    try:
+        r = subprocess.run(module_argv("aethercfd.studio.export_plot", str(tmp / "spec.json")),
+                           capture_output=True, text=True, timeout=120, creationflags=0x08000000)
+        if r.returncode == 0:
+            return None
+        return (r.stderr or r.stdout or f"exit code {r.returncode}").strip()
+    except subprocess.TimeoutExpired:
+        return "matplotlib did not finish within 120 s"
+    except OSError as exc:
+        return f"could not start Python for the export: {exc}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ============================================================================ Solver log

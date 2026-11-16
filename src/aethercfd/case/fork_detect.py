@@ -28,16 +28,27 @@ class ForkGuess:
     evidence: list[str] = field(default_factory=list)
 
     def pick(self, available: list[ForkProfile]) -> ForkProfile | None:
-        """Best installed fork for this guess: same family, exact version if possible, else newest."""
-        same = [f for f in available if f.family is self.family]
+        """Best installed fork for this guess: same family, exact version if possible, else the closest
+        version, preferring one not newer than the case's (a v2412 case stays on v2306 when v2306 and
+        v2606 are both installed). Without a version hint, the oldest installed: installing a newer
+        version must not silently move existing cases onto it (choose it per case instead)."""
+        same = sorted((f for f in available if f.family is self.family), key=lambda f: version_key(f.version))
         if not same:
             return None
         if self.version_hint:
-            hint = self.version_hint.lstrip("v")
+            hint = version_key(self.version_hint)
             for f in same:
-                if f.version.lstrip("v") == hint:
+                if version_key(f.version) == hint:
                     return f
-        return sorted(same, key=lambda f: f.version)[-1]
+            older = [f for f in same if version_key(f.version) < hint]
+            return older[-1] if older else same[0]
+        return same[0]
+
+
+def version_key(version: str) -> tuple[int, str]:
+    """Sort key for 'v2306', '2606', '14', '9', 'dev' (dev sorts last; '14' after '9')."""
+    v = version.strip().lstrip("v")
+    return (int(v), "") if v.isdigit() else (1 << 30, v)
 
 
 def _head(p: Path, n: int = 2048) -> str:

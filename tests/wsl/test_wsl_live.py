@@ -9,6 +9,7 @@ import pytest
 
 from aethercfd.backend.wsl.forks import EXIT_ALREADY_SOURCED, Family, prelude, probe_forks
 from aethercfd.backend.wsl.runner import WslRunner
+from tests.wsl._forks import by_family, expected_version
 
 pytestmark = [pytest.mark.wsl, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL")]
 DISTRO = "LMAE-OpenFOAM"
@@ -21,12 +22,12 @@ def runner():
 
 @pytest.fixture(scope="module")
 def forks(runner):
-    return {f.family: f for f in probe_forks(runner)}
+    return by_family(probe_forks(runner))
 
 
 def test_both_forks_are_found(forks):
-    assert forks[Family.ESI].version == "v2306"
-    assert forks[Family.FOUNDATION].version == "14"
+    assert forks[Family.ESI].version == expected_version(Family.ESI)
+    assert forks[Family.FOUNDATION].version == expected_version(Family.FOUNDATION)
 
 
 def test_each_prelude_loads_its_fork(runner, forks):

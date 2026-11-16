@@ -12,6 +12,7 @@ from aethercfd.backend.wsl.forks import Family, probe_forks
 from aethercfd.backend.wsl.runner import WslRunner
 from aethercfd.commands.base import USER
 from aethercfd.scripting.api import Session
+from tests.wsl._forks import by_family
 
 pytestmark = [pytest.mark.wsl_slow, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL")]
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "cases" / "esi_cavity"
@@ -27,7 +28,7 @@ def test_pope_builds_with_wmake():
     runner = WslRunner("LMAE-OpenFOAM")
     s = Session(case, create_project=True, with_backend=False)
     s.context.backend = runner
-    s.context.forks = [f for f in probe_forks(runner) if f.family is Family.ESI]
+    s.context.forks = [by_family(probe_forks(runner))[Family.ESI]]
     dest = case / "aether-code" / "kEpsilonPopeT"
     assert s.executor.execute("code.create", {"template": "kEpsilonPope", "name": "kEpsilonPopeT",
                                               "dest": str(dest)}, USER).ok

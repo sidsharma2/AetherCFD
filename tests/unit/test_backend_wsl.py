@@ -81,3 +81,22 @@ def test_family_and_roundtrip():
     assert family_of_version("dev") is Family.FOUNDATION
     assert ForkProfile.from_json(ESI.to_json()) == ESI
     assert ESI.short_tag == "v2306"
+
+
+def test_a_truncated_fork_cache_is_probed_again(tmp_path, monkeypatch):
+    """The cache was written non-atomically: a crash mid-write left half a JSON list, and every later start said
+    'OpenFOAM backend unavailable: Expecting value' without ever probing again."""
+    from aethercfd.backend.wsl.forks import Family, ForkProfile
+    from aethercfd.scripting import api
+
+    monkeypatch.setenv("AETHERCFD_CACHE_DIR", str(tmp_path))
+    (tmp_path / "forks").mkdir()
+    (tmp_path / "forks" / "LMAE.json").write_text('[{"id": "esi-v2306", "fam', encoding="utf-8")
+    probed = ForkProfile("esi-v2306", Family.ESI, "v2306", "LMAE", "/a/etc/bashrc", "/a", True)
+    monkeypatch.setattr(api, "probe_forks", lambda runner: [probed])
+
+    class R:
+        distro = "LMAE"
+
+    assert api.load_forks(R()) == [probed]
+    assert [f.id for f in api.load_forks(R())] == ["esi-v2306"]  # the rewritten cache reads back

@@ -679,14 +679,24 @@ def stage_glyphs(spec, internal, field_name, comp) -> StageOutput:
     return StageOutput(poly, name, "point", _range(poly, name, "point"), label=f"glyphs {vec}")
 
 
-def stage_schlieren(spec, internal, field_name, comp) -> StageOutput:
-    """Numerical schlieren S = exp(-k |grad rho| / max |grad rho|) on a slice. Exact when the case has
-    OpenFOAM's own grad(rho) field (postProcess -func 'grad(rho)'); otherwise VTK's cell gradient
-    (labelled interpolated)."""
+def stage_schlieren(spec, internal, field_name, comp, *, smooth: bool = False) -> StageOutput:
+    """Numerical schlieren S = exp(-k G / G_ref) on a slice, with G = |grad rho| ("linear") or
+    |grad rho| / rho = |grad ln rho| ("log") and G_ref the maximum of G or, with ``percentile``, that
+    percentile of G over the loaded cells. Exact when the case has OpenFOAM's own grad(rho) field
+    (postProcess -func 'grad(rho)'); otherwise VTK's cell gradient (labelled interpolated).
+
+    "log" is for flows whose density spans orders of magnitude (a rocket plume: ~20 kg/m3 in the chamber,
+    ~0.01 in the expansion fans): scaled by the maximum, |grad rho| leaves every wave outside the throat
+    pale, while |grad ln rho| shows weak and strong waves at every density level. A percentile reference
+    (e.g. 99) keeps one extreme cell from washing out the rest. With ``smooth`` (the viewer's Smooth
+    choice) S is averaged from the cells to the mesh points, so it is drawn without cell edges; a wave
+    then spreads over about one cell."""
     src = spec.get("source", "rho")
     k = float(spec.get("k", 12.0))
+    log = str(spec.get("scale", "linear")).lower() == "log"
+    pct = spec.get("percentile")
     exact_name = f"grad({src})"
-    sl_polys, interpolated = [], False
+    sl_polys, interpolated, notes = [], False, []
     for ds in internal:
         cd = ds.GetCellData()
         if cd.GetArray(exact_name) is not None:
@@ -702,6 +712,11 @@ def stage_schlieren(spec, internal, field_name, comp) -> StageOutput:
         else:
             continue
         mag = np.linalg.norm(g, axis=1)
+        if log:
+            if cd.GetArray(src) is None:
+                notes.append(f"log scale needs {src} itself, not only {exact_name}")
+                continue
+            mag = mag / np.maximum(np.abs(nps.vtk_to_numpy(cd.GetArray(src)).astype(np.float64)), 1e-30)
         work = ds.NewInstance()
         work.ShallowCopy(ds)
         arr = nps.numpy_to_vtk(np.ascontiguousarray(mag, dtype=np.float64), deep=True)
@@ -709,17 +724,38 @@ def stage_schlieren(spec, internal, field_name, comp) -> StageOutput:
         work.GetCellData().AddArray(arr)
         sl_polys.append(work)
     if not sl_polys:
-        return StageOutput(vtk.vtkPolyData(), notes=[f"neither {exact_name} nor {src} is loaded"], label="schlieren")
-    gmax = max(float(np.nanmax(nps.vtk_to_numpy(w.GetCellData().GetArray("gradMag"))) or 1.0) for w in sl_polys)
+        return StageOutput(vtk.vtkPolyData(), notes=notes or [f"neither {exact_name} nor {src} is loaded"],
+                           label="schlieren")
+    allg = np.concatenate([nps.vtk_to_numpy(w.GetCellData().GetArray("gradMag")) for w in sl_polys])
+    pos = allg[np.isfinite(allg) & (allg > 0)]
+    g_max = float(pos.max()) if pos.size else 0.0
+    what_g = f"{'|grad ln ' if log else '|grad '}{src}|"
+    if pct is not None:
+        pct = min(max(float(pct), 0.0), 100.0)
+        g_ref = float(np.nanpercentile(allg, pct))
+        if np.isfinite(g_ref) and g_ref > 0:
+            notes.append(f"scaled by the {pct:g}th percentile of {what_g} ({g_ref:.3g}); cells above it are black")
+        elif g_max > 0:  # most cells have no gradient: the percentile is 0, so use the data's own maximum
+            g_ref = g_max
+            notes.append(f"the {pct:g}th percentile of {what_g} is 0 (most cells have no gradient); "
+                         f"scaled by its maximum ({g_ref:.3g}) instead")
+    else:
+        g_ref = g_max
+    g_ref = g_ref if np.isfinite(g_ref) and g_ref > 0 else 1.0  # no gradient anywhere: S = 1 for any reference
     for w in sl_polys:
         m = nps.vtk_to_numpy(w.GetCellData().GetArray("gradMag"))
-        s = nps.numpy_to_vtk(np.ascontiguousarray(np.exp(-k * m / (gmax or 1.0)), dtype=np.float64), deep=True)
+        s = nps.numpy_to_vtk(np.ascontiguousarray(np.exp(-k * m / g_ref), dtype=np.float64), deep=True)
         s.SetName("schlieren")
         w.GetCellData().AddArray(s)
     poly = stage_slice(spec, sl_polys, None, "magnitude").poly if spec.get("axis") else _append(
         [to_poly(w) for w in sl_polys])
-    return StageOutput(poly, "schlieren", "cell", (0.0, 1.0), cmap="gray", interpolated=interpolated,
-                       label=f"schlieren ({'exact grad' if not interpolated else 'VTK gradient'} of {src})")
+    what = f"ln {src}" if log else src
+    assoc = "cell"
+    if smooth and poly.GetNumberOfCells():
+        poly, assoc = cell_to_point(poly), "point"
+    return StageOutput(poly, "schlieren", assoc, (0.0, 1.0), cmap="gray", interpolated=interpolated or smooth,
+                       label=f"schlieren ({'exact grad' if not interpolated else 'VTK gradient'} of {what})",
+                       notes=notes)
 
 
 _QUALITY_CACHE: dict[tuple[str, float], dict[str, np.ndarray]] = {}
@@ -989,7 +1025,8 @@ STAGES = {"slice": stage_slice, "clip": stage_clip, "threshold": stage_threshold
 def run_stage(spec: dict, internal: list, field_name: str | None, comp: str = "magnitude", *,
               mesh_dirs: list[Path] | None = None, decomposed: bool = False, smooth: bool = True,
               patches: dict | None = None) -> StageOutput:
-    """One stage. ``smooth`` is the viewer's Smooth / Cells choice (slices, clips, contours, isosurfaces);
+    """One stage. ``smooth`` is the viewer's Smooth / Cells choice (slices, clips, contours, isosurfaces,
+    schlieren);
     ``patches`` the patch surfaces read for it (inlet seeds, a plane through a patch)."""
     t = spec.get("type")
     if t == "quality":
@@ -1006,6 +1043,8 @@ def run_stage(spec: dict, internal: list, field_name: str | None, comp: str = "m
         return stage_contour(spec, internal, field_name, comp, smooth=smooth)
     if t == "streamlines":
         return stage_streamlines(spec, internal, field_name, comp, patches=patches)
+    if t == "schlieren":
+        return stage_schlieren(spec, internal, field_name, comp, smooth=smooth)
     fn = STAGES.get(t)
     if fn is None:
         return StageOutput(vtk.vtkPolyData(), notes=[f"unknown stage {t!r}"])

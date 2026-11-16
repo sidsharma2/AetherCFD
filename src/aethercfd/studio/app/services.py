@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
+from aethercfd.case.discovery import case_folder_problem
 from aethercfd.core.events import BUS
 from aethercfd.core.settings import Settings
 from aethercfd.studio.bridge.qt_bridge import CoreEventBridge
@@ -117,6 +118,21 @@ class AppServices(QObject):
         self.files_changed.emit(paths)
 
     # ------------------------------------------------------------------ notifications
+    def shutdown(self) -> None:
+        """App close: stop the case-folder watcher (its thread and debounce timer would otherwise emit into a
+        services object that is being destroyed)."""
+        if self._watcher is not None:
+            try:
+                self._watcher.stop()
+            except Exception:
+                log.exception("stopping the case watcher failed")
+            self._watcher = None
+
+    def report_startup_problems(self) -> None:
+        """Once the window listens: what went wrong before it existed (a settings.toml that could not be used)."""
+        if self.settings.load_problem:
+            self.notify(self.settings.load_problem, "error")
+
     def notify(self, message: str, level: str = "info") -> None:
         log.info("notify[%s]: %s", level, message)
         self.notification.emit(message, level)
@@ -144,6 +160,10 @@ class AppServices(QObject):
     def open_case(self, path: str | Path, *, create_project: bool = False) -> None:
         from aethercfd.scripting.api import Session
 
+        problem = case_folder_problem(path)
+        if problem is not None:  # a moved Recent entry, a file, a parent folder: say so, open nothing
+            self.notify(problem, "error")
+            return
         try:
             s = Session(path, create_project=create_project, with_backend=False)
         except Exception as exc:
@@ -184,12 +204,19 @@ class AppServices(QObject):
             s.runner, s.forks, s.runs = value
             s.context.backend, s.context.forks, s.context.run_manager = s.runner, s.forks, s.runs
             if s.runs is not None:
-                resumed = s.runs.reattach()
-                if resumed:
-                    self.notify(f"Re-attached to {len(resumed)} running job(s)")
+                # probes every active run: a WSL call each, an SSH call (up to its connect timeout) for a
+                # cluster run: never on the GUI thread
+                self.run_bg(s.runs.reattach, self._reattached)
             self.backend_ready.emit(s)
 
         self.run_bg(init_backend, done)
+
+    def _reattached(self, res) -> None:
+        resumed, err = res
+        if err is not None:
+            self.notify(f"Could not check the runs started before: {err}", "warn")
+        elif resumed:
+            self.notify(f"Re-attached to {len(resumed)} running job(s)")
 
     def ensure_project(self) -> bool:
         """Edits/runs need a project (journal). Create the sidecar on first need."""

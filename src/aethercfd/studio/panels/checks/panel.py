@@ -62,10 +62,14 @@ class ChecksPanel(Panel):
         self.list.currentRowChanged.connect(self._show)
         self.btn_fix.clicked.connect(self._fix)
         self._timer = QTimer(self, singleShot=True, interval=1500, timeout=self.run)
-        self.sv.case_changed.connect(lambda _s: self._timer.start())
+        self.sv.case_changed.connect(self._case_changed_slot)
         self.sv.files_changed.connect(self._on_files)
         if self.sv.session is not None:
             self._timer.start()
+
+    def _case_changed_slot(self, s=None) -> None:
+        """services.case_changed -> here; a bound slot, so it is disconnected when the panel is deleted."""
+        self._timer.start()
 
     def _on_files(self, paths: list) -> None:
         s = self.sv.session

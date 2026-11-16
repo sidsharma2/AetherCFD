@@ -13,13 +13,14 @@ import logging
 import threading
 import time
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from aethercfd.backend.wsl.forks import ForkProfile
-from aethercfd.backend.wsl.runner import WslRunner
+from aethercfd.backend.wsl.runner import ScriptResult, WslRunner
 from aethercfd.case.model import Case
 from aethercfd.core.events import BUS, EventBus
 from aethercfd.core.paths import win_to_wsl, wsl_to_win
@@ -34,11 +35,15 @@ from aethercfd.runs.placement import Stage, resolve_placement, slug
 from aethercfd.runs.scripts import control_sh, guard_sh, launch_sh, runner_sh
 from aethercfd.runs.spec import RunSpec, RunStep, StepKind
 
+if TYPE_CHECKING:
+    from aethercfd.runs.cluster.target import ClusterTarget
+
 log = logging.getLogger(__name__)
 
 
 class RunState(StrEnum):
     QUEUED = "queued"
+    PENDING = "pending"  # submitted to a cluster scheduler, waiting in its queue (ADR 0007)
     STAGING = "staging"
     LAUNCHING = "launching"
     RUNNING = "running"
@@ -53,7 +58,7 @@ class RunState(StrEnum):
 
     @property
     def active(self) -> bool:
-        return self in (RunState.STAGING, RunState.LAUNCHING, RunState.RUNNING, RunState.PAUSED,
+        return self in (RunState.STAGING, RunState.LAUNCHING, RunState.PENDING, RunState.RUNNING, RunState.PAUSED,
                         RunState.STOPPING, RunState.SYNCING)
 
 
@@ -81,6 +86,14 @@ class RunRecord:
     stop_reason: str | None = None
     finished_at: str | None = None
     last_synced_at: str | None = None
+    target: str = "local"  # "local" (WSL) | "cluster:<profile>" (ADR 0007)
+    job_id: str | None = None  # cluster runs: the scheduler's job id
+    scheduler_state: str | None = None  # cluster runs: the scheduler's last word (PENDING, RUNNING, TIMEOUT, ...)
+    remote: dict | None = None  # cluster runs: profile snapshot, resources, remote case/run dirs
+
+    @property
+    def is_cluster(self) -> bool:
+        return self.target.startswith("cluster:")
 
     @property
     def fork_profile(self) -> ForkProfile:
@@ -95,7 +108,9 @@ class RunRecord:
 
     @classmethod
     def load(cls, run_dir: Path) -> RunRecord:
-        return cls(**json.loads((run_dir / "run.json").read_text(encoding="utf-8")))
+        data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})  # a newer app version may add fields
 
 
 @dataclass
@@ -115,6 +130,7 @@ class _Monitor:
     last_alive_check: float = 0.0
     dead_replies: int = 0  # definite DEAD replies in a row (an unknown reply neither counts nor resets)
     sim_time: float | None = None
+    last_pull: float = float("-inf")  # cluster runs: when the remote run files and logs were last mirrored
 
 
 class RunManager:
@@ -123,6 +139,7 @@ class RunManager:
     ALIVE_EVERY_S = 30.0
     DEAD_RECHECK_S = 5.0  # after one DEAD, confirm this soon instead of waiting ALIVE_EVERY_S
     DEAD_REPLIES_FOR_LOST = 2
+    REVIVE_CLUSTER_DAYS = 14  # reattach asks the scheduler about cluster runs marked lost this recently
 
     def __init__(self, project: Project, runner: WslRunner, *, settings: Settings | None = None,
                  bus: EventBus | None = None):
@@ -152,8 +169,20 @@ class RunManager:
             self._home = res.stdout.strip() or "/root"
         return self._home
 
+    @property
+    def cluster(self) -> ClusterTarget:
+        """Cluster runs (ADR 0007); created on first use."""
+        t = getattr(self, "_cluster", None)
+        if t is None:
+            from aethercfd.runs.cluster.target import ClusterTarget
+
+            t = self._cluster = ClusterTarget(self)
+        return t
+
     def exec_case_win(self, rec: RunRecord) -> Path:
-        """Where to read live results/logs from Windows (UNC for staged runs)."""
+        """Where to read live results/logs from Windows (UNC for staged runs, the local mirror for cluster runs)."""
+        if _is_cluster(rec):
+            return self.cluster.exec_case_win(rec)
         if rec.staged:
             return Path(wsl_to_win(rec.exec_case_wsl, distro=self.runner.distro))
         return Path(rec.case_root)
@@ -161,7 +190,11 @@ class RunManager:
     # ------------------------------------------------------------------ prepare
     def prepare(self, case: Case, fork: ForkProfile, steps: Sequence[RunStep], *,
                 placement: Placement = Placement.AUTO, nprocs: int = 1, enable_signals: bool = True,
-                heavy_io: bool = False) -> tuple[RunRecord, RunSpec]:
+                heavy_io: bool = False, target: str = "local",
+                resources: dict | None = None) -> tuple[RunRecord, RunSpec | None]:
+        if target != "local":  # "cluster:<profile>": the batch script is written at launch (needs the cluster)
+            return self.cluster.prepare(case, fork, steps, target=target, nprocs=nprocs,
+                                        enable_signals=enable_signals, resources=resources or {})
         place, reason = resolve_placement(case, placement, heavy_io=heavy_io)
         run_id = new_id()
         run_dir = self.project.runs_dir / run_id
@@ -193,7 +226,10 @@ class RunManager:
         return rec, spec
 
     # ------------------------------------------------------------------ launch
-    def launch(self, rec: RunRecord, spec: RunSpec, *, start_time: str | None = None) -> RunRecord:
+    def launch(self, rec: RunRecord, spec: RunSpec | None, *, start_time: str | None = None) -> RunRecord:
+        if _is_cluster(rec):
+            return self.cluster.launch(rec, start_time=start_time)
+        assert spec is not None
         if rec.staged:
             self._set_state(rec, RunState.STAGING)
             st = Stage(src_wsl=win_to_wsl(rec.case_root), stage_wsl=rec.exec_case_wsl)
@@ -215,15 +251,24 @@ class RunManager:
     # ------------------------------------------------------------------ controls
     def control(self, run_id: str, action: str) -> tuple[bool, str]:
         rec = self.get(run_id)
+        if rec is not None and _is_cluster(rec):
+            return self.cluster.control(rec, action)
         if rec is None or rec.pgid is None:
             return False, "unknown or not launched run"
         if action in ("write_now", "stop_write") and not rec.signals_enabled:
             return False, ("this run was started without write-now signals; sending them would kill the solver. "
                            "Use 'stop' (temporary stopAt writeNow) instead")
+        before = (rec.state, rec.stop_reason)
         if action in ("stop_write", "terminate", "kill"):
             # before acting: the monitor may finish the run while the control script is still waiting
             self._set_state(rec, RunState.STOPPING, stop_reason=f"user: {action}")
-        res = self.runner.run_script(control_sh(action, rec.run_dir_wsl, rec.pgid), timeout_s=60)
+        try:
+            res = self.runner.run_script(control_sh(action, rec.run_dir_wsl, rec.pgid), timeout_s=60)
+        except Exception as exc:  # wsl.exe missing or stuck: nothing reached the run
+            log.exception("%s of run %s failed", action, rec.id)
+            if rec.state == RunState.STOPPING.value and (rec.state, rec.stop_reason) != before:
+                self._set_state(rec, RunState(before[0]), stop_reason=before[1])
+            return False, f"could not reach WSL to {action.replace('_', ' ')} the run: {exc}"
         if action == "pause" and res.ok:
             self._set_state(rec, RunState.PAUSED)
         elif action == "resume" and res.ok:
@@ -232,7 +277,11 @@ class RunManager:
 
     def is_alive(self, rec: RunRecord) -> bool | None:
         """True if the run's own process group is alive, False on a definite answer that it is not (DEAD, or the
-        pgid now belongs to another process), None when the reply says nothing."""
+        pgid now belongs to another process), None when the reply says nothing.
+
+        Cluster runs ask the scheduler instead (same three answers; an unreachable cluster is None)."""
+        if _is_cluster(rec):
+            return self.cluster.is_alive(rec)
         if rec.pgid is None:
             return False
         try:
@@ -301,6 +350,11 @@ class RunManager:
                     and r.id not in self._monitors and not (Path(r.run_dir) / "exit_code").exists()]
             boot = self._boot_id() if lost else None
             resumed += [r for r in lost if r.boot_id == boot and self.revive(r)]
+            # cluster runs: the scheduler's job id is the proof of identity (no boot id); recent ones only
+            recent = datetime.now(UTC).timestamp() - self.REVIVE_CLUSTER_DAYS * 86400
+            resumed += [r for r in records if _is_cluster(r) and r.state == RunState.LOST.value and r.job_id
+                        and r.id not in self._monitors and not (Path(r.run_dir) / "exit_code").exists()
+                        and _created_ts(r) >= recent and self.revive(r)]
         return resumed
 
     def _boot_id(self) -> str | None:
@@ -325,7 +379,29 @@ class RunManager:
         self._start_monitor(rec)
         return True
 
+    def launch_in_background(self, rec: RunRecord, spec: RunSpec | None, *,
+                             start_time: str | None = None) -> threading.Thread:
+        """:meth:`launch` on a worker thread (a cluster launch uploads and submits over SSH); :meth:`wait` waits
+        for it too. A launch that raises ends the run as failed."""
+        def go() -> None:
+            try:
+                self.launch(rec, spec, start_time=start_time)
+            except Exception as exc:
+                log.exception("launch of run %s failed", rec.id)
+                self._set_state(rec, RunState.FAILED, stop_reason=f"launch failed: {exc}"[:400])
+
+        t = threading.Thread(target=go, name=f"launch-{rec.id}", daemon=True)
+        self.__dict__.setdefault("_launching", {})[rec.id] = t
+        t.start()
+        return t
+
     def wait(self, run_id: str, timeout: float | None = None) -> RunRecord | None:
+        t = self.__dict__.get("_launching", {}).get(run_id)
+        if t is not None and t.is_alive():
+            t0 = time.monotonic()
+            t.join(timeout)
+            if timeout is not None:
+                timeout = max(0.0, timeout - (time.monotonic() - t0))
         m = self._monitors.get(run_id)
         if m and m.thread:
             m.thread.join(timeout)
@@ -367,6 +443,9 @@ class RunManager:
     def _tick(self, m: _Monitor, run_dir: Path) -> bool:
         rec = m.rec
         now = time.monotonic()
+        # 0) cluster runs: mirror the remote run files and logs into run_dir (every poll_s); everything below
+        # then reads them exactly as it reads a local run's files
+        pulled = self.cluster.pull(m, now) if _is_cluster(rec) else True
         # 1) step transitions
         steps_file = run_dir / "steps.jsonl"
         if steps_file.exists():
@@ -410,9 +489,10 @@ class RunManager:
                 v = m.repeat.feed(lines)
                 if v.level >= guards.Level.WARN:
                     self._on_guard(m, v)
-            v = m.growth.sample(now, m.tail.size())
-            if v.level >= guards.Level.WARN:
-                self._on_guard(m, v)
+            if pulled:  # a mirrored log grows in bursts: sample its size only right after a pull
+                v = m.growth.sample(now, m.tail.size())
+                if v.level >= guards.Level.WARN:
+                    self._on_guard(m, v)
             v = m.stall.sample(now, m.sim_time)
             if v.level >= guards.Level.REVIEW:
                 self._publish("run.guard", rec, level=v.level.name, guard=v.guard, message=v.message)
@@ -439,8 +519,10 @@ class RunManager:
                                                 label="WSL memory")):
                     if v.level >= guards.Level.WARN:
                         self._on_guard(m, v)
-        # 4) periodic sync-back of staged results
-        if rec.staged and RunState(rec.state) is RunState.RUNNING and now - m.last_sync > self.SYNC_EVERY_S:
+        # 4) periodic sync-back of staged (and cluster) results
+        if RunState(rec.state) is RunState.RUNNING and (
+                (rec.staged and now - m.last_sync > self.SYNC_EVERY_S)
+                or (_is_cluster(rec) and self.cluster.sync_due(m, now))):
             m.last_sync = now
             self._sync_back(rec, skip_newest=True)
         # 5) finished?
@@ -462,6 +544,8 @@ class RunManager:
             if m.dead_replies >= self.DEAD_REPLIES_FOR_LOST:
                 if exit_file.exists():
                     return self._finish(m, run_dir, int((exit_file.read_text().strip() or "1").split()[0]))
+                if _is_cluster(rec):  # the scheduler usually says how the job ended (TIMEOUT, NODE_FAIL, ...)
+                    return self.cluster.end_without_exit_code(m)
                 if rec.stop_reason == "user: kill":
                     self._set_state(rec, RunState.KILLED, finished_at=datetime.now(UTC).isoformat(timespec="seconds"))
                 else:
@@ -485,18 +569,28 @@ class RunManager:
             rec.save()
 
     def _sync_back(self, rec: RunRecord, *, skip_newest: bool) -> bool:
-        st = Stage(src_wsl=win_to_wsl(rec.case_root), stage_wsl=rec.exec_case_wsl)
-        res = self.runner.run_script(st.sync_back_sh(skip_newest=skip_newest), timeout_s=3600)
+        try:
+            if _is_cluster(rec):
+                res = self.cluster.sync_back(rec, skip_newest=skip_newest)
+            else:
+                st = Stage(src_wsl=win_to_wsl(rec.case_root), stage_wsl=rec.exec_case_wsl)
+                res = self.runner.run_script(st.sync_back_sh(skip_newest=skip_newest), timeout_s=3600)
+        except Exception as exc:  # a stuck or missing wsl.exe must not leave the run in "syncing" forever
+            log.exception("copying the results of run %s back failed", rec.id)
+            res = ScriptResult(1, "", f"copying the results back failed: {exc}")
         if res.ok:
             rec.last_synced_at = datetime.now(UTC).isoformat(timespec="seconds")
             rec.save()
             self._publish("run.synced", rec, final=not skip_newest)
         else:
-            self._publish("run.guard", rec, level="WARN", guard="sync", message=res.stderr.strip()[:300])
+            msg = (res.stderr or res.stdout).strip()[:300] or f"copying the results back failed (exit {res.returncode})"
+            self._publish("run.guard", rec, level="WARN", guard="sync", message=msg)
         return res.ok
 
     def _finish(self, m: _Monitor, run_dir: Path, code: int) -> bool:
         rec = m.rec
+        if _is_cluster(rec):  # the last log lines and guard_stop.json may not be mirrored yet
+            self.cluster.pull(m, time.monotonic(), force=True)
         if m.tail is not None:  # drain the rest of the log
             lines = m.tail.read_new()
             if lines:
@@ -506,7 +600,7 @@ class RunManager:
             last = m.parser.flush()
             if last is not None:
                 self._publish("run.progress", rec, log=m.tail_log, step=last)
-        if rec.staged:
+        if rec.staged or _is_cluster(rec):
             self._set_state(rec, RunState.SYNCING)
             self._sync_back(rec, skip_newest=False)
         gs = run_dir / "guard_stop.json"
@@ -518,8 +612,29 @@ class RunManager:
             state = RunState.KILLED if code != 0 else RunState.FINISHED
         else:
             state = RunState.FINISHED if code == 0 else RunState.FAILED
+        if _is_cluster(rec) and state is RunState.FAILED and not rec.stop_reason:
+            rec.stop_reason = self.cluster.ended_reason(rec)  # e.g. "scheduler: OUT_OF_MEMORY" (None if not known)
         self._set_state(rec, state, exit_code=code, finished_at=datetime.now(UTC).isoformat(timespec="seconds"))
         return True
+
+    def download_results(self, run_id: str) -> bool:
+        """Copy a staged or cluster run's results into the case folder again (time folders, postProcessing,
+        logs; never system/ or constant/), e.g. after a lost run. Not while the run is active."""
+        rec = self.get(run_id)
+        if rec is None or not (rec.staged or _is_cluster(rec)) or RunState(rec.state).active:
+            return False
+        return self._sync_back(rec, skip_newest=False)
+
+
+def _is_cluster(rec) -> bool:
+    return getattr(rec, "is_cluster", False)  # tolerant of record-like stand-ins (tests, older callers)
+
+
+def _created_ts(rec: RunRecord) -> float:
+    try:
+        return datetime.fromisoformat(rec.created).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def default_steps(case: Case, *, mesh: bool, check: bool, solve: bool, nprocs: int = 1) -> list[RunStep]:

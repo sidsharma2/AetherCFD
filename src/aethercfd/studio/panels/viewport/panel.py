@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
-    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -33,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from aethercfd.results.foam_reader import display_name
 from aethercfd.studio.panels.viewport import look as lk
+from aethercfd.studio.panels.viewport.toolbar import ToolGroup, ViewportToolbar
 from aethercfd.studio.panels.viewport.views import ViewToolsMixin
 from aethercfd.studio.panels.viewport.worker import shared_worker
 from aethercfd.studio.shell.panel_base import Area, Panel, PanelContext, PanelSpec
@@ -121,7 +121,7 @@ class ViewportPanel(ViewToolsMixin, Panel):
 
     def __init__(self, ctx: PanelContext):
         super().__init__(ctx)
-        from pyvistaqt import QtInteractor
+        from aethercfd.studio.panels.viewport.interactor import ViewportInteractor
 
         sv = ctx.services
         self.vid = f"viewport{ctx.instance_id}"
@@ -132,6 +132,7 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.scalar: str | None = None
         self.range: tuple[float, float] | None = None
         self.bounds = None
+        self.region_bounds: dict[str, list[float]] = {}  # each shown region's extent (from the last load)
         self._first_data = True
         self._is2d = False
         self._pending_state: dict | None = None
@@ -142,10 +143,7 @@ class ViewportPanel(ViewToolsMixin, Panel):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        # ---------------- toolbar
-        bar = QHBoxLayout()
-        bar.setContentsMargins(6, 3, 6, 3)
-        bar.setSpacing(4)
+        # ---------------- toolbar (groups that wrap onto more rows when narrow: toolbar.py)
         self.field = QComboBox(minimumWidth=110, toolTip="Field (cell data on the real mesh)")
         self.comp = QComboBox(toolTip="Vector component")
         self.comp.addItems(["magnitude", "x", "y", "z"])
@@ -183,12 +181,6 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.region_sel: list[str] | None = None  # shown regions; None = all (or a single-region case)
         self.region_kinds: dict[str, str] = {}  # region -> 'fluid' | 'solid'
         self.block_regions: dict[str, str] = {}  # drawn block -> its region (per-region depth offsets)
-        for w in (QLabel("Field"), self.field, self.comp, self.region_btn, QLabel("  t"), self.prev_t, self.time,
-                  self.next_t,
-                  self.last_t, self.follow, QLabel("  "), self.look_box, self.btn_smooth, self.btn_cells,
-                  self.btn_edges, self.rep, self.cmap, self.lock):
-            bar.addWidget(w)
-        bar.addStretch(1)
         self.btn_fit = _tool("msc.screen-full", "Fit view")
         self.btn_views = _menu_tool("mdi6.cube-scan", "Views", "Standard views (front, top, right, iso...), saved "
                                                                "views and the quad view")
@@ -206,13 +198,20 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.btn_show = _tool("mdi6.creation", "Showcase: the best first view of this result (Studio look, "
                                                "mid-plane slice in a glass shell for 3D, isometric camera)")
         self.btn_pv = _tool("mdi6.alpha-p-box-outline", "Open this case in ParaView (with this field and time)")
-        for b in (self.btn_show, self.btn_sections, self.btn_flow, self.btn_views, self.btn_fit, self.btn_ao,
-                  self.btn_shot, self.btn_render, self.btn_rec, self.btn_pv, self.btn_side):
-            bar.addWidget(b)
-        lay.addLayout(bar)
+        for box in (self.field, self.comp, self.time, self.rep, self.look_box, self.cmap):
+            box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)  # never cut an item's text
+        self.toolbar = ViewportToolbar(
+            [ToolGroup([QLabel("Field"), self.field, self.comp, self.region_btn]),
+             ToolGroup([QLabel("t"), self.prev_t, self.time, self.next_t, self.last_t, self.follow]),
+             ToolGroup([self.look_box, self.btn_smooth, self.btn_cells, self.btn_edges]),
+             ToolGroup([self.rep, self.cmap, self.lock]),
+             ToolGroup([self.btn_show, self.btn_sections, self.btn_flow, self.btn_views, self.btn_fit, self.btn_ao,
+                        self.btn_shot, self.btn_render, self.btn_rec, self.btn_pv, self.btn_side], spacing=2)],
+            [self.btn_sections, self.btn_flow, self.btn_views])
+        lay.addWidget(self.toolbar)
         # ---------------- view + sidebar
         split = QSplitter(Qt.Orientation.Horizontal)
-        self.plotter = QtInteractor(self, auto_update=False)
+        self.plotter = ViewportInteractor(self, auto_update=False)  # re-arms a lost GL context (interactor.py)
         from aethercfd.studio.panels.viewport.render_thread import guard_render_thread
 
         guard_render_thread(self.plotter.render_window, self.vid)  # ADR 0008: renders on the GUI thread only
@@ -304,6 +303,13 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.section_2d = None
         self._last_request = 0.0
         self._drag_timer = QTimer(self, singleShot=True, interval=90, timeout=self._drag_load)
+        # the camera stays framed on what is shown (a resize, a stage, the base mesh shown or hidden) until the
+        # user moves it: _framing says how it was framed ('fit', 'view', 'stage:<id>', 'section2d'; None once
+        # the user moved it or a saved view / hotspot placed it), _framed_on what it was framed on
+        self._framing: str | None = None
+        self._framed_on: tuple | None = None
+        self._refit_on_data = False
+        self._refit_timer = QTimer(self, singleShot=True, interval=60, timeout=self._refit)
         self._build_view_menus()
         # ---------------- wiring
         self._slice_timer = QTimer(self, singleShot=True, interval=150, timeout=self.request_load)
@@ -366,8 +372,9 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self._is2d = False
         self.case_root = Path(root) if root else None
         self._queued_show = None
-        self._showcase_pending = False
+        self._showcase_pending = self._showcase_waited = False
         self.bounds = None  # never the previous case's
+        self.region_bounds = {}
         for w in (self.field, self.time):  # never offer the previous case's fields and times
             w.blockSignals(True)
             w.clear()
@@ -702,6 +709,7 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.smoothed = bool(data.get("smoothed"))  # before drawing: the colour bar says "smoothed"
         self.stage_info = data.get("stage_info", {})
         self.block_regions = data.get("block_regions", {})
+        self.region_bounds = data.get("region_bounds", {})
         if data["bounds"] is not None:
             self.bounds = data["bounds"]
             if self.btn_ao.isChecked():
@@ -726,14 +734,20 @@ class ViewportPanel(ViewToolsMixin, Panel):
             self._quad_sync()
         if self._first_data:
             self._first_data = False
+            self._refit_on_data = False
             if self.section_2d:
                 self._frame_section_2d()
             else:
                 self._fit()
+        elif self._refit_on_data:  # a stage or a view option changed what is shown: keep it framed
+            self._refit_on_data = False
+            if self._framing is not None and self._shown_box() != self._framed_on:
+                self._refit(render=False)
         self.comp.setVisible(data.get("components", 0) > 1)
-        if getattr(self, "_showcase_pending", False) and self.bounds is not None:
-            self._showcase_pending = False
-            QTimer.singleShot(0, lambda: self.ctx.services.notify("Viewport: " + self.showcase()))
+        if (getattr(self, "_showcase_pending", False) and self.bounds is not None
+                and not getattr(self, "_showcase_scheduled", False)):
+            self._showcase_scheduled = True  # pending stays set until it runs: waiters never see a gap
+            QTimer.singleShot(0, self._run_pending_showcase)
         edges = (data.get("overlays") or {}).get("edges")
         self.edge_mapper.SetInputData(edges if edges is not None else vtk.vtkPolyData())
         self.edge_actor.SetVisibility(edges is not None and self.look == "studio"
@@ -741,8 +755,15 @@ class ViewportPanel(ViewToolsMixin, Panel):
         msg = (f"{data['n_cells']:,} cells read · {data['seconds']:.2f} s · t = {data['time']:g}"
                if data["time"] is not None else "")
         if self.field.currentText() and data["scalar"] is None:
-            msg += f" · '{self.field.currentText()}' is not written at this time"
-            self.ctx.services.notify(f"Viewport: '{self.field.currentText()}' is not written at t = {data['time']:g}")
+            name = self.field.currentText()
+            if field_file_present(self.case_root, name, data["time"]):
+                msg += f" · '{name}' could not be read at this time"
+                self.ctx.services.notify(
+                    f"Viewport: '{name}' at t = {data['time']:g} could not be read: the file is incomplete or "
+                    "damaged (a run stopped while writing it?). Pick another time, or run the case again", "warn")
+            else:
+                msg += f" · '{name}' is not written at this time"
+                self.ctx.services.notify(f"Viewport: '{name}' is not written at t = {data['time']:g}")
         if self.smoothed:
             msg += " · smoothed: colours interpolated from the cell values (Cells shows each cell's own value)"
         elif data["scalar"] is not None:
@@ -1137,10 +1158,17 @@ class ViewportPanel(ViewToolsMixin, Panel):
 
     def showcase(self, regions=None) -> str:
         """The best first view of the result, in one click (also the copilot's): the Studio look; a 3D
-        case gets a mid-plane slice through its long axis inside a glass shell, an isometric camera and
-        depth shading; a 2D case is framed flat. On a multi-region (CHT) case ``regions`` ('solids', a
-        region name, ...) picks what to show first: the slice then cuts through those regions' own
-        middle and the camera frames them."""
+        case gets a mid-plane slice inside a glass shell, an isometric camera and depth shading; a 2D case
+        is framed flat. On a multi-region (CHT) case ``regions`` ('solids', a region name, ...) picks what
+        to show first, and the camera frames them.
+
+        A showcase shows every selected region (all regions when none are chosen). The cut is a plane
+        normal to x, y or z that passes through each selected region: along that axis the regions' extents
+        must overlap, and the plane sits in the middle of the overlap. Of the axes where they overlap, the
+        one with the smallest combined extent is used (the plane then spans the two largest extents, which
+        shows the most of the flow). When no such plane exists (e.g. side-by-side regions that overlap on
+        no axis), there is no slice: the selected regions' surfaces are shown and the camera is framed on
+        them."""
         if self.case_root is None or not self.meta:
             return "no results are loaded yet"
         where = ""
@@ -1152,31 +1180,58 @@ class ViewportPanel(ViewToolsMixin, Panel):
             where = f" in {self._regions_label()}"
         if self.look != "studio":
             self.set_look("studio")
-        if self.bounds is None:  # nothing drawn yet: decide once the first data (and its size) arrive
+        selected = self._showcase_regions()
+        missing = not self._is2d and any(r not in self.region_bounds for r in selected)
+        if self.bounds is None or (missing and not getattr(self, "_showcase_waited", False)):
+            # nothing drawn yet, or not these regions: decide once their data (and sizes) arrive (once)
+            self._showcase_waited = self.bounds is not None
             self._showcase_pending = True
             self.request_load(reset_range=True)
             return f"showcase{where}: will frame the result as soon as it is loaded"
-        if not self._is2d and self.bounds is not None:
-            b = self.bounds
-            ext = [b[1] - b[0], b[3] - b[2], b[5] - b[4]]
-            # the plane spanning the two largest extents shows the most of the flow (along a pipe, through
-            # a box and the tube entering it): cut normal to the smallest extent, through the middle
-            normal = ext.index(min(ext))
+        self._showcase_waited = False
+        if not self._is2d:
+            extents = [self.region_bounds[r] for r in selected if r in self.region_bounds] or [self.bounds]
+            cut = showcase_cut(extents)
+            if cut is None:
+                self.slice_on.setChecked(False)
+                self._first_data = True  # frame the regions when their surfaces arrive
+                self.request_load(reset_range=True)
+                return (f"showcase{where}: no single plane passes through all of {', '.join(selected)}; showing "
+                        f"their surfaces in the Studio look ({self.field.currentText()})")
+            normal, pos = cut
+            self.slice_axis.blockSignals(True)
             self.slice_axis.setCurrentIndex(normal)
+            self.slice_axis.blockSignals(False)
             self.slice_pos.blockSignals(True)
-            self.slice_pos.setValue(500)
+            self.slice_pos.setValue(pos)
             self.slice_pos.blockSignals(False)
+            self.slice_on.blockSignals(True)
             self.slice_on.setChecked(True)
+            self.slice_on.blockSignals(False)
             self._first_data = True  # re-frame when the slice arrives
             self.request_load(reset_range=True)
             hint = ("; the case has regions: showcase(regions='solids') or a region name shows only those"
                     if self.regions() and self.region_sel is None else "")
-            return (f"showcase{where}: mid-plane slice normal to {'xyz'[normal]} in a glass shell, Studio look "
+            through = f" through {', '.join(selected)}" if len(selected) > 1 else ""
+            return (f"showcase{where}: slice normal to {'xyz'[normal]}{through} in a glass shell, Studio look "
                     f"({self.field.currentText()}){hint}")
         self.slice_on.setChecked(False)
         self._first_data = True
         self.request_load(reset_range=True)
         return f"showcase{where}: {self.field.currentText()} in the Studio look"
+
+    def _run_pending_showcase(self) -> None:
+        self._showcase_scheduled = False
+        if getattr(self, "_disposed", False) or not getattr(self, "_showcase_pending", False):
+            return
+        self._showcase_pending = False
+        self.ctx.services.notify("Viewport: " + self.showcase())
+
+    def _showcase_regions(self) -> list[str]:
+        """The regions a showcase must show: the chosen ones, else every region ('' for a single region)."""
+        if self.region_sel:
+            return list(self.region_sel)
+        return self.regions() or sorted(self.region_bounds) or [""]
 
     # ------------------------------------------------------------------ animation + ParaView
     def _out_dir(self, sub: str) -> Path:
@@ -1416,6 +1471,7 @@ class ViewportPanel(ViewToolsMixin, Panel):
         pad = size * padding
         self.plotter.renderer.ResetCamera([b[0] - pad, b[1] + pad, b[2] - pad, b[3] + pad, b[4] - pad, b[5] + pad])
         self.plotter.camera_set = True
+        self._framing = None  # a chosen spot, not "what is shown": never re-framed
         self.plotter.render()
 
     def frame_stage(self, stage_id: str | None = None, padding: float = 0.08) -> bool:
@@ -1427,16 +1483,19 @@ class ViewportPanel(ViewToolsMixin, Panel):
         self.plotter.renderer.ResetCamera([b[0] - pad[0], b[1] + pad[0], b[2] - pad[1], b[3] + pad[1],
                                            b[4] - pad[2], b[5] + pad[2]])
         self.plotter.camera_set = True
+        self._framed(f"stage:{stage_id or ''}")
         self.plotter.render()
         return True
 
     # ------------------------------------------------------------------ pipeline (Visualization panel)
     def set_stages(self, stages: list[dict]) -> None:
         self.stages = [dict(s) for s in stages]
+        self._refit_on_data = True
         self.request_load()
 
     def set_view_options(self, opts: dict) -> None:
         self.view_opts = dict(opts)
+        self._refit_on_data = True  # e.g. the base mesh hidden: frame what is left
         self.request_load()
 
     def set_bar_stage(self, stage_id: str | None) -> None:
@@ -1463,9 +1522,15 @@ class ViewportPanel(ViewToolsMixin, Panel):
     def eventFilter(self, obj, ev) -> bool:  # Qt override: a click/focus makes this the active viewport
         from PySide6.QtCore import QEvent
 
-        if ev.type() in (QEvent.Type.FocusIn, QEvent.Type.MouseButtonPress):
+        t = ev.type()
+        if t in (QEvent.Type.FocusIn, QEvent.Type.MouseButtonPress):
             self.ctx.services.set_active_viewport(self)
-        return self._pick_event(ev)  # picking points (sections, flow seeds, line probes) eats the clicks
+        if t == QEvent.Type.Resize and obj is self.plotter and self._framing is not None:
+            self._refit_timer.start()  # keep the framing for the new size (a panel opened or closed beside it)
+        eaten = self._pick_event(ev)  # picking points (sections, flow seeds, line probes) eats the clicks
+        if not eaten and (t == QEvent.Type.Wheel or (t == QEvent.Type.MouseMove and ev.buttons())):
+            self._framing = None  # the user moved the camera: leave it where they put it
+        return eaten
 
     def _on_fail(self, vid: str, gen: int, msg: str) -> None:
         if vid == self.vid:
@@ -1493,9 +1558,51 @@ class ViewportPanel(ViewToolsMixin, Panel):
                 self.plotter.view_isometric()  # a 3D case reads as 3D from the start
             self.plotter.reset_camera()
             self.plotter.camera_set = True
+        self._framed("fit")
         if self._quad:
             self._quad_fit()
         self.plotter.render()
+
+    def _shown_box(self) -> tuple | None:
+        """Bounds of the drawn blocks that are shown (what the camera should keep in view)."""
+        b = [float("inf"), float("-inf")] * 3
+        hit = False
+        for actor, mapper in self.actors.values():
+            poly = mapper.GetInput()
+            if not actor.GetVisibility() or poly is None or poly.GetNumberOfPoints() == 0:
+                continue
+            ab = actor.GetBounds()
+            for k in range(3):
+                b[2 * k] = min(b[2 * k], ab[2 * k])
+                b[2 * k + 1] = max(b[2 * k + 1], ab[2 * k + 1])
+            hit = True
+        return tuple(round(x, 12) for x in b) if hit else None
+
+    def _framed(self, how: str) -> None:
+        self._framing = how
+        self._framed_on = self._shown_box()
+
+    def _refit(self, render: bool = True) -> None:
+        """Frame the camera again the way it was framed (on what is shown now, at the widget's size now),
+        unless the user has moved it since. GUI thread; never once the viewport is closing (ADR 0008)."""
+        how = self._framing
+        if (how is None or getattr(self, "_disposed", False) or self._quad or getattr(self, "_linked", None)
+                or self._sweep is not None or not self.plotter.isVisible() or self.plotter.width() < 2
+                or self.plotter.height() < 2 or self.bounds is None):
+            return
+        box = self._shown_box()
+        if how == "section2d":
+            self._frame_section_2d()
+        elif how.startswith("stage:") and self.frame_stage(how.split(":", 1)[1] or None):
+            pass
+        elif self._is2d and how == "fit":
+            self._fit_2d()
+        elif box is not None:  # keep the viewing direction; fit what is shown
+            self.plotter.renderer.ResetCamera(list(box))
+            self.plotter.renderer.ResetCameraClippingRange()
+        self._framing, self._framed_on = how, box
+        if render:
+            self.plotter.render()
 
     def _view(self, plane: str) -> None:
         self.set_view(plane)
@@ -1503,18 +1610,21 @@ class ViewportPanel(ViewToolsMixin, Panel):
     def _fit_2d(self, padding: float = 0.04) -> None:
         """2D / wedge cases: look along the THINNEST axis (empty or wedge direction -- e.g. y for
         SandiaFlameD, whose axis is z), longest in-plane axis horizontal, parallel projection scaled so
-        the whole domain fills the widget."""
-        b = self.bounds
+        the whole domain fills the widget. It frames what is shown (e.g. a stage with the base mesh hidden,
+        or mirrored copies); the viewing direction comes from the domain."""
+        dom = self.bounds
+        dext = [dom[1] - dom[0], dom[3] - dom[2], dom[5] - dom[4]]
+        thin = dext.index(min(dext))
+        b = list(self._shown_box() or dom)
         ext = [b[1] - b[0], b[3] - b[2], b[5] - b[4]]
         c = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2]
-        thin = ext.index(min(ext))
         a, bb = [i for i in range(3) if i != thin]
         horiz, up = (a, bb) if ext[a] >= ext[bb] else (bb, a)
         w, h = max(ext[horiz], 1e-12), max(ext[up], 1e-12)
         aspect = max(self.plotter.width(), 1) / max(self.plotter.height(), 1)
         cam = self.plotter.renderer.GetActiveCamera()
         cam.ParallelProjectionOn()
-        dist = 10 * max(ext)
+        dist = 10 * max(max(dext), max(ext))
         pos = list(c)
         pos[thin] += dist
         vu = [0.0, 0.0, 0.0]
@@ -2004,3 +2114,47 @@ PANELS = [PanelSpec("aether.viewport", "3D Viewport", "mdi6.cube-outline", "Visu
                     multi_instance=True, default_area=Area.CENTER, close_policy="destroy",
                     requires=frozenset({"vtk"}),
                     description="Results on the real finite-volume mesh: fields, time, slices, probe")]
+
+
+def showcase_cut(bounds: list[list[float]], steps: int = 1000) -> tuple[int, int] | None:
+    """The showcase's cut through regions with these extents ([xmin, xmax, ymin, ymax, zmin, zmax] each):
+    (normal axis, slider position 0..steps along the regions' combined extent), or None when no plane
+    normal to x, y or z passes through all of them (see ViewportPanel.showcase for the rule)."""
+    if not bounds:
+        return None
+    lo = [min(b[2 * k] for b in bounds) for k in range(3)]
+    hi = [max(b[2 * k + 1] for b in bounds) for k in range(3)]
+    ext = [hi[k] - lo[k] for k in range(3)]
+    tol = 1e-9 * max(max(ext), 1e-30)
+    for k in sorted(range(3), key=lambda k: ext[k]):
+        a = max(b[2 * k] for b in bounds)  # the overlap of every region's extent along k
+        z = min(b[2 * k + 1] for b in bounds)
+        if z - a <= tol or ext[k] <= tol:
+            continue
+        pos = round(((a + z) / 2 - lo[k]) / ext[k] * steps)  # the slider's resolution
+        at = lo[k] + pos / steps * ext[k]
+        if a < at < z:
+            return k, pos
+    return None
+
+
+def field_file_present(case_root, field: str, time: float | None) -> bool:
+    """True when a time folder equal to ``time`` holds a file named ``field`` (or field.gz), reconstructed or in
+    processor0, any region: a field the reader could not use although the file is there is damaged, not absent."""
+    if case_root is None or time is None:
+        return False
+    root = Path(case_root)
+    for base in (root, root / "processor0"):
+        try:
+            dirs = [d for d in base.iterdir() if d.is_dir()]
+        except OSError:
+            continue
+        for d in dirs:
+            try:
+                if float(d.name) != float(time):
+                    continue
+            except ValueError:
+                continue
+            if any(d.glob(f"{field}")) or any(d.glob(f"{field}.gz")) or any(d.glob(f"*/{field}")):
+                return True
+    return False

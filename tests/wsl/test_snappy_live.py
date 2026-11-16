@@ -15,6 +15,7 @@ from aethercfd.mesh.geometry import analyse
 from aethercfd.mesh.snappy import minimal_system, snappy_setup
 from aethercfd.mesh.strategy import plan
 from tests.unit.test_mesh_snappy import _pipe_with_regions, _sphere
+from tests.wsl._forks import by_family
 
 pytestmark = [pytest.mark.wsl_slow, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL")]
 SCRATCH = Path(r"D:\OpenFOAM\_aethercfd_scratch\tests\snappy")
@@ -39,7 +40,7 @@ def _mesh(setup, case: Path, fork) -> str:
 
 @pytest.fixture(scope="module")
 def forks():
-    return {f.family: f for f in probe_forks(WslRunner("LMAE-OpenFOAM"))}
+    return by_family(probe_forks(WslRunner("LMAE-OpenFOAM")))
 
 
 @pytest.mark.timeout(1500)

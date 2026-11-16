@@ -540,12 +540,14 @@ class CombustionPanel(Panel):
         f, _ = QFileDialog.getSaveFileName(self, "Export flamelet table", start, "CSV (*.csv)")
         if not f:
             return
-        with open(f, "w", encoding="utf-8") as fh:
-            fh.write("strain_nominal,Z,T\n")
-            for r in rows:
-                for z, t in zip(r.get("Z", []), r.get("T", []), strict=False):
-                    fh.write(f"{r['strain_nominal']},{z:.6g},{t:.6g}\n")
-        self.sv.notify(f"Flamelet table written: {f}")
+        from aethercfd.core.textio import save_user_file
+
+        lines = ["strain_nominal,Z,T"]
+        for r in rows:
+            for z, t in zip(r.get("Z", []), r.get("T", []), strict=False):
+                lines.append(f"{r['strain_nominal']},{z:.6g},{t:.6g}")
+        err = save_user_file(f, "\n".join(lines) + "\n")
+        self.sv.notify(err or f"Flamelet table written: {f}", "error" if err else "info")
 
     # ------------------------------------------------------------------ report
     def _build_report(self) -> None:
@@ -567,10 +569,16 @@ class CombustionPanel(Panel):
         s = self.sv.session
         if s is None:
             return
+        from aethercfd.core.textio import save_user_file
+
         out = Path(s.root) / ".aethercfd" / "local" / "combustion_report.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(self.report, indent=1, default=str), encoding="utf-8")
-        self.sv.notify(f"Saved {out}")
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.sv.notify(f"cannot create {out.parent}: {exc.strerror or exc}", "error")
+            return
+        err = save_user_file(out, json.dumps(self.report, indent=1, default=str))
+        self.sv.notify(err or f"Saved {out}", "error" if err else "info")
 
 
 PANELS = [PanelSpec("aether.combustion", "Combustion", "mdi6.fire", "Physics", CombustionPanel,

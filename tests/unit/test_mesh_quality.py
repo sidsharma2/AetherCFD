@@ -122,3 +122,13 @@ def test_fixture_copy_with_gz(tmp_path):
     (d / "points.gz").write_bytes(gzip.compress(pts.read_bytes()))
     pts.unlink()
     assert read_polymesh(d).points.shape == (882, 3)
+
+
+def test_a_case_without_a_mesh_says_to_run_the_mesher(tmp_path):
+    import pytest
+
+    with pytest.raises(FileNotFoundError, match=r"no mesh yet.*run blockMesh"):
+        read_polymesh(tmp_path / "constant" / "polyMesh")
+    (tmp_path / "constant" / "polyMesh").mkdir(parents=True)
+    with pytest.raises(FileNotFoundError, match="has no points file"):
+        read_polymesh(tmp_path / "constant" / "polyMesh")

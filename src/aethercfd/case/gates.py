@@ -1001,6 +1001,9 @@ def health_gate(case: Case) -> Gate:
     """Connie-style health of fieldMinMax/solverInfo telemetry, computed natively when present."""
     pp = case.root / "postProcessing"
     dats = list(pp.glob("*/*/fieldMinMax.dat")) if pp.is_dir() else []
+    mins = list(pp.glob("aetherMin/*/volFieldValue.dat")) if pp.is_dir() else []  # Foundation: min(<field>) columns
+    if not dats and mins:
+        return _volfield_min_health(case, mins + list(pp.glob("aetherMax/*/volFieldValue.dat")))
     if not dats:
         return Gate("health", True, "info", "No fieldMinMax telemetry",
                     how="Add the monitoring function objects (Run stage) to get min/max of every field in time.")
@@ -1020,6 +1023,39 @@ def health_gate(case: Case) -> Gate:
                 try:
                     if float(parts[2]) < 0:
                         bad.append(f"{parts[1]} min {parts[2]} < 0 at t={parts[0]}")
+                        break
+                except ValueError:
+                    pass
+    if bad:
+        return Gate("health", False, "error", "Unphysical values in the run telemetry",
+                    "NaN/Inf or negative turbulence quantities mean the solution is broken there.",
+                    "Diagnose the log (Murphy / copilot) and check the mesh and schemes.", bad[:10])
+    return passed("health", "Run telemetry is physical", [d.relative_to(case.root).as_posix() for d in dats][:4])
+
+
+def _volfield_min_health(case: Case, dats: list[Path]) -> Gate:
+    """The same health check on Foundation volFieldValue output: '# Time  min(p)  min(k) ...', one row per step."""
+    bad = []
+    for d in dats:
+        try:
+            txt = decode_bytes(d.read_bytes()[-4 * 2**20:])[0]
+        except OSError:
+            continue
+        if re.search(r"\b(nan|inf)\b", txt, re.I):
+            bad.append(f"{d.relative_to(case.root).as_posix()}: NaN/Inf values")
+        if d.parent.parent.name != "aetherMin":
+            continue
+        head = next((ln for ln in txt.splitlines() if ln.startswith("#") and "Time" in ln), "")
+        cols = [c.strip() for c in head.lstrip("#").split("\t") if c.strip()]
+        rows = [ln.split("\t") for ln in txt.splitlines()[-200:] if ln.strip() and not ln.startswith("#")]
+        for i, c in enumerate(cols):
+            m = re.fullmatch(r"min\((k|epsilon|omega|nut)\)", c)
+            if not m:
+                continue
+            for r in rows:
+                try:
+                    if len(r) > i and float(r[i]) < 0:
+                        bad.append(f"{m.group(1)} min {r[i].strip()} < 0 at t={r[0].strip()}")
                         break
                 except ValueError:
                     pass

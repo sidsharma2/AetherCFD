@@ -497,7 +497,21 @@ class VtkWorker(QObject):
                     bounds[2 * k + 1] = max(bounds[2 * k + 1], b[2 * k + 1])
             for ds in internal:
                 n_cells += ds.GetNumberOfCells()
+            # each shown region's own extent (the showcase picks a cut that passes through all of them)
+            region_bounds: dict[str, list[float]] = {}
+            per_region = ([(region_of(p), ds) for p, ds in zip(internal_paths, internal, strict=True)] if internal
+                          else [(block_regions.get(k, ""), p) for k, p in blocks.items()
+                                if k not in stage_info and "~" not in k and not k.startswith("shell:")])
+            for reg, ds in per_region:
+                if ds.GetNumberOfPoints() == 0:
+                    continue
+                b = ds.GetBounds()
+                rb = region_bounds.setdefault(reg, [np.inf, -np.inf] * 3)
+                for k in range(3):
+                    rb[2 * k] = min(rb[2 * k], b[2 * k])
+                    rb[2 * k + 1] = max(rb[2 * k + 1], b[2 * k + 1])
             self.data_ready.emit(vid, gen, {
+                "region_bounds": {r: [float(x) for x in b] for r, b in region_bounds.items()},
                 "blocks": blocks, "scalar": scalar, "range": (lo, hi) if lo <= hi else None,
                 "time": req.get("time"), "bounds": bounds if bounds[0] <= bounds[1] else None, "n_cells": n_cells,
                 "components": n_comp, "stage_info": stage_info, "overlays": overlays,

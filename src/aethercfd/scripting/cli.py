@@ -7,149 +7,17 @@ the command layer, this CLI is another (and the future MCP server is a third).
 from __future__ import annotations
 
 import argparse
-import importlib
-import importlib.metadata as md
-import platform
+import os
 import sys
 
 from aethercfd import __version__
 
-# (import name, distribution name) pairs the studio needs at runtime.
-_RUNTIME_DEPS: list[tuple[str, str]] = [
-    ("pydantic", "pydantic"),
-    ("watchdog", "watchdog"),
-    ("platformdirs", "platformdirs"),
-    ("numpy", "numpy"),
-    ("PySide6", "PySide6"),
-    ("PySide6QtAds", "PySide6-QtAds"),
-    ("vtk", "vtk"),
-    ("pyvista", "pyvista"),
-    ("pyvistaqt", "pyvistaqt"),
-    ("qtpy", "QtPy"),
-    ("pyqtgraph", "pyqtgraph"),
-    ("qtawesome", "qtawesome"),
-    ("winpty", "pywinpty"),
-    ("rapidfuzz", "rapidfuzz"),
-    ("psutil", "psutil"),
-]
-
-
-def _check_imports() -> list[tuple[str, str, str | None]]:
-    """Return (dist, version, error) for every runtime dependency."""
-    import os
-
-    os.environ.setdefault("QT_API", "pyside6")
-    os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
-    rows: list[tuple[str, str, str | None]] = []
-    for mod, dist in _RUNTIME_DEPS:
-        try:
-            version = md.version(dist)
-        except md.PackageNotFoundError:
-            rows.append((dist, "-", "not installed"))
-            continue
-        try:
-            importlib.import_module(mod)
-        except Exception as exc:  # report, never crash the doctor
-            rows.append((dist, version, f"{type(exc).__name__}: {exc}"))
-        else:
-            rows.append((dist, version, None))
-    return rows
-
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    print(f"AetherCFD {__version__}")
-    print(f"Python    {sys.version.split()[0]}  ({sys.executable})")
-    print(f"Platform  {platform.platform()}")
-    print()
-    from aethercfd.core.runtime import is_frozen
+    """What works on this PC and what does not, each with a one-line fix (aethercfd.scripting.doctor)."""
+    from aethercfd.scripting.doctor import doctor
 
-    if is_frozen():  # packaged: the GUI libraries live in AetherCFD.exe, not in this console tool
-        from pathlib import Path
-
-        gui = Path(sys.executable).with_name("AetherCFD.exe")
-        failures = 0 if gui.is_file() else 1
-        print(f"  [{'ok ' if failures == 0 else 'ERR'}] packaged build; GUI {gui}")
-        if not args.no_backend:
-            failures += _doctor_backend(args.probe)
-        print()
-        print("all green" if failures == 0 else f"{failures} problem(s)")
-        return 0 if failures == 0 else 1
-    rows = _check_imports()
-    width = max(len(r[0]) for r in rows)
-    failures = 0
-    for dist, version, err in rows:
-        mark = "ok " if err is None else "ERR"
-        failures += err is not None
-        line = f"  [{mark}] {dist:<{width}}  {version}"
-        if err:
-            line += f"   -> {err}"
-        print(line)
-
-    # PySide6 and PySide6-QtAds must be an exact pair; a mismatch crashes at import or later.
-    try:
-        qtads_req = [r for r in (md.requires("PySide6-QtAds") or []) if r.startswith("PySide6-Essentials")]
-        pyside = md.version("PySide6-Essentials")
-        if qtads_req and pyside not in qtads_req[0]:
-            print(f"\n  [ERR] PySide6-QtAds wants {qtads_req[0]} but PySide6-Essentials is {pyside}")
-            failures += 1
-    except md.PackageNotFoundError:
-        pass
-
-    if not args.no_backend:
-        failures += _doctor_backend(args.probe)
-
-    print()
-    print("all green" if failures == 0 else f"{failures} problem(s)")
-    return 0 if failures == 0 else 1
-
-
-def _doctor_backend(probe: bool) -> int:
-    """Report OpenFOAM/WSL reachability. Never boots a stopped distro unless ``probe`` is set."""
-    import json
-
-    from aethercfd.backend.wsl.distro import list_distros
-    from aethercfd.backend.wsl.forks import probe_forks
-    from aethercfd.backend.wsl.runner import WslRunner
-    from aethercfd.core.settings import Settings, cache_dir
-
-    settings = Settings.load()
-    allowed = settings.wsl.allowed_distros
-    print(f"\nWSL distros (allowed for AetherCFD: {', '.join(allowed)}):")
-    try:
-        distros = list_distros()
-    except Exception as exc:
-        print(f"  [ERR] {exc}")
-        return 1
-    for d in distros:
-        tag = "allowed" if d.name in allowed else "-"
-        print(f"  {d.name:<16} {d.state:<10} WSL{d.version}{'  (default)' if d.default else ''}   [{tag}]")
-    if not distros:
-        print("  [ERR] WSL has no Linux distro: `wsl --install -d Ubuntu-22.04`, then install OpenFOAM (INSTALL.md)")
-    if not allowed:
-        print("  [ERR] no distro is chosen for AetherCFD yet: run Help > Setup Wizard in the app "
-              "(or set wsl.default_distro and wsl.allowed_distros in settings.toml)")
-        return 1
-    failures = 0
-    for name in allowed:
-        info = next((d for d in distros if d.name == name), None)
-        cache = cache_dir() / "forks" / f"{name}.json"
-        if info is None:
-            print(f"  [ERR] allowed distro {name!r} is not installed")
-            failures += 1
-            continue
-        if not info.running and not probe:
-            note = f" (last probe cached in {cache})" if cache.exists() else ""
-            print(f"  {name}: stopped -- not booting it; `aethercfd doctor --probe` starts and probes it{note}")
-            continue
-        forks = probe_forks(WslRunner(name, allowed=allowed))
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(json.dumps([f.to_json() for f in forks], indent=2), encoding="utf-8")
-        if not forks:
-            print(f"  [ERR] {name}: no OpenFOAM installation found")
-            failures += 1
-        for f in forks:
-            print(f"  [ok ] {name}: {f.label:<26} {f.bashrc}{'  (runs as root)' if f.mpi_run_as_root else ''}")
-    return failures
+    return doctor(backend=not args.no_backend, probe=args.probe, quick=args.quick, as_json=args.json)
 
 
 class TerminalBroker:
@@ -216,6 +84,9 @@ def cmd_run(args: argparse.Namespace) -> int:
               "enable_signals": not args.no_signals}
     if args.fork:
         params["fork"] = args.fork
+    if args.target != "local":
+        params["target"] = args.target
+        params.update({k: v for k in ("walltime", "nodes", "partition", "account") if (v := getattr(args, k))})
     res = s.do("run.start", case=str(s.root), **params)
     print(res.message)
     if not res.ok:
@@ -238,6 +109,32 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_clusters(args: argparse.Namespace) -> int:
+    from aethercfd.core.settings import Settings
+
+    st = Settings.load()
+    if args.check:
+        from aethercfd.backend.wsl.runner import WslRunner
+        from aethercfd.runs.cluster.transport import check_connection
+        from aethercfd.runs.targets import TargetError, find_profile
+
+        try:
+            prof = find_profile(st.clusters, args.check)
+        except TargetError as exc:
+            print(exc, file=sys.stderr)
+            return 2
+        lines, _ = check_connection(prof, WslRunner(st.wsl.default_distro, allowed=st.wsl.allowed_distros))
+        for ln in lines:
+            print(f"{'ok     ' if ln.ok else 'PROBLEM' if ln.ok is False else 'info   '}  {ln.text}")
+        return 0 if all(ln.ok is not False for ln in lines) else 1
+    if not st.clusters:
+        print(f"no cluster profiles yet: add one in the Run panel (Clusters…) or as [[clusters]] in {Settings.path()}")
+    for c in st.clusters:
+        print(f"{c.target:<24} {c.destination:<32} {c.scheduler}  OpenFOAM {c.openfoam_version or '?'}  "
+              f"work {c.work_dir}")
+    return 0
+
+
 def cmd_runs(args: argparse.Namespace) -> int:
     s = _session(args)
     if s.runs is None:
@@ -245,7 +142,8 @@ def cmd_runs(args: argparse.Namespace) -> int:
         return 1
     for r in s.runs.runs():
         steps = " -> ".join(st["app"] for st in r.steps)
-        print(f"{r.id}  {r.state:<13} {r.placement:<9} exit={r.exit_code}  {steps}  {r.stop_reason or ''}")
+        where = f"{r.target} job {r.job_id}" if r.is_cluster else r.placement
+        print(f"{r.id}  {r.state:<13} {where:<9} exit={r.exit_code}  {steps}  {r.stop_reason or ''}")
     return 0
 
 
@@ -267,13 +165,31 @@ def cmd_set(args: argparse.Namespace) -> int:
     return 0 if res.ok else 1
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    from aethercfd.results.report import build
+
+    rep = build(args.case, out_dir=args.out, renders=not args.no_render)
+    print(f"verdict   {rep.data['verdict']}")
+    for r in rep.data["verdict_reasons"]:
+        print(f"            - {r}")
+    for q in rep.data["qois"]:
+        ch = f"{q['change_pct']:.2g} %" if q.get("change_pct") is not None else f"{q['samples']} samples"
+        print(f"qoi       {q.get('title') or q['id']}: {q['final']:.5g} {q.get('unit', '')} ({ch})")
+    for n in rep.notes:
+        print(f"note      {n}")
+    print(f"report    {rep.markdown}")
+    return {"ready": 0, "not ready": 3, "failed": 1}[rep.data["verdict"]]
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="aethercfd", description=__doc__)
     p.add_argument("--version", action="version", version=f"aethercfd {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
-    d = sub.add_parser("doctor", help="check the environment and OpenFOAM reachability")
+    d = sub.add_parser("doctor", help="check what works on this PC (app, GPU, WSL and OpenFOAM, tools, copilot)")
     d.add_argument("--no-backend", action="store_true", help="skip WSL/OpenFOAM checks")
     d.add_argument("--probe", action="store_true", help="boot allowed distros if needed and probe OpenFOAM forks")
+    d.add_argument("--quick", action="store_true", help="skip the slow checks (PyTorch import, copilot sign-in)")
+    d.add_argument("--json", action="store_true", help="print the checks as JSON")
     d.set_defaults(func=cmd_doctor)
 
     o = sub.add_parser("open", help="describe a case (read-only)")
@@ -291,7 +207,16 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--yes", action="store_true", help="approve plans that need approval")
     r.add_argument("--wait", action="store_true")
     r.add_argument("--every", type=int, default=50, help="with --wait: print every N steps")
+    r.add_argument("--target", default="local", help="local (WSL) or cluster:<profile name> (see `clusters`)")
+    r.add_argument("--walltime", help="cluster runs: e.g. 12:00:00 (default: the profile's)")
+    r.add_argument("--nodes", type=int, help="cluster runs: number of nodes")
+    r.add_argument("--partition", help="cluster runs: partition / queue")
+    r.add_argument("--account", help="cluster runs: allocation account")
     r.set_defaults(func=cmd_run)
+
+    cl = sub.add_parser("clusters", help="list cluster profiles (settings.toml [[clusters]]); --check NAME tests one")
+    cl.add_argument("--check", metavar="NAME", help="reach the cluster non-interactively and report what works")
+    cl.set_defaults(func=cmd_clusters)
 
     rs = sub.add_parser("runs", help="list runs of a case/project")
     rs.add_argument("case")
@@ -313,8 +238,18 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--create-project", action="store_true")
     st.set_defaults(func=cmd_set)
 
+    rp = sub.add_parser("report", help="write the run report (verdict, quantities of interest, balances, figures); "
+                                       "exit 0 ready, 3 not ready, 1 failed")
+    rp.add_argument("case")
+    rp.add_argument("--out", help="report folder (default: the project's local/reports/<case>-<time>)")
+    rp.add_argument("--no-render", action="store_true", help="skip the ParaView field pictures")
+    rp.set_defaults(func=cmd_report)
+
     # listed for --help only; main() hands everything after "copilot" to aethercfd.copilot.headless
     sub.add_parser("copilot", help="ask the Claude copilot about a case, headless (copilot -h for options)",
+                   add_help=False)
+    # listed for --help only; main() hands everything after "ml-setup" to aethercfd.ml.envsetup
+    sub.add_parser("ml-setup", help="create and check the PyTorch environment for PINNs (ml-setup -h for options)",
                    add_help=False)
     return p
 
@@ -325,8 +260,25 @@ def main(argv: list[str] | None = None) -> int:
         from aethercfd.copilot.headless import main as copilot_main
 
         return int(copilot_main(argv[1:]) or 0)
+    if argv[:1] == ["ml-setup"]:
+        from aethercfd.ml.envsetup import main as ml_setup_main
+
+        return int(ml_setup_main(argv[1:], prog="aethercfd ml-setup") or 0)
     args = build_parser().parse_args(argv)
-    return int(args.func(args) or 0)
+    try:
+        return int(args.func(args) or 0)
+    except KeyboardInterrupt:
+        print("aethercfd: interrupted", file=sys.stderr)
+        return 130
+    except Exception as exc:  # a missing case, WSL not installed, a read-only file: one line, not a traceback
+        if os.environ.get("AETHERCFD_DEBUG"):
+            raise
+        import logging
+
+        logging.getLogger("aethercfd.cli").debug("command failed", exc_info=True)
+        print(f"aethercfd: error: {exc}", file=sys.stderr)
+        print("(set AETHERCFD_DEBUG=1 to see the full traceback)", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
