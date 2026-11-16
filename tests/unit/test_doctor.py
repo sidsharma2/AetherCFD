@@ -86,6 +86,8 @@ def test_gpu_missing_is_a_warning(monkeypatch, driver, fix):
 def test_gpu_switched_off_by_environment(monkeypatch):
     monkeypatch.setenv("AETHERCFD_NO_CUDA", "1")
     assert "AETHERCFD_NO_CUDA" in d.gpu_probe()["error"]
+    c = d.check_gpu(Settings())[0]
+    assert c.status == d.WARN and "remove the AETHERCFD_NO_CUDA" in c.fix
 
 
 def test_frozen_gpu_probe_without_gui(tmp_path):
@@ -250,7 +252,15 @@ def test_unwritable_folder_and_broken_settings(tmp_path):
     c = _status(checks, "settings folder")
     assert c.status == d.FAIL and "AETHERCFD_CONFIG_DIR" in c.fix
     assert _status(checks, "settings.toml").status == d.FAIL
-    assert _status(checks, "case folders").status == d.WARN
+
+
+def test_missing_case_folder_warns_once_settings_exist(tmp_path):
+    s = Settings()
+    s.case_roots = [str(tmp_path / "no-such-cases")]
+    config = tmp_path / "cfg"
+    assert not [c for c in d.check_folders(s, None, config=config, cache=tmp_path / "c") if c.name == "case folders"]
+    (config / "settings.toml").write_text("", encoding="utf-8")
+    assert _status(d.check_folders(s, None, config=config, cache=tmp_path / "c"), "case folders").status == d.WARN
 
 
 def test_unreadable_settings_file_is_reported(tmp_path):

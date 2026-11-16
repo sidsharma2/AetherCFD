@@ -214,8 +214,12 @@ def check_gpu(settings, probe: Callable[[], dict] | None = None) -> list[Check]:
         return [Check(s, "CUDA compute (CuPy)", OK,
                       f"{i['name']}, {i.get('memory_gb', '?')} GB, CUDA runtime {rt // 1000}.{rt % 1000 // 10}{note}")]
     driver = shutil.which("nvidia-smi") is not None
-    fix = ("update the NVIDIA driver (nvidia.com/drivers), then run doctor again" if driver else
-           "optional: without an NVIDIA GPU the GPU features run on the CPU (numpy)")
+    if "AETHERCFD_NO_CUDA" in r.get("error", ""):
+        fix = "remove the AETHERCFD_NO_CUDA environment variable to use the GPU"
+    elif driver:
+        fix = "update the NVIDIA driver (nvidia.com/drivers), then run doctor again"
+    else:
+        fix = "optional: without an NVIDIA GPU the GPU features run on the CPU (numpy)"
     return [Check(s, "CUDA compute (CuPy)", WARN, f"not available, GPU features use the CPU: {r.get('error', '')}",
                   fix)]
 
@@ -382,8 +386,9 @@ def check_folders(settings, settings_error: str | None, *, config: Path | None =
                          "start the app; the setup wizard writes it"))
     else:
         out.append(Check(s, "settings.toml", OK, str(config / "settings.toml")))
+    # before the first start the case folder is only a default: the wizard offers to create it
     missing = [r for r in getattr(settings, "case_roots", []) if r and not Path(r).is_dir()]
-    if missing:
+    if missing and (config / "settings.toml").is_file():
         out.append(Check(s, "case folders", WARN, f"missing: {', '.join(missing)}",
                          "create the folder, or choose another in Help > Setup Wizard"))
     return out
