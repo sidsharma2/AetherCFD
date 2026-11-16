@@ -397,3 +397,12 @@ def test_cli_report(tmp_path, capsys):
     out = capsys.readouterr().out
     assert code in (0, 3) and "verdict" in out and (tmp_path / "rep" / "report.md").is_file()
     assert "Flow rate through outlet" in out
+
+
+def test_cli_errors_are_one_line_not_a_traceback(tmp_path, capsys, monkeypatch):
+    from aethercfd.scripting.cli import main
+
+    monkeypatch.delenv("AETHERCFD_DEBUG", raising=False)
+    assert main(["report", str(tmp_path / "nope")]) == 2
+    err = capsys.readouterr().err
+    assert "aethercfd: error:" in err and "is not an OpenFOAM case" in err and "Traceback" not in err
