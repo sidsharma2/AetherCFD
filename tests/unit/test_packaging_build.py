@@ -65,7 +65,8 @@ def test_low_commit_memory_stops_the_build(build):
 def test_preflight_reports_missing_terminal_assets_and_spec_inputs(build, tmp_path):
     xterm = tmp_path / "src" / "aethercfd" / "studio" / "resources" / "xterm"
     shutil.copytree(XTERM_DIR, xterm, ignore=shutil.ignore_patterns("node_modules"))
-    for rel in build.SPEC_INPUTS:
+    shipped = [p.relative_to(ROOT).as_posix() for p in (*build.RELEASE_EXTRAS.values(), *build.EXTRA_LICENSES.values())]
+    for rel in (*build.SPEC_INPUTS, *shipped):
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).touch()
     assert build.preflight_problems(cpu_only=True, root=tmp_path) == []
@@ -278,3 +279,30 @@ def test_spec_gates_every_cuda_part_on_the_cpu_flag():
     assert 'excludes += ["cupy", "cupyx", "cupy_backends", "cuda", "fastrlock", "nvidia"]' in spec
     assert "for sp in ([] if CPU_ONLY else site.getsitepackages()):" in spec
     assert "version=_build.exe_version_info(VERSION" in spec
+
+
+def test_release_zip_carries_the_license_files(build, tmp_path):
+    """Apache-2.0 for AetherCFD, and the license text of every bundled component (THIRD_PARTY_NOTICES.md)."""
+    for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
+        assert name in build.RELEASE_EXTRAS and build.RELEASE_EXTRAS[name].is_file()
+    assert "Apache License" in (ROOT / "LICENSE").read_text(encoding="utf-8")[:200]
+    lic = build.third_party_licenses()
+    names = {k.split("/")[1].lower() for k in lic}
+    for want in ("pyside6-", "pyside6-qtads-", "vtk-", "cantera-", "scipy-", "numpy-", "pyvista-"):
+        assert any(n.startswith(want) for n in names), want
+    assert "licenses/Python/LICENSE.txt" in lic
+    assert b"GNU LESSER GENERAL PUBLIC LICENSE" in lic["licenses/Qt-PySide6/LGPL-3.0.txt"]
+    assert b"GNU GENERAL PUBLIC LICENSE" in lic["licenses/Qt-PySide6/GPL-3.0.txt"]
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "AetherCFD.exe").write_bytes(b"MZ")
+    import zipfile
+
+    with zipfile.ZipFile(build.make_zip(dist, tmp_path / "out", ver="0.0.0")) as z:
+        listed = set(z.namelist())
+    assert {"LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/Python/LICENSE.txt"} <= listed
+
+
+def test_preflight_reports_a_missing_license_file(build, tmp_path):
+    problems = build.preflight_problems(False, root=tmp_path)
+    assert any("NOTICE (the release zip ships it)" in p for p in problems)

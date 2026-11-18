@@ -1,7 +1,7 @@
 # Contributing to AetherCFD Studio
 
-Thank you for your interest. AetherCFD Studio is in active development, and help is welcome: bug reports,
-tests on cases we do not have, documentation, and code.
+AetherCFD Studio is in active development, and help is welcome: bug reports, tests on cases we do not have,
+documentation, and code.
 
 ## Report a bug
 
@@ -59,12 +59,12 @@ an issue which one you take, so two people do not work on the same thing.
 
 ### Test on hardware and setups we do not have
 
-- **Cluster runs on a real Slurm cluster.** The tests use a fake Slurm. [docs/cluster-runs.md](docs/cluster-runs.md)
+- Cluster runs on a real Slurm cluster. The tests use a fake Slurm. [docs/cluster-runs.md](docs/cluster-runs.md)
   lists what to check on the first real job.
-- **The `--cpu-only` build** of `packaging/build.py` has never been built end to end.
-- **Other OpenFOAM versions and Linux distributions in WSL.** Tested: ESI v2306 and v2606 (release candidate)
+- The `--cpu-only` build of `packaging/build.py` has never been built end to end.
+- Other OpenFOAM versions and Linux distributions in WSL. Tested: ESI v2306 and v2606 (release candidate)
   and Foundation 14 on Ubuntu 22.04.
-- **PINN setup on other GPUs.** `scripts/setup_ml_env.py` has been run on one NVIDIA laptop GPU.
+- PINN setup on other GPUs. `scripts/setup_ml_env.py` has been run on one NVIDIA laptop GPU.
 
 ### Known bugs and gaps
 
@@ -78,12 +78,12 @@ an issue which one you take, so two people do not work on the same thing.
 
 From [docs/vision/roadmap.md](docs/vision/roadmap.md):
 
-- **Q7. Layer planner:** write `thicknessModel` for snappyHexMesh and report layer coverage per patch.
-- **Q8. A smaller download:** the packaged app is about 1.8 GB.
-- **M1, M2. Meshing as a task chain:** stale-state tracking, a leak check and a cfMesh fallback.
-- **M3. Solution steering:** staged run recipes that start on robust settings and end on the target schemes.
-- **M4. Deeper verification:** grid studies on snappy meshes, least-squares GCI for four or more grids.
-- **M5 to M8:** indicator-driven refinement, a run database with surrogates, ML warm starts, PINNs with hard
+- Q7. Layer planner: write `thicknessModel` for snappyHexMesh and report layer coverage per patch.
+- Q8. A smaller download: the packaged app is about 1.8 GB.
+- M1, M2. Meshing as a task chain: stale-state tracking, a leak check and a cfMesh fallback.
+- M3. Solution steering: staged run recipes that start on robust settings and end on the target schemes.
+- M4. Deeper verification: grid studies on snappy meshes, least-squares GCI for four or more grids.
+- M5 to M8: indicator-driven refinement, a run database with surrogates, ML warm starts, PINNs with hard
   constraints.
 
 ### Documentation

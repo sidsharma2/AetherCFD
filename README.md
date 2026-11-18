@@ -205,7 +205,10 @@ Copilot
 - [docs/cluster-runs.md](docs/cluster-runs.md): running cases on a Slurm cluster.
 - [docs/copilot-accounts.md](docs/copilot-accounts.md): copilot providers, sign-in and switching accounts.
 - [docs/adr/](docs/adr/): design decisions.
+- [docs/divergence.md](docs/divergence.md): the divergence watchdog and the restart from the last good time.
+- [docs/references.md](docs/references.md): the methods AetherCFD implements, and their references.
 - [docs/vision/roadmap.md](docs/vision/roadmap.md): the roadmap.
+- [CONTRIBUTING.md](CONTRIBUTING.md): reporting bugs, setting up for development, and open tasks.
 - [CHANGELOG.md](CHANGELOG.md): changes.
 
 ## Development
@@ -226,3 +229,30 @@ uv run python packaging/install.py                # install it with Start-menu a
 
 The headless CLI is `aethercfd` from source and `aethercfd-cli.exe` in the packaged app: `doctor`, `open`,
 `run`, `runs`, `control`, `set`, `report`, `clusters`, `copilot` and `ml-setup`.
+
+## Citing
+
+If you use AetherCFD Studio in your work, please cite it. GitHub's "Cite this repository" button gives the
+citation from [CITATION.cff](CITATION.cff). Please also cite OpenFOAM and the methods you used:
+[docs/references.md](docs/references.md) lists them.
+
+## Acknowledgements
+
+AetherCFD Studio is a front end. The simulations are done by OpenFOAM, developed by OpenCFD Ltd (ESI Group) and
+by The OpenFOAM Foundation, with their many contributors. The app is built on Qt and Qt for Python, the Qt
+Advanced Docking System, VTK and PyVista, pyqtgraph, NumPy, SciPy, Matplotlib, Cantera, CuPy, xterm.js and the
+other projects in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The methods it implements come from the
+authors in [docs/references.md](docs/references.md). Thank you to all of them.
+
+## License
+
+AetherCFD Studio is licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Siddharth Sharma. See
+[NOTICE](NOTICE).
+
+The test cases in `tests/fixtures/cases/` are copies of OpenFOAM tutorials and stay under the GNU GPL 3.0 or
+later. The packaged app includes third-party components under their own licenses:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+OPENFOAM® is a registered trade mark of OpenCFD Limited, producer and distributor of the OpenFOAM software via
+www.openfoam.com. AetherCFD Studio is not approved or endorsed by OpenCFD Limited or by The OpenFOAM
+Foundation.
