@@ -1,6 +1,6 @@
 """A run is only "lost" when WSL says so, twice: an empty or garbled probe reply is "unknown", never "lost".
 
-Seen live (REV B.1, 2026-10-11): an empty reply under heavy load marked a 1M-cell run lost at iteration ~326 while
+Seen live (a private 3-D case, 2026-10-11): an empty reply under heavy load marked a 1M-cell run lost at iteration ~326 while
 runner.sh, mpirun and all 8 ranks were computing, and a finished record can never be re-activated by _set_state.
 """
 

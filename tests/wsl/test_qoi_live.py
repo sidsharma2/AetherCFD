@@ -21,14 +21,16 @@ from aethercfd.case.model import load_case
 from aethercfd.scripting.api import AutoApprove, Session
 from aethercfd.templates.catalog import template
 from aethercfd.templates.create import copy_tutorial
+from tests.wsl._forks import DISTRO, SCRATCH_ROOT, needs_distro, needs_scratch
 
-pytestmark = [pytest.mark.wsl_slow, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL")]
-SCRATCH = Path(r"D:\OpenFOAM\_aethercfd_scratch\tests\qoi")
+pytestmark = [pytest.mark.wsl_slow, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL"),
+              needs_distro, needs_scratch]
+SCRATCH = SCRATCH_ROOT / "qoi"
 
 
 @pytest.fixture(scope="module")
 def forks():
-    r = WslRunner("LMAE-OpenFOAM")
+    r = WslRunner(DISTRO)
     return r, {f.family: f for f in probe_forks(r)}
 
 

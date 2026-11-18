@@ -19,17 +19,17 @@ from aethercfd.backend.wsl.runner import (
     decode_output,
 )
 
-ESI = ForkProfile("esi-v2306", Family.ESI, "v2306", "LMAE-OpenFOAM", "/usr/lib/openfoam/openfoam2306/etc/bashrc",
+ESI = ForkProfile("esi-v2306", Family.ESI, "v2306", "Ubuntu-OpenFOAM", "/usr/lib/openfoam/openfoam2306/etc/bashrc",
                   "/usr/lib/openfoam/openfoam2306", True)
 
 
 def test_argv_is_a_list_with_isolated_bash_and_timeout():
-    r = WslRunner("LMAE-OpenFOAM")
-    argv = r.script_argv(["/mnt/d/OpenFOAM/RPL Apollo Lunar Module Ascent Engine"], timeout_s=60)
-    assert argv[:5] == ["wsl.exe", "-d", "LMAE-OpenFOAM", "--cd", "/"]
+    r = WslRunner("Ubuntu-OpenFOAM")
+    argv = r.script_argv(["/mnt/d/cases/My Engine Study"], timeout_s=60)
+    assert argv[:5] == ["wsl.exe", "-d", "Ubuntu-OpenFOAM", "--cd", "/"]
     assert argv[5] == "-e" and argv[6:10] == ["timeout", "-k", "5", "60"]
     assert "--noprofile" in argv and "--norc" in argv
-    assert argv[-1] == "/mnt/d/OpenFOAM/RPL Apollo Lunar Module Ascent Engine"  # one argv element
+    assert argv[-1] == "/mnt/d/cases/My Engine Study"  # one argv element
 
 
 @pytest.mark.parametrize("opt", ["--shutdown", "-t", "--terminate", "--unregister", "--export", "--import=x"])
@@ -40,14 +40,14 @@ def test_denylist(opt):
 
 def test_distro_allowlist_and_agora_ban():
     with pytest.raises(DistroNotAllowed):
-        WslRunner("Ubuntu-22.04", allowed=["LMAE-OpenFOAM"])
+        WslRunner("Ubuntu-22.04", allowed=["Ubuntu-OpenFOAM"])
     with pytest.raises(DistroNotAllowed):
         WslRunner("Agora", allowed=["Agora"])
 
 
 def test_crlf_scripts_are_rejected():
     with pytest.raises(WslError):
-        WslRunner("LMAE-OpenFOAM").run_script("echo hi\r\n")
+        WslRunner("Ubuntu-OpenFOAM").run_script("echo hi\r\n")
 
 
 def test_decode_output_handles_utf16_and_utf8():
@@ -59,11 +59,11 @@ def test_decode_output_handles_utf16_and_utf8():
 def test_parse_wsl_list_verbose():
     text = ("  NAME             STATE           VERSION\n"
             "* Ubuntu-22.04     Stopped         2\n"
-            "  LMAE-OpenFOAM    Running         2\n"
+            "  Ubuntu-OpenFOAM    Running         2\n"
             "  Agora            Running         2\n")
     ds = parse_list_verbose(text)
     assert [(d.name, d.state, d.version, d.default) for d in ds] == [
-        ("Ubuntu-22.04", "Stopped", 2, True), ("LMAE-OpenFOAM", "Running", 2, False), ("Agora", "Running", 2, False)]
+        ("Ubuntu-22.04", "Stopped", 2, True), ("Ubuntu-OpenFOAM", "Running", 2, False), ("Agora", "Running", 2, False)]
     assert ds[1].running and not ds[0].running
 
 
@@ -91,12 +91,12 @@ def test_a_truncated_fork_cache_is_probed_again(tmp_path, monkeypatch):
 
     monkeypatch.setenv("AETHERCFD_CACHE_DIR", str(tmp_path))
     (tmp_path / "forks").mkdir()
-    (tmp_path / "forks" / "LMAE.json").write_text('[{"id": "esi-v2306", "fam', encoding="utf-8")
-    probed = ForkProfile("esi-v2306", Family.ESI, "v2306", "LMAE", "/a/etc/bashrc", "/a", True)
+    (tmp_path / "forks" / "Ubuntu-OF.json").write_text('[{"id": "esi-v2306", "fam', encoding="utf-8")
+    probed = ForkProfile("esi-v2306", Family.ESI, "v2306", "Ubuntu-OF", "/a/etc/bashrc", "/a", True)
     monkeypatch.setattr(api, "probe_forks", lambda runner: [probed])
 
     class R:
-        distro = "LMAE"
+        distro = "Ubuntu-OF"
 
     assert api.load_forks(R()) == [probed]
     assert [f.id for f in api.load_forks(R())] == ["esi-v2306"]  # the rewritten cache reads back

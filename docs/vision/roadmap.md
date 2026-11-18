@@ -16,8 +16,8 @@ checks each of these against public sources and maps it onto modules AetherCFD a
 * Effort: **S** up to 1 week, **M** 2 to 4 weeks, **L** 1 to 3 months, **XL** research (more than 3 months, open
   outcome). Estimates assume one person working with Claude Code.
 * **[APPROVAL]** marks anything that needs an install into WSL, a CUDA toolkit, a Windows registry change or a
-  self-hosted runner. Nothing marked this way starts until Sid says yes.
-* **[LOCAL]** marks a fact I checked on this machine on 2026-10-26 (the `LMAE-OpenFOAM` distro, ESI v2306 at
+  self-hosted runner. Nothing marked this way starts until the owner says yes.
+* **[LOCAL]** marks a fact I checked on this machine on 2026-10-26 (the development WSL distro, ESI v2306 at
   `/usr/lib/openfoam/openfoam2306`, Foundation v14 at `/opt/openfoam14`, or the installed exe).
 
 **Rules for every source.** Only public material is used: theory and user guides, release notes, vendor blogs and
@@ -48,7 +48,7 @@ are marked *(vendor claim)* because their test conditions are not published.
    on the user's own run database (POD-GPR, with uncertainty) [S27][S28]. Use them to write better initial fields: the
    solver still has to meet its own convergence test, so a poor guess costs time and cannot change the answer
    [S17]. Add ensemble Kalman inversion for data assimilation [S22][S23]. Keep PINNs as a field-reconstruction tool
-   with hard boundary conditions and held-out error bars. AetherCFD's own PINN on the REV B.1 3-D jet reached only
+   with hard boundary conditions and held-out error bars. AetherCFD's own PINN on a turbulent 3-D jet reached only
    RMSE/std 0.78 to 0.81, and the literature agrees that soft-constraint PINNs struggle on turbulent flows [S2][S6][S8].
 
 GPU work stays where a 4 GB laptop GPU helps: post-processing, ML training and quick-look side solvers. Linear-solver
@@ -189,7 +189,7 @@ parts for each of these. It lacks the chain that joins them, and the tests that 
   the `ShallowCopy` sites against rule 3.
 * **Touches.** `docs/adr/0008-threading.md`, `studio/panels/viewport/worker.py`, `studio/panels/viewport/panel.py`,
   `results/pipeline.py`, `results/sections.py`, `pyproject.toml` (importlinter).
-* **Effort.** S. **Risk.** Low. Deep copies cost memory on million-cell meshes; measure on the 1.43M-cell probe case
+* **Effort.** S. **Risk.** Low. Deep copies cost memory on million-cell meshes; measure on the 1.43M-cell multi-region case
   from ADR 0005.
 * **Accept when.** A soak test opens, re-reads and closes a multi-region viewport 200 times while the worker loads.
   It finishes with no hang and no assertion.
@@ -255,8 +255,8 @@ real logs. The ESI `runTimeControl` backstop was left out: its residual conditio
 * **Touches.** `runs/guards.py`, `runs/manager.py`, `runs/logparse.py`, `case/checks.py` (the restart edits),
   `services/cfd_agents/` (Murphy input), `studio/panels/run/panels.py`.
 * **Effort.** M. **Risk.** Medium. Limits set too tight stop healthy transients. Start with "warn", move to "stop"
-  only on NaN or an order-of-magnitude blow-up, and test against a corpus of real logs (the REV B.1 and Sandia D
-  logs on `D:\OpenFOAM`, read-only).
+  only on NaN or an order-of-magnitude blow-up, and test against a corpus of real logs (a 1M-cell 3-D jet case and
+  Sandia D, read-only).
 * **Accept when.** A pitzDaily run with relaxation set to 1.0 trips the guard before any NaN is written. The rollback
   plan, once applied, converges. No healthy run in the log corpus trips "stop".
 
@@ -483,7 +483,7 @@ such as Knupp's target-matrix paradigm [M12]. In one thesis, snappyHexMesh "was 
 
 ### M8. PINNs with hard constraints and held-out errors
 
-* **Why.** The PINN works on Kovasznay flow (0.06 to 0.4 %) and fails on the REV B.1 3-D jet (RMSE/std 0.78 to 0.81).
+* **Why.** The PINN works on Kovasznay flow (0.06 to 0.4 %) and fails on a turbulent 3-D jet (RMSE/std 0.78 to 0.81).
   That gap is typical, so the UI should say so, and the cheap fixes from the literature should go in.
 * **Evidence.**
   * Soft-constraint PINNs [S1] fail on moderately hard convection and reaction problems because the loss is
@@ -502,14 +502,14 @@ such as Knupp's target-matrix paradigm [M12]. In one thesis, snappyHexMesh "was 
     ensemble for an uncertainty band (fits easily in 4 GB at the current network size).
   * Record dataset and model hashes in the result.
   * In the Analysis panel, label the PINN as "field reconstruction from sparse data" and show held-out error next to
-    every result. Add a docs page with the REV B.1 numbers.
+    every result. Add a docs page with the 3-D jet numbers.
 * **Touches.** `ml/pinn_worker.py`, `ml/pinn.py`, `studio/panels/analysis/panel.py`, `tests/unit/test_pinn.py`, a new
   `docs/research/pinn_limits.md`.
 * **Effort.** M. **Risk.** Low (reporting) to medium (gains on 3-D jets are uncertain).
 * **Accept when.** Kovasznay stays at or below the current error. A 2-D cavity reconstruction with hard BCs beats the
   soft-BC version on held-out probes. Every PINN result in the UI carries a held-out error.
 
-### M9. Golden images and a weekly soak on Sid's laptop
+### M9. Golden images and a weekly soak on the development laptop
 
 * **Why.** Hosted runners have no GPU and no OpenFOAM (Q1). The bugs that matter most (GL, WSL, long runs) need the
   real machine.
@@ -519,7 +519,7 @@ such as Knupp's target-matrix paradigm [M12]. In one thesis, snappyHexMesh "was 
   PRs from forks [R10]. Installed as a service it runs in session 0, which cannot start WSL, so run it at logon
   [R11].
 * **Plan.**
-  * **[APPROVAL]** Install a self-hosted runner on Sid's laptop, labelled `wsl`, started at logon, this repo only,
+  * **[APPROVAL]** Install a self-hosted runner on the development laptop, labelled `wsl`, started at logon, this repo only,
     manual and weekly triggers only.
   * The weekly job runs `tests/wsl`, `--sweep` on three cases (pitzDaily, a CHT case, a multi-region case), golden
     images for Studio and Classic looks, and an exe `--self-test` with startup time over 3 runs (fail on a regression

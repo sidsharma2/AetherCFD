@@ -3,9 +3,9 @@
 Status: accepted (2026-10-07; default confirmed by the user)
 
 ## Context
-OpenFOAM breaks on paths with spaces (e.g. `D:\OpenFOAM\RPL Apollo Lunar Module Ascent Engine`), and
-`/mnt/d` (9P) is slow for heavy I/O. Existing practice is mixed: AutoFOAM cases run in place; RPL and
-SandiaFlameD are copied to ext4 and rsynced back. The ext4 vhdx never shrinks on its own.
+OpenFOAM breaks on paths with spaces (e.g. `D:\cases\My Engine Study`), and
+`/mnt/d` (9P) is slow for heavy I/O. Existing practice is mixed: AutoFOAM cases run in place; larger
+cases such as SandiaFlameD are copied to ext4 and rsynced back. The ext4 vhdx never shrinks on its own.
 
 ## Decision
 `Placement = auto | in-place | staged`, stored per case in `project.toml`. `auto` picks in-place when

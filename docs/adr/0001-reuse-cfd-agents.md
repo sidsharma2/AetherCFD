@@ -3,8 +3,8 @@
 Status: accepted (2026-10-07)
 
 ## Context
-`cfd_agents` (D:\Research-Software\projects\repository-capability-lab\agent-architecture) already drives
-OpenFOAM in the `LMAE-OpenFOAM` WSL distro. Importing it is unsafe for an app:
+`cfd_agents` (the research group's agent-architecture repository) already drives
+OpenFOAM in a WSL distro. Importing it is unsafe for an app:
 - `case/__init__` → `manifest` → `contracts` → `_autofoam_path` calls `load_config()` at import time,
   needs a gitignored `config/local.yaml`, and inserts the AutoFOAM repo into `sys.path`.
 - `pydantic`/`yaml` are used but not declared; `mesh_check` imports `agents.vera`.

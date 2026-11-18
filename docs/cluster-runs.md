@@ -63,7 +63,7 @@ In the Run panel, set *Where* to the cluster, set the MPI processes and (optiona
 From a script or the console:
 
 ```python
-s = Session(r"D:\OpenFOAM\pitzDaily")
+s = Session(r"D:\cases\pitzDaily")
 run_id = s.run(preset="solve", nprocs=64, target="cluster:narval", walltime="06:00:00", account="def-supervisor")
 s.runs.wait(run_id)
 print(s.check_cluster("narval"))
@@ -71,7 +71,7 @@ print(s.check_cluster("narval"))
 
 ```
 aethercfd clusters --check narval
-aethercfd run D:\OpenFOAM\pitzDaily --target cluster:narval --np 64 --walltime 06:00:00 --wait
+aethercfd run D:\cases\pitzDaily --target cluster:narval --np 64 --walltime 06:00:00 --wait
 ```
 
 ## First real job: what to check

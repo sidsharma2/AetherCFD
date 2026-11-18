@@ -20,4 +20,4 @@ foamlib is a dev-only oracle on the real-dictionary corpus.
 
 ## Consequences
 We own a parser and must keep it syntax-only; evaluation is always delegated to OpenFOAM.
-Byte-exact round-trip over every dictionary under D:\OpenFOAM is a release gate.
+Byte-exact round-trip over every dictionary in a local case corpus (`AETHERCFD_CORPUS`) is a release gate.

@@ -33,7 +33,7 @@ PROFILE = ClusterProfile(name="hpc", host="login.example.org", user="sid", port=
 
 
 class CapturingRunner:
-    distro = "LMAE-OpenFOAM"
+    distro = "Ubuntu-OpenFOAM"
 
     def __init__(self, result: ScriptResult | None = None):
         self.bodies: list[str] = []
@@ -78,9 +78,9 @@ def test_remote_script_travels_base64_into_a_login_shell():
 
 def test_upload_sends_inputs_only():
     tr, r = _tr()
-    tr.upload_case(Path(r"D:\OpenFOAM\cavity"), "/scratch/sid/aethercfd/p/cavity/case", start_time="0.5")
+    tr.upload_case(Path(r"D:\cases\cavity"), "/scratch/sid/aethercfd/p/cavity/case", start_time="0.5")
     b = r.bodies[-1]
-    assert "SRC=/mnt/d/OpenFOAM/cavity" in b
+    assert "SRC=/mnt/d/cases/cavity" in b
     assert "--include=/system/***" in b and "--include=/constant/***" in b and "--include=/0.5/***" in b
     assert "--exclude='/log.*'" in b and "--exclude='/*/'" in b
     assert "sid@login.example.org:/scratch/sid/aethercfd/p/cavity/case/" in b
@@ -100,7 +100,7 @@ def test_live_pull_appends_run_files_and_logs():
 @pytest.mark.parametrize("final", [False, True])
 def test_results_download(final):
     tr, r = _tr()
-    tr.download_results("/s/case", Path(r"D:\OpenFOAM\cavity"), skip_newest=not final, processor_dirs=True)
+    tr.download_results("/s/case", Path(r"D:\cases\cavity"), skip_newest=not final, processor_dirs=True)
     b = r.bodies[-1]
     assert f"if {'false' if final else 'true'} && [ \"$t\" = \"$newest\" ]" in b
     assert "postProcessing" in b and "--include='log.*'" in b and "processor0" in b

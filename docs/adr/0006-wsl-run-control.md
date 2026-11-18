@@ -1,7 +1,7 @@
 # ADR 0006 — WSL launch, fork isolation and signal-based run control
 
 Status: accepted (2026-10-07) — evidence: `spikes/spike_c_wsl.py`, `spikes/out/spike_c_*.json`
-Environment: WSL 2.7.10.0, kernel 6.18.33.2-2, distro `LMAE-OpenFOAM` (Ubuntu 22.04.5, root,
+Environment: WSL 2.7.10.0, kernel 6.18.33.2-2, an OpenFOAM distro (Ubuntu 22.04.5, root,
 16 threads, 19.4 GiB), ESI v2306 + Foundation v14.
 
 ## Results

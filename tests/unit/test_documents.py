@@ -144,7 +144,7 @@ def test_watcher_reports_changes(tmp_path):
 
 
 def test_polling_mode_is_used_for_wsl_paths():
-    w = CaseWatcher(r"\\wsl.localhost\LMAE-OpenFOAM\root", lambda p: None)
+    w = CaseWatcher(r"\\wsl.localhost\Ubuntu-OpenFOAM\root", lambda p: None)
     assert w.polling
     w2 = CaseWatcher(os.getcwd(), lambda p: None)
     assert not w2.polling

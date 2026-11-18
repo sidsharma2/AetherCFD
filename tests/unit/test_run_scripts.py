@@ -12,15 +12,15 @@ from aethercfd.runs.placement import Stage, resolve_placement
 from aethercfd.runs.scripts import control_sh, guard_sh, launch_sh, runner_sh
 from aethercfd.runs.spec import RunSpec, RunStep, StepKind
 
-ESI = ForkProfile("esi-v2306", Family.ESI, "v2306", "LMAE-OpenFOAM", "/usr/lib/openfoam/openfoam2306/etc/bashrc",
+ESI = ForkProfile("esi-v2306", Family.ESI, "v2306", "Ubuntu-OpenFOAM", "/usr/lib/openfoam/openfoam2306/etc/bashrc",
                   "/usr/lib/openfoam/openfoam2306", True)
-OF = ForkProfile("foundation-14", Family.FOUNDATION, "14", "LMAE-OpenFOAM", "/opt/openfoam14/etc/bashrc",
+OF = ForkProfile("foundation-14", Family.FOUNDATION, "14", "Ubuntu-OpenFOAM", "/opt/openfoam14/etc/bashrc",
                  "/opt/openfoam14", True)
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "cases"
 
 
 def spec(fork=ESI, **kw) -> RunSpec:
-    base = dict(case_wsl="/mnt/d/OpenFOAM/x", fork=fork,
+    base = dict(case_wsl="/mnt/d/cases/x", fork=fork,
                 steps=(RunStep("blockMesh"), RunStep("simpleFoam", kind=StepKind.SOLVER)),
                 run_dir_wsl="/mnt/d/My Projects/case/.aethercfd/local/runs/1", linux_run_dir="/root/aethercfd/runs/1",
                 run_id="1")

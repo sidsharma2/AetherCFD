@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -22,8 +23,13 @@ from aethercfd.runs.logparse import LogParser, parse_log_text
 from aethercfd.runs.logtail import LogTail
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "cases"
-BFS_LOG = Path(r"D:\OpenFOAM\backwardFacingStep2D\log.simpleFoam")
-SANDIA_LOG = Path(r"D:\OpenFOAM\SandiaFlameD\log.reactingFoam")
+# Local OpenFOAM cases for the read-only real-case tests: set AETHERCFD_TEST_CASES to their folder; the
+# tests skip without it.
+_CASES = os.environ.get("AETHERCFD_TEST_CASES")
+CASES = Path(_CASES) if _CASES else None
+NO_CASES = "set AETHERCFD_TEST_CASES to a folder of local OpenFOAM cases"
+BFS_LOG = CASES / "backwardFacingStep2D" / "log.simpleFoam" if CASES else None
+SANDIA_LOG = CASES / "SandiaFlameD" / "log.reactingFoam" if CASES else None
 OF14_LOG = FIX / "of14_cavity" / "log.foamRun"
 
 
@@ -40,7 +46,7 @@ def autofoam_history(log: str) -> dict[str, list[float]]:
     return history
 
 
-@pytest.mark.skipif(not BFS_LOG.exists(), reason="corpus not available")
+@pytest.mark.skipif(BFS_LOG is None or not BFS_LOG.exists(), reason=NO_CASES)
 def test_golden_residuals_match_autofoam_on_bfs():
     text = BFS_LOG.read_text(encoding="utf-8", errors="replace")
     parser, steps = parse_log_text(text)
@@ -50,7 +56,7 @@ def test_golden_residuals_match_autofoam_on_bfs():
         assert [s.residuals[fld].initial for s in steps] == oracle[fld]
 
 
-@pytest.mark.skipif(not SANDIA_LOG.exists(), reason="corpus not available")
+@pytest.mark.skipif(SANDIA_LOG is None or not SANDIA_LOG.exists(), reason=NO_CASES)
 def test_large_log_parses_fast_and_counts_repeated_solves():
     text = SANDIA_LOG.read_bytes().decode("utf-8", errors="replace")
     # CPU time of this process (not wall time), best of three. Idle it takes 1.2-1.6 s; a solver on all cores

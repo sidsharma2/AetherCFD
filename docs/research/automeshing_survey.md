@@ -2,7 +2,7 @@
 
 *AetherCFD Studio, meshing module. Written 2026-10-07. Status: research input for design. It is not a decision record.*
 
-**Citation conventions.** Bracketed tags such as [E8] or [O3] refer to the reference list at the end. **[LOCAL]** marks a fact I checked directly on 2026-10-07 in the `LMAE-OpenFOAM` WSL distro (ESI v2306 package build `_cafbeeb2-20260127`, OpenFOAM-14 build `14-b4f91ad8bbba`) or in the AetherCFD venv. Paragraphs that begin **Inference:** are my reasoning from the cited evidence. They are not vendor statements.
+**Citation conventions.** Bracketed tags such as [E8] or [O3] refer to the reference list at the end. **[LOCAL]** marks a fact I checked directly on 2026-10-07 in the development WSL distro (ESI v2306 package build `_cafbeeb2-20260127`, OpenFOAM-14 build `14-b4f91ad8bbba`) or in the AetherCFD venv. Paragraphs that begin **Inference:** are my reasoning from the cited evidence. They are not vendor statements.
 
 ---
 

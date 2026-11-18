@@ -1,4 +1,4 @@
-"""Release gate (ADR 0002): every OpenFOAM file under D:\\OpenFOAM decodes byte-exactly, tokenizes
+"""Release gate (ADR 0002): every OpenFOAM file under $AETHERCFD_CORPUS decodes byte-exactly, tokenizes
 into tiles that reproduce it exactly, and parses without crashing. Read-only.
 
 Parse *diagnostics* on real files are reported (build/corpus_report.json), not failed: some real
@@ -21,7 +21,8 @@ from .corpus_files import CORPUS_ROOT, iter_foam_files
 pytestmark = pytest.mark.corpus
 
 
-@pytest.mark.skipif(not CORPUS_ROOT.exists(), reason="no corpus on this machine")
+@pytest.mark.skipif(CORPUS_ROOT is None or not CORPUS_ROOT.exists(),
+                    reason="set AETHERCFD_CORPUS to a folder of OpenFOAM cases")
 @pytest.mark.timeout(1800)  # ~22 GB / 12k files: 9 min warm, longer on a cold disk cache
 def test_corpus_lossless_roundtrip():
     t0 = time.perf_counter()

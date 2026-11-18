@@ -78,7 +78,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers --basetemp=build/pytest-tmp"
 markers = [
     "corpus: read-only tests over the real OpenFOAM cases under D:\\OpenFOAM",
-    "wsl: needs the LMAE-OpenFOAM WSL distro (fast)",
+    "wsl: needs the WSL distro named by AETHERCFD_TEST_DISTRO (fast)",
     "wsl_slow: needs WSL and runs a solver (minutes)",
     "gl: needs a real OpenGL context (not the offscreen platform)",
     "slow: takes more than a few seconds (e.g. a Cantera flame solve)",

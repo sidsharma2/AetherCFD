@@ -18,6 +18,10 @@ Which agents are wired, and why the others are not (see CATALOG):
 * Betty/Bob write case files and run gmshToFoam; Bill always runs blockMesh and deletes time folders;
   Larry needs a local Ollama LLM: not called (AetherCFD's own run manager and editors do those jobs).
 
+Where the agents live is never assumed: the 'cfd_agents_python' / 'cfd_agents_root' settings (or the
+AETHERCFD_CFD_AGENTS_PYTHON / AETHERCFD_CFD_AGENTS_ROOT environment variables) name them. When they are not
+set, the agents are simply not available and every call says why.
+
 No Qt here.
 """
 
@@ -33,8 +37,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-DEFAULT_ROOT = Path(r"D:\Research-Software\projects\repository-capability-lab\agent-architecture")
-DEFAULT_PYTHON = Path(r"D:\Research-Software\envs\nooa-pilot-2026-09-01\Scripts\python.exe")
 RUNNER = Path(__file__).with_name("_runner.py")
 MARK = "@@AETHER_RESULT "
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -151,8 +153,10 @@ def explain_import_error(agent: str, error: str) -> str:
 class CfdAgents:
     def __init__(self, python: str | Path | None = None, root: str | Path | None = None, *, timeout: float = 180.0,
                  work_dir: str | Path | None = None):
-        self.python = Path(python or os.environ.get("AETHERCFD_CFD_AGENTS_PYTHON") or DEFAULT_PYTHON)
-        self.root = Path(root or os.environ.get("AETHERCFD_CFD_AGENTS_ROOT") or DEFAULT_ROOT)
+        py = python or os.environ.get("AETHERCFD_CFD_AGENTS_PYTHON")
+        rt = root or os.environ.get("AETHERCFD_CFD_AGENTS_ROOT")
+        self.python: Path | None = Path(py) if py else None  # None: not configured, the agents are unavailable
+        self.root: Path | None = Path(rt) if rt else None
         self.timeout = timeout
         if work_dir is None:
             from aethercfd.core.settings import cache_dir
@@ -172,10 +176,16 @@ class CfdAgents:
     # ------------------------------------------------------------------ discovery
     def problems(self) -> list[str]:
         out = []
-        if not self.python.is_file():
+        if self.python is None:
+            out.append("no cfd_agents Python interpreter is configured (set 'cfd_agents_python' in AetherCFD's "
+                       "settings, or AETHERCFD_CFD_AGENTS_PYTHON); the agents are optional")
+        elif not self.python.is_file():
             out.append(f"the cfd_agents Python interpreter was not found at {self.python} (set 'cfd_agents_python' "
                        "in AetherCFD's settings, or AETHERCFD_CFD_AGENTS_PYTHON)")
-        if not (self.root / "cfd_agents" / "__init__.py").is_file():
+        if self.root is None:
+            out.append("no cfd_agents folder is configured (set 'cfd_agents_root' in AetherCFD's settings, or "
+                       "AETHERCFD_CFD_AGENTS_ROOT, to the folder that contains cfd_agents/)")
+        elif not (self.root / "cfd_agents" / "__init__.py").is_file():
             out.append(f"no cfd_agents package under {self.root} (set 'cfd_agents_root' to the folder that "
                        "contains cfd_agents/)")
         return out
@@ -183,14 +193,14 @@ class CfdAgents:
     def probe(self, *, refresh: bool = False) -> Availability:
         """What can run here. Cached per (interpreter, root) for PROBE_TTL s: the agents' environment takes
         tens of seconds to import, and every panel/copilot call makes a new CfdAgents."""
-        key = (str(self.python), str(self.root))
+        key = (str(self.python or ""), str(self.root or ""))
         hit = _PROBES.get(key)
         if not refresh and hit is not None and time.monotonic() - hit[0] < PROBE_TTL:
             self._probe = hit[1]
         if self._probe is not None and not refresh:
             return self._probe
         probs = self.problems()
-        av = Availability(not probs, str(self.python), str(self.root), problems=probs)
+        av = Availability(not probs, str(self.python or ""), str(self.root or ""), problems=probs)
         if not probs:
             ok, res, err, _s, _argv = self._call("probe", {}, timeout=max(self.timeout, 240))
             if not ok:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -18,8 +19,15 @@ from aethercfd.foamdict.edits import (
 from aethercfd.foamdict.parser import parse
 from aethercfd.foamdict.semantic import DictView, Provenance
 
-BFS = Path(r"D:\OpenFOAM\backwardFacingStep2D")
-RPL04 = Path(r"D:\OpenFOAM\RPL Apollo Lunar Module Ascent Engine\cases\04_fans_internal\openfoam")
+# Local OpenFOAM cases for the read-only real-case tests: set AETHERCFD_TEST_CASES to their folder; the
+# tests skip without it.
+_CASES = os.environ.get("AETHERCFD_TEST_CASES")
+CASES = Path(_CASES) if _CASES else None
+NO_CASES = "set AETHERCFD_TEST_CASES to a folder of local OpenFOAM cases"
+# MACRO_CASE: a case whose controlDict has a massFlowOutlet function object that inherits
+# "operation sum" from $massFlowInlet and sets its own "name outlet"
+BFS = CASES / "backwardFacingStep2D" if CASES else None
+MACRO_CASE = CASES / "macro_merge" if CASES else None
 
 FVSOL = """FoamFile { version 2.0; format ascii; class dictionary; object fvSolution; }
 solvers
@@ -123,7 +131,7 @@ def test_remove_entry():
     assert "inlet { value uniform (1 0 0); }" in out
 
 
-@pytest.mark.skipif(not BFS.exists(), reason="corpus not available")
+@pytest.mark.skipif(BFS is None or not BFS.exists(), reason=NO_CASES)
 def test_real_controldict_set_endtime_changes_one_token():
     snap = read_snapshot(BFS / "system" / "controlDict")
     d = parse(snap.text)
@@ -136,9 +144,9 @@ def test_real_controldict_set_endtime_changes_one_token():
     assert snap.encode(out) != snap.encode()  # same encoding/newlines, one token different
 
 
-@pytest.mark.skipif(not RPL04.exists(), reason="corpus not available")
-def test_real_macro_merge_inheritance_rpl_case04():
-    snap = read_snapshot(RPL04 / "system" / "controlDict")
+@pytest.mark.skipif(MACRO_CASE is None or not MACRO_CASE.exists(), reason=NO_CASES)
+def test_real_macro_merge_inheritance():
+    snap = read_snapshot(MACRO_CASE / "system" / "controlDict")
     v = DictView(parse(snap.text))
     lk = v.lookup("functions/massFlowOutlet/operation")
     assert lk is not None and lk.provenance is Provenance.INHERITED and lk.sources == ("$massFlowInlet",)

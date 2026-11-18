@@ -175,7 +175,7 @@ class AetherMeshPanel(Panel):
         w = QWidget()
         lay = QVBoxLayout(w)
         f = QFormLayout()
-        self.g_L = dspin(47.5, 1e-9, 1e9, 6)
+        self.g_L = dspin(50.0, 1e-9, 1e9, 6)
         self.g_first = dspin(0.125, 0, 1e9, 6, special="free")
         self.g_last = dspin(0.125, 0, 1e9, 6, special="free")
         self.g_max = dspin(0.3, 0, 1e9, 6, special="none")
@@ -238,7 +238,7 @@ class AetherMeshPanel(Panel):
         lay.addLayout(f)
         lay.addWidget(QLabel("Levels the hole passes through, inside to outside: <i>name radius</i>, add "
                              "<i>free</i> where the hole is not a real surface (e.g. the annulus' outer wall)"))
-        self.h_levels = QPlainTextEdit("cap 0.6295\nR0 1.0795\nR1 1.5875\nR2 2.667 free\nR3 3.175 free")
+        self.h_levels = QPlainTextEdit("cap 0.65\nR0 1.0\nR1 1.5\nR2 2.5 free\nR3 3.0 free")
         self.h_levels.setMaximumHeight(110)
         lay.addWidget(self.h_levels)
         b = QPushButton("Design hole blocking")

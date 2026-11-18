@@ -6,7 +6,7 @@ it with run.start preset "auto" (the tutorial's Allrun, or mesh + check + solve)
 the run FINISHED, the solver log parses (residuals fall), result times and fields are readable as
 numpy, and the case still opens. Writes build/toys/report.json and prints a table.
 
-    uv run python scripts/toy_campaign.py [--only pitzDaily,cavity] [--root D:/OpenFOAM/_aethercfd_scratch/toys]
+    uv run python scripts/toy_campaign.py [--only pitzDaily,cavity] [--root build/toys/cases]
         [--fork esi-v2606]   (installed fork to use for that family; default: the first one found)
 """
 
@@ -101,7 +101,8 @@ def run_toy(tid: str, family: str, edits: dict, timeout: float, root: Path, fork
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="")
-    ap.add_argument("--root", default="D:/OpenFOAM/_aethercfd_scratch/toys")
+    ap.add_argument("--root", default="build/toys/cases",
+                    help="folder the toy cases are created in (on a Windows drive; no spaces in the path)")
     ap.add_argument("--out", default="build/toys")
     ap.add_argument("--fork", action="append", default=[], help="fork id to use for its family, e.g. esi-v2606")
     a = ap.parse_args()

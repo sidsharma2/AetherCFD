@@ -44,7 +44,7 @@ def test_usable_distros_and_the_best_pick():
     assert r.names == ["Debian", "Ubuntu-22.04"] and [d.name for d in r.other] == ["Legacy"]  # WSL 1 is not used
     assert detect.best_distro(r) == "Ubuntu-22.04"  # the WSL default
     assert detect.best_distro(r, "Debian") == "Debian"  # what the settings already use, if installed
-    assert detect.best_distro(r, "LMAE-OpenFOAM") == "Ubuntu-22.04"  # another PC's distro name is ignored
+    assert detect.best_distro(r, "Ubuntu-OpenFOAM") == "Ubuntu-22.04"  # another PC's distro name is ignored
 
 
 def test_openfoam_probe_explains_both_supported_versions():
@@ -75,7 +75,7 @@ def test_needs_setup(tmp_path, monkeypatch):
     monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path))
     s = Settings()
     assert detect.needs_setup(s, settings_existed=False)
-    s.wsl.default_distro = "LMAE-OpenFOAM"
+    s.wsl.default_distro = "Ubuntu-OpenFOAM"
     assert not detect.needs_setup(s, settings_existed=True)  # an existing, configured install: not shown by itself
     s.wsl.default_distro = ""
     assert detect.needs_setup(s, settings_existed=True)
@@ -127,7 +127,7 @@ def test_settings_defaults_have_no_machine_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path))
     s = Settings()
     dumped = str(s.model_dump())
-    for bad in ("D:\\", "LMAE", "ParaView 6", "Research-Software"):
+    for bad in ("D:\\", "/mnt/", "ParaView 6", "Research-Software"):
         assert bad not in dumped
     assert s.copilot_provider == "claude" and s.copilot_model is None and s.paraview_exe is None
     assert s.case_roots == [str(Path.home() / "OpenFOAM")]

@@ -351,7 +351,7 @@ MESH_TOOLS = [
     Tool("hole_box_design", "Blocking design for a round hole (O-grid) inside a structured box through several "
          "levels (e.g. dilution holes through tube walls): per level the H-O box half-length, graded end slabs, "
          "elliptical layouts where the hole is not a physical surface, and the corner misalignment that predicts "
-         "O-grid corner non-orthogonality (the REV B.1 recipe: 69.6 -> 64.7 deg).", HoleBoxParams, hole_box_design),
+         "O-grid corner non-orthogonality (on a multi-hole probe case: 69.6 -> 64.7 deg).", HoleBoxParams, hole_box_design),
     Tool("run_python", "Run a Python script that lives in the case folder (e.g. an analytic blockMesh generator "
          "you edited with write_file) with AetherCFD's Python on Windows (numpy, scipy, cantera available), in the "
          "script's folder. Returns exit code and output tails. Needs approval; the user sees the script's head.",

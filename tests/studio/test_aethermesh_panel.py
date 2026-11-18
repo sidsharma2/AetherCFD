@@ -39,7 +39,7 @@ def test_quality_tab(panel, qtbot):
 
 def test_grading_and_wall_tabs(panel):
     panel.design()
-    assert "166 cells" in panel.g_out.toPlainText() and "((" in panel.g_out.toPlainText()
+    assert "174 cells" in panel.g_out.toPlainText() and "((" in panel.g_out.toPlainText()
     panel.wall()
     assert "First cell height" in panel.w_out.toPlainText()
 
@@ -61,7 +61,7 @@ def test_geometry_tab(panel, qtbot, tmp_path):
 def test_holes_tab(panel):
     panel.holes()
     txt = panel.h_out.toPlainText()
-    assert "ellipse" in txt and "0.36" in txt and "27.2°" in txt
+    assert "ellipse" in txt and "0.36" in txt and "26.7°" in txt
     panel.h_levels.setPlainText("cap x")
     panel.holes()
     assert "cannot read" in panel.h_out.toPlainText()
@@ -107,7 +107,7 @@ def test_bad_inputs_give_messages(panel):
     panel.g_max.setValue(0)
     panel.design()  # used to raise ValueError out of the slot
     assert "give n" in panel.g_out.toPlainText()
-    panel.h_levels.setPlainText("cap 0.6295\nR0 1.0795")
+    panel.h_levels.setPlainText("cap 0.65\nR0 1.0")
     panel.h_r.setValue(5.0)
     panel.h_half.setValue(1.0)
     panel.holes()
