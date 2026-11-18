@@ -202,6 +202,20 @@ class RunPanel(Panel):
             ctl.addWidget(b, i // 2, i % 2)
             self.btns[key] = b
         lay.addLayout(ctl)
+        # a run the divergence guard stopped: one plan to restart from its last good time (roadmap Q6)
+        rrow = QHBoxLayout()
+        self.restart_btn = QPushButton(icon("msc.debug-restart", T.ok), "Restart from last good time…")
+        self.restart_btn.setToolTip("Roll back to the newest written time before the divergence and restart with "
+                                    "gentler numerics (relaxation times 0.7 or the time step times 0.5). Shown as a plan first.")
+        self.restart_btn.clicked.connect(self.plan_restart)
+        self.upwind = QCheckBox("first-order convection")
+        self.upwind.setToolTip("Also switch convection to first-order upwind (more robust, less accurate: switch "
+                               "back once the run is stable)")
+        rrow.addWidget(self.restart_btn, 1)
+        rrow.addWidget(self.upwind)
+        lay.addLayout(rrow)
+        self.restart_btn.hide()
+        self.upwind.hide()
         self.guards = QListWidget()
         self.guards.setMaximumHeight(90)
         lay.addWidget(QLabel("Guard & run messages"))
@@ -348,6 +362,79 @@ class RunPanel(Panel):
                                f"<span style='color:{T.text_dim}'>{where}{extra}</span>")
         else:
             self.btns["resume"].setVisible(False)
+        diverged = rec is not None and bool(rec.divergence) and not active
+        self.restart_btn.setVisible(diverged)
+        self.upwind.setVisible(diverged)
+        self.restart_btn.setEnabled(diverged and not getattr(self, "_restarting", False))
+
+    # ------------------------------------------------------------------ restart after divergence (Q6)
+    def plan_restart(self) -> None:
+        s = self._session()
+        rec = s.runs.get(self.run_id) if (s and s.runs and self.run_id) else None
+        if rec is None or not rec.divergence or not self.ctx.services.ensure_project():
+            return
+        root, div, upwind = s.root, dict(rec.divergence), self.upwind.isChecked()
+        log_path = s.runs.exec_case_win(rec) / div["log"] if div.get("log") else None
+        self._restarting = True
+        self.restart_btn.setText("Planning the restart…")
+        self._update_buttons()
+
+        def work():
+            # reading every field of the candidate times and asking Murphy can take a while: off the GUI thread
+            from aethercfd.case.rollback import plan_restart
+
+            plan = plan_restart(root, div, first_order=upwind)
+            murphy = None
+            if log_path is not None and log_path.is_file():
+                try:
+                    from aethercfd.services.cfd_agents import CfdAgents
+
+                    r = CfdAgents.from_settings().murphy(log_path, success=False, converged=False)
+                    murphy = r.explanation if r.explanation else None
+                except Exception:
+                    log.exception("Murphy could not read %s", log_path)
+            return plan, murphy
+
+        self.ctx.services.run_bg(work, partial(self._restart_planned, div))
+
+    def _restart_planned(self, div: dict, result) -> None:
+        self._restarting = False
+        self.restart_btn.setText("Restart from last good time…")
+        self._update_buttons()
+        out, err = result
+        s = self._session()
+        if err is not None or s is None:
+            self.ctx.services.notify(f"Cannot plan the restart: {err}", "error")
+            return
+        plan, murphy = out
+        if plan.errors:
+            QMessageBox.warning(self, "No restart possible", "\n".join(plan.errors))
+            return
+        from aethercfd.studio.widgets.approval import ApprovalDialog
+
+        what = div.get("message") or "the run diverged"
+        why = [f"The run diverged: {what}." if div.get("kind") == "crash" else
+               f"The divergence watchdog stopped the run: {what}.",
+               f"Last good time: {div.get('last_ok_text') or 'before the first step'}. "
+               f"Restart from the newest clean write at or before it: {plan.start.name}.",
+               *plan.notes]
+        if murphy:
+            why.append(murphy)
+        params = plan.batch_params()
+        try:
+            cmd_plan = s.executor.plan("dict.batch", params, USER, rationale="\n".join(why))
+        except Exception as exc:
+            self.ctx.services.notify(f"Cannot plan the restart: {exc}", "error")
+            return
+        if ApprovalDialog(cmd_plan, self, who="Divergence watchdog").exec() != QDialog.DialogCode.Accepted:
+            return
+        res = s.executor.execute("dict.batch", params, USER, plan=cmd_plan, approved_hash=cmd_plan.plan_hash)
+        if res.ok:
+            self.ctx.services.notify(f"Restart prepared from time {plan.start.name}: press Start to run it "
+                                     "(undo it in the Command Journal)")
+        else:
+            self.ctx.services.notify(f"The restart plan was not applied: {res.message}", "error")
+        self._refresh()
 
     # ------------------------------------------------------------------ actions
     def start(self) -> None:

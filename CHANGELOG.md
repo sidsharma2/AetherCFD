@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Divergence watchdog (2026-11-16)
+
+Roadmap Q6. See [docs/divergence.md](docs/divergence.md).
+
+- The run manager watches every solver step for divergence. It stops a run on NaN or inf, a bounded field that
+  blows up, a diverging linear solver, a residual or Courant number blow-up, or a temperature at or below 0 K,
+  and warns on earlier signs. `[guards] divergence = "stop" | "warn" | "off"` in `settings.toml`.
+- After a divergence stop, or a floating-point crash, the Run panel offers **Restart from last good time…**: one
+  journalled plan that restarts from the newest clean write at or before the last good time and makes the
+  numerics gentler (relaxation, time step, optionally first-order convection, `purgeWrite` 3). Murphy's
+  diagnosis is shown with the plan when cfd_agents is available.
+- The log parser records which fields needed bounding in each step, and by how much.
+- `scripts/divergence_corpus.py` runs the watchdog over a folder of real logs, read-only. On 111 solver logs it
+  stops the 2 that diverged and none of the others.
+- Tests for the watchdog, the restart plan, the run manager's stop and crash paths, and the Run panel button.
+
 ### Hardening (2026-11-15)
 
 Three hardening passes on top of the features below, merged in `release/hardening`.

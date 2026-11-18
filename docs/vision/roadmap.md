@@ -232,6 +232,9 @@ parts for each of these. It lacks the chain that joins them, and the tests that 
 
 ### Q6. Divergence watchdog with rollback to the last good time
 
+*Status (2026-11-16): built, see [docs/divergence.md](../divergence.md). The limits come from a corpus of 111
+real logs. The ESI `runTimeControl` backstop was left out: its residual condition cannot see NaN.*
+
 * **Why.** A beginner's diverged run ends with NaNs in the newest time folder, and often the last good folder is
   already gone. Fluent watches for divergence patterns and changes the numerics itself [V23]. AetherCFD should stop
   early, keep good data and propose the change for approval.

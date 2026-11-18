@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 import tomli_w
 from platformdirs import user_cache_dir, user_config_dir
@@ -47,6 +48,9 @@ class GuardSettings(BaseModel):
     log_hard_cap_gb: float = 10.0
     disk_reserve_gb: float = 20.0
     disk_reserve_fraction: float = 0.10
+    # divergence watchdog (roadmap Q6): "stop" stops a run on unambiguous signs (NaN, blow-up) and offers a
+    # restart from the last good time; "warn" only reports them; "off" turns the watchdog off
+    divergence: Literal["stop", "warn", "off"] = "stop"
 
 
 class Settings(BaseModel):
