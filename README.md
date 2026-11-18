@@ -7,6 +7,12 @@ or the OpenAI Codex CLI) can read a case and propose changes, and you approve ea
 research group: for students who know CFD and want to use OpenFOAM without hunting through dictionaries, and for
 anyone who wants to see exactly what changed in a case and why.
 
+> **Project status: in active development.** AetherCFD Studio is a research tool that is still growing. It has
+> automated tests and we use it on our own cases, but it has bugs we have not found yet, and features can
+> change between versions. Check results that matter against OpenFOAM's own output, keep copies of cases you
+> care about, and please [report problems](https://github.com/sidsharma2/AetherCFD/issues) (Help > Report a
+> Problem makes a zip with the logs). Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ![AetherCFD Studio on the pitzDaily case: case files, the 3D viewport with the velocity magnitude, and the guided workflow](docs/screenshots/01-main-window.png)
 
 ## What you can do
