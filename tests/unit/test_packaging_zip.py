@@ -33,7 +33,8 @@ def test_release_zip_layout(tmp_path):
         cmd = z.read("Install AetherCFD.cmd")
         assert b"\r\n" in cmd and b"\n" not in cmd.replace(b"\r\n", b"")  # every line ends CRLF
         assert b"wizard" in z.read("INSTALL.md").lower()
-    assert build.RELEASE_EXTRAS.keys() == {"install.py", "Install AetherCFD.cmd", "INSTALL.md"}
+    assert build.RELEASE_EXTRAS.keys() == {"install.py", "Install AetherCFD.cmd", "INSTALL.md", "LICENSE", "NOTICE",
+                                           "THIRD_PARTY_NOTICES.md"}
     assert all(p.is_file() for p in build.RELEASE_EXTRAS.values())
 
 
