@@ -1,5 +1,5 @@
 # Vendored from cfd_agents@820a5f9 case/_text_io.py
-# (D:/Research-Software/projects/repository-capability-lab/agent-architecture). Never import
+# (the agent-architecture repository by Siddharth Sharma). Never import
 # cfd_agents itself -- see docs/adr/0001-reuse-cfd-agents.md. Local edits are marked 'AetherCFD:'.
 """Robust text reading for pre-existing case artifacts.
 

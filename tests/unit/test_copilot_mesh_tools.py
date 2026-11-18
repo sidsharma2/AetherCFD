@@ -34,12 +34,12 @@ def test_mesh_hotspots_missing_region(tmp_path):
 
 def test_grading_and_wall_tools(tmp_path):
     ts = _ts(tmp_path)
-    ok, text = ts.call("grading_design", {"length": 47.5, "first": 0.125, "last": 0.125, "max_size": 0.3,
+    ok, text = ts.call("grading_design", {"length": 50.0, "first": 0.125, "last": 0.125, "max_size": 0.3,
                                           "max_ratio": 1.1})
     d = json.loads(text)
     assert ok and d["max_cell_to_cell_ratio"] <= 1.1 and d["compare_single_ratio"]["expansion"] == 1.0
-    ok, text = ts.call("wall_spacing", {"yplus": 1, "U": 190, "L": 0.002159, "kind": "pipe", "T": 1339,
-                                        "p": 3.7e5, "core_cell": 2e-4})
+    ok, text = ts.call("wall_spacing", {"yplus": 1, "U": 200, "L": 0.002, "kind": "pipe", "T": 1300,
+                                        "p": 4e5, "core_cell": 2e-4})
     w = json.loads(text)
     assert ok and 5e3 < w["reynolds"] < 2e4 and 2e-6 < w["first_cell"] < 3e-5 and w["layers"]["n"] > 5
 

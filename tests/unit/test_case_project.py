@@ -14,11 +14,19 @@ from aethercfd.project.journal import Journal, ObjectStore
 from aethercfd.project.project import SIDECAR, CaseConfig, Mode, Placement, Project
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "cases"
-REAL = {
-    "bfs": Path(r"D:\OpenFOAM\backwardFacingStep2D"),
-    "sandia": Path(r"D:\OpenFOAM\SandiaFlameD"),
-    "rpl04": Path(r"D:\OpenFOAM\RPL Apollo Lunar Module Ascent Engine\cases\04_fans_internal\openfoam"),
-    "cht": Path(r"D:\OpenFOAM\AutoFOAM_Agents\cases\probeStudy_station4\analysis\C1d_time1_annulus_probe_20260914"),
+# Local OpenFOAM cases for the read-only real-case tests: set AETHERCFD_TEST_CASES to their folder; the
+# tests skip without it.
+_CASES = os.environ.get("AETHERCFD_TEST_CASES")
+CASES = Path(_CASES) if _CASES else None
+NO_CASES = "set AETHERCFD_TEST_CASES to a folder of local OpenFOAM cases"
+# backwardFacingStep2D and SandiaFlameD are the tutorials; "spaced name/generated" is any case in a path
+# with spaces whose dictionaries a generator script wrote; cht_multiregion a multi-region case with a
+# "fluid" region
+REAL = {} if CASES is None else {
+    "bfs": CASES / "backwardFacingStep2D",
+    "sandia": CASES / "SandiaFlameD",
+    "spaced": CASES / "spaced name" / "generated",
+    "cht": CASES / "cht_multiregion",
 }
 
 
@@ -79,19 +87,19 @@ def test_classify_file():
     assert classify_file(root, root / "Allrun") is FileKind.SCRIPT
 
 
-@pytest.mark.skipif(not REAL["bfs"].exists(), reason="corpus not available")
+@pytest.mark.skipif(not REAL or not REAL["bfs"].exists(), reason=NO_CASES)
 def test_real_cases_facts_and_read_only_invariant():
     before = {k: tree_state(p) for k, p in REAL.items() if p.exists()}
     bfs = load_case(REAL["bfs"])
     sandia = load_case(REAL["sandia"])
-    rpl = load_case(REAL["rpl04"]) if REAL["rpl04"].exists() else None
+    spaced = load_case(REAL["spaced"]) if REAL["spaced"].exists() else None
     cht = load_case(REAL["cht"]) if REAL["cht"].exists() else None
     assert bfs.regions[0].is_2d and bfs.n_cells == 20540 and bfs.application == "simpleFoam"
     assert sandia.regions[0].is_axisymmetric and len(sandia.times) >= 30
-    if rpl:
-        assert not rpl.path_safety.safe and rpl.generated_by and "generate_case04" in rpl.generated_by
+    if spaced:
+        assert not spaced.path_safety.safe and spaced.generated_by
     if cht:
-        assert cht.multi_region and "fluid" in [r.name for r in cht.regions] and cht.n_cells == 1430400
+        assert cht.multi_region and "fluid" in [r.name for r in cht.regions] and cht.n_cells > 0
     after = {k: tree_state(p) for k, p in REAL.items() if p.exists()}
     assert before == after, "loading a case must never write into it"
 

@@ -58,9 +58,9 @@ def test_copilot_keeps_the_message_when_claude_cannot_start(sv, qtbot, tmp_path,
         raise FileNotFoundError("no such folder")
 
     monkeypatch.setattr(p, "_ensure_session", boom)
-    p.input.setPlainText("open the REV B.1 probe")
+    p.input.setPlainText("open the jet case")
     p._send_input()
-    assert p.input.toPlainText() == "open the REV B.1 probe"
+    assert p.input.toPlainText() == "open the jet case"
     assert p.items and p.items[-1]["role"] == "note" and "could not start" in p.items[-1]["text"]
 
 

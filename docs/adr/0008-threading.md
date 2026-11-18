@@ -68,8 +68,8 @@ None breaks a rule today.
 
 ## Consequences
 
-The deep copy costs one extra copy of what a load reads. Measured on the REV B.1 probe case (g2h mesh,
-1,028,736 cells, field T with cell-to-point values), it took 0.03 s and 172 MB. The time does not matter.
+The deep copy costs one extra copy of what a load reads. Measured on a private decomposed 3-D jet case
+(1,028,736 cells, field T with cell-to-point values), it took 0.03 s and 172 MB. The time does not matter.
 The memory does on a big case. It scales with the mesh, so scaling the measurement linearly gives about
 1.7 GB for a 10M-cell case with one field, and more with several. If that becomes a limit, the fix is a reader per load (no shared cache) rather than
 going back to shallow copies.

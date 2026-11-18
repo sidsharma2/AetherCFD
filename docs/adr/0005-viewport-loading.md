@@ -10,8 +10,8 @@ QThread, results handed to the GUI as `NewInstance()+ShallowCopy()` over a queue
 |---|---|---|---|---|---|
 | backwardFacingStep2D | 20,540 | 0.21 s | 0.06–0.10 s | 10.9 ms | unchanged |
 | SandiaFlameD (wedge, 38 times) | 5,170 | 0.17 s | 0.13–0.18 s | 11.5 ms | unchanged |
-| actsr_hump_L1 | 90,112 | 0.40 s | 0.07 s | 10.8 ms | unchanged |
-| probeStudy C1d annulus (multi-region, `fluid`) | 1,430,400 | 4.42 s | — | 54.1 ms | unchanged |
+| a private 2-D test case | 90,112 | 0.40 s | 0.07 s | 10.8 ms | unchanged |
+| a private multi-region CHT case (`fluid` region) | 1,430,400 | 4.42 s | — | 54.1 ms | unchanged |
 
 (The probe ticks every 10 ms, so ~11 ms means "never blocked".) VTK releases the GIL during reader
 work, so the GUI stays responsive while the worker loads.

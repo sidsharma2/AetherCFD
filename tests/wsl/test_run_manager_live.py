@@ -1,5 +1,5 @@
 """Live run-manager tests (marker wsl_slow). Everything runs on copies under
-D:\\OpenFOAM\\_aethercfd_scratch\\tests; nothing touches real cases; no distro is ever shut down."""
+$AETHERCFD_TEST_SCRATCH; nothing touches real cases; no distro is ever shut down."""
 
 from __future__ import annotations
 
@@ -18,18 +18,19 @@ from aethercfd.documents.document import Document
 from aethercfd.project.project import Placement, Project
 from aethercfd.runs.manager import RunManager, RunState
 from aethercfd.runs.spec import RunStep, StepKind
-from tests.wsl._forks import by_family
+from tests.wsl._forks import CASES, DISTRO, SCRATCH_ROOT, by_family, needs_distro, needs_scratch
 
-pytestmark = [pytest.mark.wsl_slow, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL")]
+pytestmark = [pytest.mark.wsl_slow, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL"),
+              needs_distro, needs_scratch]
 
-SCRATCH = Path(r"D:\OpenFOAM\_aethercfd_scratch\tests")
+SCRATCH = SCRATCH_ROOT
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "cases"
-BFS = Path(r"D:\OpenFOAM\backwardFacingStep2D")
+BFS = CASES / "backwardFacingStep2D" if CASES else None  # read only; copied into SCRATCH
 
 
 @pytest.fixture(scope="module")
 def runner():
-    r = WslRunner("LMAE-OpenFOAM")
+    r = WslRunner(DISTRO)
     busy = r.run_script("pgrep -f 'Foam|foamRun|mpirun' | grep -v pgrep | head -1\n").stdout.strip()
     if busy:
         pytest.skip("an OpenFOAM process is already running in the distro; not competing with it")
@@ -103,7 +104,7 @@ def time_dirs(case: Path) -> set[str]:
     return {p.name for p in case.iterdir() if p.is_dir() and p.name.replace(".", "", 1).isdigit()}
 
 
-@pytest.mark.skipif(not BFS.exists(), reason="corpus not available")
+@pytest.mark.skipif(BFS is None or not BFS.exists(), reason="set AETHERCFD_TEST_CASES (backwardFacingStep2D)")
 def test_reattach_pause_resume_and_pid_reuse_guard(runner, forks, env):
     case_dir = fresh("reattach_bfs", BFS)
     proj = Project.create(case_dir)

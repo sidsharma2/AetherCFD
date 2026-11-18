@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import shutil
 import uuid
-from pathlib import Path
 
 import pytest
 
@@ -21,15 +20,16 @@ from aethercfd.templates.create import (
     family_of,
     new_value_text,
 )
-from tests.wsl._forks import by_family
+from tests.wsl._forks import DISTRO, SCRATCH_ROOT, by_family, needs_distro, needs_scratch
 
-pytestmark = [pytest.mark.wsl, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL")]
-SCRATCH = Path(r"D:\OpenFOAM\_aethercfd_scratch\tests\templates")
+pytestmark = [pytest.mark.wsl, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL"),
+              needs_distro, needs_scratch]
+SCRATCH = SCRATCH_ROOT / "templates"
 
 
 @pytest.fixture(scope="module")
 def forks():
-    r = WslRunner("LMAE-OpenFOAM")
+    r = WslRunner(DISTRO)
     return r, by_family(probe_forks(r))
 
 

@@ -15,10 +15,11 @@ from aethercfd.mesh.geometry import analyse
 from aethercfd.mesh.snappy import minimal_system, snappy_setup
 from aethercfd.mesh.strategy import plan
 from tests.unit.test_mesh_snappy import _pipe_with_regions, _sphere
-from tests.wsl._forks import by_family
+from tests.wsl._forks import DISTRO, SCRATCH_ROOT, by_family, needs_distro, needs_scratch
 
-pytestmark = [pytest.mark.wsl_slow, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL")]
-SCRATCH = Path(r"D:\OpenFOAM\_aethercfd_scratch\tests\snappy")
+pytestmark = [pytest.mark.wsl_slow, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL"),
+              needs_distro, needs_scratch]
+SCRATCH = SCRATCH_ROOT / "snappy"
 
 
 def _mesh(setup, case: Path, fork) -> str:
@@ -33,14 +34,14 @@ def _mesh(setup, case: Path, fork) -> str:
     body = prelude(fork) + 'cd "$1" || exit 2\n' + "".join(
         f"{app} {' '.join(args)} > log.{app} 2>&1 || {{ echo FAILED {app}; tail -30 log.{app}; exit 3; }}\n"
         for app, args in setup.steps) + "tail -5 log.checkMesh\n"
-    r = WslRunner("LMAE-OpenFOAM").run_script(body, [win_to_wsl(str(case))], timeout_s=1200)
+    r = WslRunner(DISTRO).run_script(body, [win_to_wsl(str(case))], timeout_s=1200)
     assert r.ok, r.stdout[-4000:] + r.stderr[-2000:]
     return (case / "log.checkMesh").read_text(encoding="utf-8", errors="replace")
 
 
 @pytest.fixture(scope="module")
 def forks():
-    return by_family(probe_forks(WslRunner("LMAE-OpenFOAM")))
+    return by_family(probe_forks(WslRunner(DISTRO)))
 
 
 @pytest.mark.timeout(1500)

@@ -36,7 +36,16 @@ uv run lint-imports
 uv run pytest tests/unit tests/studio -m "not wsl and not wsl_slow and not corpus and not gl"
 ```
 
-These are the checks CI runs on every pull request. Also:
+These are the checks CI runs on every pull request. The other tests need local data and skip without it:
+
+| Variable | Used by |
+|---|---|
+| `AETHERCFD_TEST_DISTRO` | `tests/wsl`: the WSL distro with OpenFOAM |
+| `AETHERCFD_TEST_SCRATCH` | `tests/wsl`: a Windows folder the live tests may create cases in |
+| `AETHERCFD_TEST_CASES` | a folder of your own OpenFOAM cases (for example `backwardFacingStep2D`, `SandiaFlameD`) for the read-only real-case tests |
+| `AETHERCFD_CORPUS` | `tests/corpus`: a folder of OpenFOAM cases for the lossless round-trip test |
+
+Also:
 
 - Add a test for each fix and each feature. A test that fails without your change is the best evidence.
 - Keep `aethercfd.core`, `aethercfd.case`, `aethercfd.runs` and `aethercfd.results` free of Qt. The import

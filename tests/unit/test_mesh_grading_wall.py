@@ -25,21 +25,21 @@ def test_geometric_sizes_match_blockmesh_convention():
     assert math.isclose(n_for(1.0, 0.1, 1.0), 10.0)
 
 
-def test_rev_b1_segment_e_redesign():
-    """REV B.1 downstream bore: 47.5 mm, 100 cells graded 8 today (0.125 mm neighbours on both sides,
-    1.125 mm last cell -> 9:1 jump). Matching both neighbours with r <= 1.1 and cells <= 0.3 mm:"""
-    old = sizes(100, 47.5, 8.0)
-    assert old[-1] / 0.125 > 8.9  # the 9:1 jump the investigation found
-    d = design(47.5, first=0.125, last=0.125, max_size=0.3, max_ratio=1.1)
+def test_two_sided_segment_redesign():
+    """An illustrative 50 mm segment: 100 cells graded 8 (0.125 mm neighbours on both sides,
+    1.18 mm last cell -> 9.5:1 jump). Matching both neighbours with r <= 1.1 and cells <= 0.3 mm:"""
+    old = sizes(100, 50.0, 8.0)
+    assert old[-1] / 0.125 > 8.9  # the ~9:1 jump at the neighbour
+    d = design(50.0, first=0.125, last=0.125, max_size=0.3, max_ratio=1.1)
     c = d.cells()
-    assert math.isclose(c.sum(), 47.5, rel_tol=1e-9)
+    assert math.isclose(c.sum(), 50.0, rel_tol=1e-9)
     assert d.max_cell_ratio <= 1.1001
     assert c[0] == pytest.approx(0.125, rel=0.02) and c[-1] == pytest.approx(0.125, rel=0.02)
     assert c.max() <= 0.3 * 1.0001
     assert 150 <= d.n <= 200
     g = d.blockmesh()
     assert g.startswith("((") and g.count("(") == 4  # three segments: grow, uniform, shrink
-    frac_l = sum(s.length for s in d.segments) / 47.5
+    frac_l = sum(s.length for s in d.segments) / 50.0
     assert math.isclose(frac_l, 1.0)
 
 

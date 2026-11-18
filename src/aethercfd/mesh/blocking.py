@@ -4,12 +4,12 @@ The situation: a hole of radius ``r`` drilled through a wall that is meshed with
 O-grid maps the circle onto a box whose sides are set by the surrounding blocking -- e.g. the azimuthal
 sector width on a tube (it changes with the radius of each level) and the axial pitch between rows of holes.
 The O-grid's diagonal grid lines run from the circle's 45-degree points to the box corners; when the box is
-elongated, a box corner sits at atan(w/a) instead of 45 degrees and the corner cells shear. The REV B.1
-probe (2026-10-08) measured it: a 3:1 box (corner line 27 degrees off) gave 69.6 degrees non-orthogonality
-exactly where the dilution jets enter the bore, and a box narrowed axially to the wrong size moved the
-problem into the annulus (76.5 degrees).
+elongated, a box corner sits at atan(w/a) instead of 45 degrees and the corner cells shear. A multi-hole
+probe case (2026-10-08) measured it: a 3:1 box (corner line 27 degrees off) gave 69.6 degrees
+non-orthogonality exactly where the dilution jets enter the bore, and a box narrowed axially to the wrong size
+moved the problem into the annulus (76.5 degrees).
 
-``design_hole_box`` is the recipe that fixed it (REV B.1 G2h: 69.6 -> 64.7 degrees, determinant 0.0024 ->
+``design_hole_box`` is the recipe that fixed it (on that case: 69.6 -> 64.7 degrees, determinant 0.0024 ->
 0.0040, no new size jumps):
 
 1. H-O topology: per level, a box half-length ``a`` as close to the box half-width ``w`` (a square box) as

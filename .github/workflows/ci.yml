@@ -3,7 +3,7 @@
 # Lint runs on Ubuntu (cheaper minutes). Tests run on Windows only: the app and its core are Windows programs
 # (drive paths, wsl.exe creationflags, LOCALAPPDATA), so most core tests cannot run on Linux.
 #
-# Hosted runners have no GPU, no OpenFOAM distro and no corpus under D:\OpenFOAM, so tests marked wsl, wsl_slow,
+# Hosted runners have no GPU, no OpenFOAM distro and no case corpus, so tests marked wsl, wsl_slow,
 # corpus or gl are deselected here; run them locally (README, Development). windows-2025 does ship wsl.exe, so the
 # markers, not the "no WSL" skips, are what keeps live WSL tests out.
 #

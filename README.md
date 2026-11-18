@@ -121,7 +121,7 @@ Python package):
 
 ```
 AetherCFD 0.1.0.dev0
-Python    3.12.13  (D:\Research-Software\AetherCFD\.venv\Scripts\python.exe)
+Python    3.12.13  (C:\src\AetherCFD\.venv\Scripts\python.exe)
 Platform  Windows-11-10.0.26300-SP0
 
 Qt and VTK
@@ -133,7 +133,7 @@ GPU
   [ok  ] CUDA compute (CuPy)          NVIDIA GeForce RTX 3050 Ti Laptop GPU, 4.0 GB, CUDA runtime 12.9
 
 WSL and OpenFOAM
-  [ok  ] LMAE-OpenFOAM                stopped; OpenFOAM found at the last probe (2026-11-15): esi-v2306, esi-v2606, foundation-14
+  [ok  ] Ubuntu-OpenFOAM              stopped; OpenFOAM found at the last probe (2026-11-15): esi-v2306, esi-v2606, foundation-14
 
 Optional tools
   [ok  ] ParaView                     C:\Program Files\ParaView 6.1.0\bin\paraview.exe
@@ -187,7 +187,7 @@ Copilot
 - Cluster runs support Slurm only, and they have not been tested on a real cluster yet. The tests use a fake
   Slurm. [docs/cluster-runs.md](docs/cluster-runs.md) lists what to check on the first real job.
 - A PINN result is a reconstruction from sparse data, and only steady problems are supported. On the
-  turbulent 3-D jet of the REV B.1 case the temperature reconstruction reached only RMSE/std 0.78 to 0.81,
+  turbulent 3-D jet of a private test case the temperature reconstruction reached only RMSE/std 0.78 to 0.81,
   about as good as predicting the mean everywhere.
 - The `--cpu-only` build of `packaging/build.py` is experimental and untested.
 - One native crash is not explained. In one of three full runs of the studio tests on the development PC,

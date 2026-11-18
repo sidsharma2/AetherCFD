@@ -9,10 +9,10 @@ Build  : 14-b4f91ad8bbba
 Exec   : foamRun
 Date   : Oct 07 2026
 Time   : 16:25:10
-Host   : "SIDS-PC"
+Host   : "my-host"
 PID    : 1597
 I/O    : uncollated
-Case   : /mnt/d/OpenFOAM/_aethercfd_scratch/spikeC/sig_of14-site
+Case   : /home/user/OpenFOAM/user-14/run/aethercfd/of14_cavity_1
 nProcs : 1
 sigFpe : Enabling floating point exception trapping (FOAM_SIGFPE).
 fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 10)
