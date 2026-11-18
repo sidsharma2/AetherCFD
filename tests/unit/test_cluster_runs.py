@@ -30,7 +30,7 @@ FIX = Path(__file__).resolve().parents[1] / "fixtures" / "cases"
 PROFILE = ClusterProfile(name="hpc", host="login.example.org", user="sid", openfoam_version="v2306",
                          env_setup="module load openfoam/v2306", partition="compute", account="def-sid",
                          poll_s=0, sync_every_s=0)
-ESI = ForkProfile("esi-v2306", Family.ESI, "v2306", "LMAE-OpenFOAM", "/a/etc/bashrc", "/a", True)
+ESI = ForkProfile("esi-v2306", Family.ESI, "v2306", "Ubuntu-OpenFOAM", "/a/etc/bashrc", "/a", True)
 
 
 class Bus:
@@ -47,7 +47,7 @@ class Bus:
 class NoLocalRunner:
     """A cluster run must never touch the local WSL distro (except through the transport)."""
 
-    distro = "LMAE-OpenFOAM"
+    distro = "Ubuntu-OpenFOAM"
 
     def run_script(self, *a, **k):
         raise AssertionError("the local WSL runner was used for a cluster run")
@@ -484,7 +484,7 @@ def test_a_stuck_wsl_never_escapes_local_control(env):
     mgr, _fake, case = env
 
     class StuckRunner:
-        distro = "LMAE-OpenFOAM"
+        distro = "Ubuntu-OpenFOAM"
 
         def run_script(self, *a, **k):
             from aethercfd.backend.wsl.runner import WslError

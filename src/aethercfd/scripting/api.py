@@ -1,7 +1,7 @@
 """Scripting facade: one object that wires the headless core together.
 
     from aethercfd.scripting.api import Session
-    s = Session(r"D:\\OpenFOAM\\backwardFacingStep2D", create_project=True)
+    s = Session(r"D:\\cases\\backwardFacingStep2D", create_project=True)
     s.set("system/controlDict", "endTime", "500")          # journalled, minimal edit
     run_id = s.run(preset="solve")                          # detached WSL run
     s.runs.wait(run_id)

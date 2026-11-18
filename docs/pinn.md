@@ -17,7 +17,7 @@ copilot as the `pinn_train` tool.
 
 - It is not a solver. A PINN result is a reconstruction. It does not replace the CFD solution and it is
   not checked for convergence the way OpenFOAM checks its residuals. Every result says so.
-- It is not reliable on turbulent 3-D flows. On the REV B.1 3-D jet-mixing case the temperature
+- It is not reliable on turbulent 3-D flows. On a turbulent 3-D jet-mixing case the temperature
   reconstruction reached only RMSE/std 0.78 to 0.81. A value near 1 means the network does about as well
   as predicting the mean everywhere.
 - It does not extrapolate. Away from the data and outside the box of the training points the error grows,
@@ -165,7 +165,7 @@ interior probes, so the panel does not offer it.
 - Steady problems only: incompressible Navier-Stokes, advection-diffusion of one scalar, or a data fit.
 - The domain is the bounding box of the points. Walls inside the box are not known to the network.
 - Soft physics constraints balance badly on stiff or turbulent problems. Expect large errors on 3-D
-  turbulent jets (RMSE/std 0.78 to 0.81 on REV B.1), and check the held-out error before you use a result.
+  turbulent jets (RMSE/std 0.78 to 0.81 on a 3-D jet case), and check the held-out error before you use a result.
 - The best case is the Kovasznay flow test: Re 20, exact velocity data on the boundary only, 4000 Adam and
   800 L-BFGS steps. On the development laptop it reached a relative L2 error of 0.06 % in u and 0.42 % in v,
   and RMSE/std 0.001 (u) and 0.004 (v) on 300 held-out interior points, in 196 s on the GPU.

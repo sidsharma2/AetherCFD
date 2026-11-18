@@ -7,6 +7,12 @@ or the OpenAI Codex CLI) can read a case and propose changes, and you approve ea
 research group: for students who know CFD and want to use OpenFOAM without hunting through dictionaries, and for
 anyone who wants to see exactly what changed in a case and why.
 
+> **Project status: in active development.** AetherCFD Studio is a research tool that is still growing. It has
+> automated tests and we use it on our own cases, but it has bugs we have not found yet, and features can
+> change between versions. Check results that matter against OpenFOAM's own output, keep copies of cases you
+> care about, and please [report problems](https://github.com/sidsharma2/AetherCFD/issues) (Help > Report a
+> Problem makes a zip with the logs). Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ![AetherCFD Studio on the pitzDaily case: case files, the 3D viewport with the velocity magnitude, and the guided workflow](docs/screenshots/01-main-window.png)
 
 ## What you can do
@@ -115,7 +121,7 @@ Python package):
 
 ```
 AetherCFD 0.1.0.dev0
-Python    3.12.13  (D:\Research-Software\AetherCFD\.venv\Scripts\python.exe)
+Python    3.12.13  (C:\src\AetherCFD\.venv\Scripts\python.exe)
 Platform  Windows-11-10.0.26300-SP0
 
 Qt and VTK
@@ -127,7 +133,7 @@ GPU
   [ok  ] CUDA compute (CuPy)          NVIDIA GeForce RTX 3050 Ti Laptop GPU, 4.0 GB, CUDA runtime 12.9
 
 WSL and OpenFOAM
-  [ok  ] LMAE-OpenFOAM                stopped; OpenFOAM found at the last probe (2026-11-15): esi-v2306, esi-v2606, foundation-14
+  [ok  ] Ubuntu-OpenFOAM              stopped; OpenFOAM found at the last probe (2026-11-15): esi-v2306, esi-v2606, foundation-14
 
 Optional tools
   [ok  ] ParaView                     C:\Program Files\ParaView 6.1.0\bin\paraview.exe
@@ -181,7 +187,7 @@ Copilot
 - Cluster runs support Slurm only, and they have not been tested on a real cluster yet. The tests use a fake
   Slurm. [docs/cluster-runs.md](docs/cluster-runs.md) lists what to check on the first real job.
 - A PINN result is a reconstruction from sparse data, and only steady problems are supported. On the
-  turbulent 3-D jet of the REV B.1 case the temperature reconstruction reached only RMSE/std 0.78 to 0.81,
+  turbulent 3-D jet of a private test case the temperature reconstruction reached only RMSE/std 0.78 to 0.81,
   about as good as predicting the mean everywhere.
 - The `--cpu-only` build of `packaging/build.py` is experimental and untested.
 - One native crash is not explained. In one of three full runs of the studio tests on the development PC,
@@ -199,7 +205,10 @@ Copilot
 - [docs/cluster-runs.md](docs/cluster-runs.md): running cases on a Slurm cluster.
 - [docs/copilot-accounts.md](docs/copilot-accounts.md): copilot providers, sign-in and switching accounts.
 - [docs/adr/](docs/adr/): design decisions.
+- [docs/divergence.md](docs/divergence.md): the divergence watchdog and the restart from the last good time.
+- [docs/references.md](docs/references.md): the methods AetherCFD implements, and their references.
 - [docs/vision/roadmap.md](docs/vision/roadmap.md): the roadmap.
+- [CONTRIBUTING.md](CONTRIBUTING.md): reporting bugs, setting up for development, and open tasks.
 - [CHANGELOG.md](CHANGELOG.md): changes.
 
 ## Development
@@ -220,3 +229,30 @@ uv run python packaging/install.py                # install it with Start-menu a
 
 The headless CLI is `aethercfd` from source and `aethercfd-cli.exe` in the packaged app: `doctor`, `open`,
 `run`, `runs`, `control`, `set`, `report`, `clusters`, `copilot` and `ml-setup`.
+
+## Citing
+
+If you use AetherCFD Studio in your work, please cite it. GitHub's "Cite this repository" button gives the
+citation from [CITATION.cff](CITATION.cff). Please also cite OpenFOAM and the methods you used:
+[docs/references.md](docs/references.md) lists them.
+
+## Acknowledgements
+
+AetherCFD Studio is a front end. The simulations are done by OpenFOAM, developed by OpenCFD Ltd (ESI Group) and
+by The OpenFOAM Foundation, with their many contributors. The app is built on Qt and Qt for Python, the Qt
+Advanced Docking System, VTK and PyVista, pyqtgraph, NumPy, SciPy, Matplotlib, Cantera, CuPy, xterm.js and the
+other projects in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The methods it implements come from the
+authors in [docs/references.md](docs/references.md). Thank you to all of them.
+
+## License
+
+AetherCFD Studio is licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Siddharth Sharma. See
+[NOTICE](NOTICE).
+
+The test cases in `tests/fixtures/cases/` are copies of OpenFOAM tutorials and stay under the GNU GPL 3.0 or
+later. The packaged app includes third-party components under their own licenses:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+OPENFOAM® is a registered trade mark of OpenCFD Limited, producer and distributor of the OpenFOAM software via
+www.openfoam.com. AetherCFD Studio is not approved or endorsed by OpenCFD Limited or by The OpenFOAM
+Foundation.

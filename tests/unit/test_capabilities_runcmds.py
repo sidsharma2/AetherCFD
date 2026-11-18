@@ -12,7 +12,7 @@ from aethercfd.foamdict.validate import _parse_fatal
 from aethercfd.project.project import Project
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "cases"
-ESI = ForkProfile("esi-v2306", Family.ESI, "v2306", "LMAE-OpenFOAM", "/a/etc/bashrc", "/a", True)
+ESI = ForkProfile("esi-v2306", Family.ESI, "v2306", "Ubuntu-OpenFOAM", "/a/etc/bashrc", "/a", True)
 
 
 def test_parse_esi_list_formats():

@@ -45,7 +45,39 @@ GITHUB_ASSET_LIMIT = 2 * GiB  # GitHub release assets must be under 2 GiB each
 DEFAULT_MIN_COMMIT_GB = 12.0  # measured peak of a full build is several GB; keep a margin for the rest of Windows
 RELEASE_EXTRAS = {"install.py": ROOT / "packaging" / "install.py",
                   "Install AetherCFD.cmd": ROOT / "packaging" / "Install AetherCFD.cmd",
-                  "INSTALL.md": ROOT / "INSTALL.md"}
+                  "INSTALL.md": ROOT / "INSTALL.md",
+                  "LICENSE": ROOT / "LICENSE",
+                  "NOTICE": ROOT / "NOTICE",
+                  "THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md"}
+# license texts that no package metadata carries: PySide6's wheel ships only Qt's commercial license file
+EXTRA_LICENSES = {"licenses/Qt-PySide6/LGPL-3.0.txt": ROOT / "packaging" / "licenses" / "LGPL-3.0.txt",
+                  "licenses/Qt-PySide6/GPL-3.0.txt": ROOT / "packaging" / "licenses" / "GPL-3.0.txt"}
+_LICENSE_FILE = re.compile(r"(^|/)(licen[cs]e|copying|notice|authors)[^/]*$", re.IGNORECASE)
+
+
+def third_party_licenses() -> dict[str, bytes]:
+    """Every license, copying, notice and authors file of the Python packages in the build environment (the
+    packaged app is frozen from it), plus Python's own license and the GNU texts, as {zip path: bytes}."""
+    from importlib import metadata
+
+    out: dict[str, bytes] = {}
+    for dist in metadata.distributions():
+        name = dist.metadata["Name"] or "unknown"
+        for f in dist.files or []:
+            p = str(f).replace("\\", "/")
+            if ".dist-info/" not in p or not _LICENSE_FILE.search(p):
+                continue
+            rel = p.split(".dist-info/", 1)[1]
+            try:
+                out[f"licenses/{name}-{dist.version}/{rel}"] = Path(f.locate()).read_bytes()
+            except OSError:
+                continue
+    py = Path(sys.base_prefix) / "LICENSE.txt"
+    if py.is_file():
+        out["licenses/Python/LICENSE.txt"] = py.read_bytes()
+    for name, src in EXTRA_LICENSES.items():
+        out[name] = src.read_bytes()
+    return out
 # files the spec bundles by path: a missing one would only show up as a broken feature in the built app
 SPEC_INPUTS = ["packaging/aethercfd.spec", "packaging/entry_gui.py", "packaging/entry_cli.py",
                "src/aethercfd/studio/resources/aethercfd.ico", "src/aethercfd/ml/pinn_worker.py",
@@ -166,6 +198,8 @@ def preflight_problems(cpu_only: bool, *, root: Path = ROOT) -> list[str]:
                 terminal_asset_problems(root / "src" / "aethercfd" / "studio" / "resources" / "xterm",
                                         verify_hashes=True)]
     problems += [f"missing {rel} (the spec bundles it)" for rel in SPEC_INPUTS if not (root / rel).is_file()]
+    shipped = [p.relative_to(ROOT).as_posix() for p in (*RELEASE_EXTRAS.values(), *EXTRA_LICENSES.values())]
+    problems += [f"missing {rel} (the release zip ships it)" for rel in shipped if not (root / rel).is_file()]
     import importlib.util
 
     needed = ["PyInstaller", "winpty"] + ([] if cpu_only else ["cupy"])
@@ -390,7 +424,8 @@ def check(dist: Path = DIST, cpu_only: bool = False) -> int:
 # ------------------------------------------------------------------------------------------- 6. zip
 def make_zip(dist: Path = DIST, out_dir: Path = ROOT / "build", ver: str | None = None,
              extras: dict[str, Path] | None = None, suffix: str = "") -> Path:
-    """AetherCFD-<version>-win64.zip: AetherCFD/ (the app), the installers and INSTALL.md at the top level."""
+    """AetherCFD-<version>-win64.zip: AetherCFD/ (the app), the installers, INSTALL.md, LICENSE, NOTICE and
+    THIRD_PARTY_NOTICES.md at the top level, and licenses/ with each bundled component's license text."""
     if not (dist / "AetherCFD.exe").is_file():
         raise FileNotFoundError(f"no packaged app in {dist}; run packaging/build.py first")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -405,6 +440,9 @@ def make_zip(dist: Path = DIST, out_dir: Path = ROOT / "build", ver: str | None 
             if name.lower().endswith(".cmd"):  # cmd.exe wants CRLF; git may have stored it with LF
                 data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
             z.writestr(name, data)
+        if extras is None:  # the real release: every bundled component's license text (THIRD_PARTY_NOTICES.md)
+            for name, data in sorted(third_party_licenses().items()):
+                z.writestr(name, data)
     tmp.replace(out)
     return out
 

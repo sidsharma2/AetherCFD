@@ -61,5 +61,5 @@ Never hide the generated OpenFOAM case. The project tree should always expose 0/
 Add integrated version control and reproducibility. Every run captures solver version, OpenFOAM distribution/version, Git commit, local modified files, compiler, CUDA version, GPU, CPU, operating system, environment variables, libraries, mesh hash, geometry hash, dictionaries, random seeds, ML model hash, and dataset provenance. Users should be able to reproduce or branch any prior run.
 
 ## Added later by the owner
-- Integrate the group's cfd_agents (D:\Research-Software\projects\repository-capability-lab\agent-architecture\cfd_agents: Betty, Bill, Bob, Connie, Larry, Murphy, Reggie, Darwin) and create a guided, step-by-step workflow that makes OpenFOAM really easy to use, and make sure it is done correctly.
+- Integrate the group's cfd_agents (Betty, Bill, Bob, Connie, Larry, Murphy, Reggie, Darwin) and create a guided, step-by-step workflow that makes OpenFOAM really easy to use, and make sure it is done correctly.
 - Must be robust and easy for beginners and for AI agents; shareable with other students in the research group; work with other AI providers (e.g. Codex) as well as Claude.

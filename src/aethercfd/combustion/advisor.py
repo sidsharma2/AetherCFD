@@ -108,8 +108,8 @@ def advise(s: Situation) -> list[Advice]:
     a.why += ["chemistry pre-tabulated in mixture fraction and scalar dissipation (or progress variable): cost "
               "independent of mechanism size, so detailed CRECK mechanisms become affordable",
               "AetherCFD's Combustion panel can generate counterflow flamelets with Cantera"]
-    a.caveats += ["not in stock OpenFOAM: needs an external solver/library (e.g. the CRECK flamelet model in your "
-                  "RPL project) and a presumed-PDF integration step",
+    a.caveats += ["not in stock OpenFOAM: needs an external solver/library (e.g. a CRECK flamelet "
+                  "library) and a presumed-PDF integration step",
                   "slow processes (NO formation, soot) need extra transported variables"]
     out.append(a)
     # turbulence + chemistry for all

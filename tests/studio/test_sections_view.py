@@ -1,8 +1,10 @@
 """Sections, views, flow paths and the Smooth / Cells toggle of the 3D viewport.
 
-The fixture cavity checks the controls; the scratch cases (a multi-region CHT probe and a decomposed 3D
-probe, skipped when absent) check them on real 3D results and write Smooth vs Cells screenshots of the same
-section and contours (into tmp_path, and into $AETHERCFD_REPORT_DIR when it is set).
+The fixture cavity checks the controls; two local cases (a multi-region CHT case with a probe-tip patch and
+a dilution-air inlet, and a decomposed 3-D jet case) check them on real 3D results and write Smooth vs Cells
+screenshots of the same section and contours (into tmp_path, and into $AETHERCFD_REPORT_DIR when it is set).
+The local cases live under $AETHERCFD_TEST_CASES (folders cht_multiregion and decomposed_3d, or the paths in
+$AETHERCFD_TEST_CHT_CASE / $AETHERCFD_TEST_3D_CASE); the tests skip when they are not set or not there.
 """
 
 from __future__ import annotations
@@ -23,9 +25,19 @@ from aethercfd.studio.panels import register_builtin_panels
 from aethercfd.studio.shell.main_window import MainWindow
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "cases" / "esi_cavity"
-SCRATCH = Path("D:/OpenFOAM/_aethercfd_scratch")
-CHT = SCRATCH / "cht_r22_safe_commissioning"
-PROBE = SCRATCH / "revb1_probe" / "case_g2h_rs3"
+
+
+def _local_case(env: str, default: str) -> Path | None:
+    """A case under $AETHERCFD_TEST_CASES (or the absolute path in ``env``); None when nothing is set."""
+    root = os.environ.get("AETHERCFD_TEST_CASES")
+    rel = os.environ.get(env)
+    if rel and Path(rel).is_absolute():
+        return Path(rel)
+    return Path(root) / (rel or default) if root else None
+
+
+CHT = _local_case("AETHERCFD_TEST_CHT_CASE", "cht_multiregion")
+JET3D = _local_case("AETHERCFD_TEST_3D_CASE", "decomposed_3d")
 
 
 def _app(qtbot, case: Path, *, create_project: bool = True):
@@ -227,7 +239,9 @@ def _frame_start(v, frac: float = 0.3) -> None:
     v.frame_bounds(b, padding=0.05)
 
 
-def _real(qtbot, case: Path, tmp_path, monkeypatch):
+def _real(qtbot, case: Path | None, tmp_path, monkeypatch):
+    if case is None:
+        pytest.skip("set AETHERCFD_TEST_CASES to a folder of local test cases")
     if not (case / "system" / "controlDict").is_file():
         pytest.skip(f"{case} is not here")
     monkeypatch.setenv("AETHERCFD_CONFIG_DIR", str(tmp_path / "cfg"))
@@ -238,7 +252,7 @@ def _real(qtbot, case: Path, tmp_path, monkeypatch):
 @pytest.mark.timeout(1800)  # two big real cases: minutes when the machine is busy
 def test_cht_probe_tip_section_and_dilution_paths(qtbot, tmp_path, monkeypatch):
     """'show me a section through the probe tip and the flow paths from the dilution inlet, with the cells
-    visible' on the multi-region CHT probe."""
+    visible' on a multi-region CHT case with a probe-tip patch."""
     v, sv, a = _real(qtbot, CHT, tmp_path, monkeypatch)
     dirs = _report(tmp_path)
     try:
@@ -277,8 +291,8 @@ def test_cht_probe_tip_section_and_dilution_paths(qtbot, tmp_path, monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.timeout(1800)  # two big real cases: minutes when the machine is busy
-def test_decomposed_probe_ortho_sections_smooth_vs_cells(qtbot, tmp_path, monkeypatch):
-    v, sv, a = _real(qtbot, PROBE, tmp_path, monkeypatch)
+def test_decomposed_3d_ortho_sections_smooth_vs_cells(qtbot, tmp_path, monkeypatch):
+    v, sv, a = _real(qtbot, JET3D, tmp_path, monkeypatch)
     dirs = _report(tmp_path)
     try:
         assert v.show_field("T").startswith("showing")
@@ -290,16 +304,16 @@ def test_decomposed_probe_ortho_sections_smooth_vs_cells(qtbot, tmp_path, monkey
         assert all(f"stage:{s['id']}@lines" in v.stage_info for s in v._sections())
         v.set_view("iso")
         _frame_start(v)
-        _shot(v, dirs, "probe_ortho_sections_T_smooth")
+        _shot(v, dirs, "jet3d_ortho_sections_T_smooth")
         assert v.scalar_bar.GetTitle().endswith("smoothed")
         smooth_iso = next(i for k, i in v.stage_info.items() if i.get("type") == "contour")
         a.viewport_smoothing("cells", True)
         _drawn(qtbot, v)
         cells_iso = next(i for k, i in v.stage_info.items() if i.get("type") == "contour")
         assert "per cell" in cells_iso["label"] and "per cell" not in smooth_iso["label"]
-        _shot(v, dirs, "probe_ortho_sections_T_cells")
+        _shot(v, dirs, "jet3d_ortho_sections_T_cells")
         a.quad(True)
-        _shot_quad = dirs[0] / "probe_quad_view.png"
+        _shot_quad = dirs[0] / "jet3d_quad_view.png"
         v.plotter.screenshot(str(_shot_quad))
         for d in dirs[1:]:
             shutil.copy2(_shot_quad, d / _shot_quad.name)
@@ -309,6 +323,6 @@ def test_decomposed_probe_ortho_sections_smooth_vs_cells(qtbot, tmp_path, monkey
         _drawn(qtbot, v)
         fi = next(i for k, i in v.stage_info.items() if k.startswith("stage:flow"))
         assert fi["cells"] > 0
-        _shot(v, dirs, "probe_flow_paths_from_inlets")
+        _shot(v, dirs, "jet3d_flow_paths_from_inlets")
     finally:
         _close(sv)

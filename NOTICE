@@ -1,0 +1,17 @@
+AetherCFD Studio
+Copyright 2026 Siddharth Sharma
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The modules in src/aethercfd/_vendor/ come from cfd_agents (commit 820a5f9), an earlier project by the same
+author, and are distributed here under the same license.
+
+The test cases in tests/fixtures/cases/ are copies of OpenFOAM tutorials and remain under the GNU General
+Public License version 3 or later (see tests/fixtures/cases/README.md and tests/fixtures/cases/COPYING).
+
+The packaged application includes third-party software under its own licenses. THIRD_PARTY_NOTICES.md lists
+each component, and the release zip holds their license texts in the licenses/ folder.
+
+OPENFOAM(R) is a registered trade mark of OpenCFD Limited, producer and distributor of the OpenFOAM software
+via www.openfoam.com. AetherCFD Studio runs OpenFOAM as a separate program. It is not approved or endorsed by
+OpenCFD Limited or by The OpenFOAM Foundation.

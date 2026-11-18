@@ -1,0 +1,70 @@
+cff-version: 1.2.0
+message: "If you use AetherCFD Studio in your work, please cite it as below, and cite OpenFOAM and the methods you used (see docs/references.md)."
+type: software
+title: "AetherCFD Studio: a Windows desktop workbench for OpenFOAM"
+abstract: >-
+  AetherCFD Studio is a Windows desktop application for OpenFOAM, which runs in WSL2. It sets up, meshes,
+  checks, runs and post-processes OpenFOAM cases; every change is a planned, approved and journalled edit
+  of the real case files. It includes verification tools (grid convergence index), run guards with a
+  divergence watchdog, modal analysis, surrogates, PINN field reconstruction and an optional AI copilot
+  whose every change needs the user's approval.
+authors:
+  - given-names: Siddharth
+    family-names: Sharma
+    affiliation: "University of British Columbia"
+version: "0.1.0.dev0"
+license: Apache-2.0
+repository-code: "https://github.com/sidsharma2/AetherCFD"
+keywords:
+  - OpenFOAM
+  - computational fluid dynamics
+  - CFD
+  - WSL
+  - physics-informed neural networks
+  - verification
+references:
+  - type: article
+    title: "A tensorial approach to computational continuum mechanics using object-oriented techniques"
+    authors:
+      - family-names: Weller
+        given-names: H. G.
+      - family-names: Tabor
+        given-names: G.
+      - family-names: Jasak
+        given-names: H.
+      - family-names: Fureby
+        given-names: C.
+    journal: "Computers in Physics"
+    volume: 12
+    issue: 6
+    start: 620
+    end: 631
+    year: 1998
+    doi: "10.1063/1.168744"
+  - type: article
+    title: "PyVista: 3D plotting and mesh analysis through a streamlined interface for the Visualization Toolkit (VTK)"
+    authors:
+      - family-names: Sullivan
+        given-names: C. Bane
+      - family-names: Kaszynski
+        given-names: Alexander
+    journal: "Journal of Open Source Software"
+    volume: 4
+    issue: 37
+    start: 1450
+    year: 2019
+    doi: "10.21105/joss.01450"
+  - type: software
+    title: "Cantera: An object-oriented software toolkit for chemical kinetics, thermodynamics, and transport processes"
+    authors:
+      - family-names: Goodwin
+        given-names: David G.
+      - family-names: Moffat
+        given-names: Harry K.
+      - family-names: Schoegl
+        given-names: Ingmar
+      - family-names: Speth
+        given-names: Raymond L.
+      - family-names: Weber
+        given-names: Bryan W.
+    url: "https://www.cantera.org"

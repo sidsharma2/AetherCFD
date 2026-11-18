@@ -1,5 +1,5 @@
 # Vendored from cfd_agents@820a5f9 case/dat_parser.py
-# (D:/Research-Software/projects/repository-capability-lab/agent-architecture). Never import
+# (the agent-architecture repository by Siddharth Sharma). Never import
 # cfd_agents itself -- see docs/adr/0001-reuse-cfd-agents.md. Local edits are marked 'AetherCFD:'.
 """Generic parser for OpenFOAM function-object `.dat` output — real,
 tab-delimited, `#`-prefixed-header formats, confirmed live this round

@@ -18,7 +18,9 @@ Isolation:
 - Nothing runs OpenFOAM and nothing is sent to an AI service. The copilot's sign-in status is not asked
   for: the status line says so.
 
-Sources of the cases (read only): AETHER_SCREEN_CASES, default D:/OpenFOAM/_aethercfd_scratch/toys.
+Sources of the cases (read only): AETHER_SCREEN_CASES, default build/toys/cases (where
+scripts/toy_campaign.py writes them; SOURCES names the solved folders of one campaign, so edit it to
+match yours). AETHER_SCREEN_DISTRO names the WSL distro written into the isolated settings.
 
 Known problem (2026-11-15): on the CPU the PINN worker is killed after about 30 to 45 s and the tab reports
 "stopped without a result", so the committed 10-analysis-pinn.png shows the tab before training. On the GPU a
@@ -42,7 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs" / "screenshots"
 WORK = ROOT / "build" / "screens"
 CASES = WORK / "cases"
-TOYS = Path(os.environ.get("AETHER_SCREEN_CASES", "D:/OpenFOAM/_aethercfd_scratch/toys"))
+TOYS = Path(os.environ.get("AETHER_SCREEN_CASES") or ROOT / "build" / "toys" / "cases")
 SOURCES = {  # short name -> solved toy case
     "pitzDaily": "esi_pitzDaily_1010_072737",
     "forwardStep": "esi_forwardStep_1010_072835",
@@ -66,7 +68,7 @@ def _isolate() -> None:
         d.mkdir(parents=True)
     os.environ["AETHERCFD_CONFIG_DIR"] = str(cfg)
     os.environ["AETHERCFD_CACHE_DIR"] = str(cache)
-    distro = os.environ.get("AETHER_SCREEN_DISTRO", "LMAE-OpenFOAM")
+    distro = os.environ.get("AETHER_SCREEN_DISTRO", "Ubuntu-22.04")
     ml = os.environ.get("AETHERCFD_ML_PYTHON", "")
     lines = [
         'theme = "dark"',

@@ -10,11 +10,12 @@ from aethercfd.backend.wsl.forks import Family
 from aethercfd.backend.wsl.runner import WslRunner
 from aethercfd.foamdict.validate import validate_files
 from aethercfd.scripting.api import load_forks
-from tests.wsl._forks import by_family
+from tests.wsl._forks import DISTRO, SCRATCH_ROOT, by_family, needs_distro, needs_scratch
 
-pytestmark = [pytest.mark.wsl, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL")]
+pytestmark = [pytest.mark.wsl, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL"),
+              needs_distro, needs_scratch]
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "cases"
-SCRATCH = Path(r"D:\OpenFOAM\_aethercfd_scratch\tests")
+SCRATCH = SCRATCH_ROOT
 
 
 @pytest.fixture(scope="module")
@@ -22,7 +23,7 @@ def ctx(tmp_path_factory):
     import os
 
     os.environ["AETHERCFD_CACHE_DIR"] = str(tmp_path_factory.mktemp("cache"))
-    r = WslRunner("LMAE-OpenFOAM")
+    r = WslRunner(DISTRO)
     return r, by_family(load_forks(r, refresh=True))
 
 

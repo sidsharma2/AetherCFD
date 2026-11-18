@@ -1,6 +1,6 @@
-"""Spike C — WSL behaviour the run manager depends on. Only touches
-D:\\OpenFOAM\\_aethercfd_scratch\\spikeC (= /mnt/d/OpenFOAM/_aethercfd_scratch/spikeC) and never calls
-wsl --shutdown / --terminate.
+"""Spike C — WSL behaviour the run manager depends on. Only touches the scratch folder in
+$AETHERCFD_TEST_SCRATCH (a Windows folder, seen from WSL under /mnt/<drive>) and never calls
+wsl --shutdown / --terminate. $AETHERCFD_TEST_DISTRO names the distro.
 
   1. fork preludes (ESI v2306, Foundation v14) and the mixed-fork refusal (exit 97)
   2. argv containing spaces survives wsl.exe
@@ -20,9 +20,13 @@ import subprocess
 import time
 from pathlib import Path
 
-DISTRO = "LMAE-OpenFOAM"
-WIN_ROOT = Path(r"D:\OpenFOAM\_aethercfd_scratch\spikeC")
-WSL_ROOT = "/mnt/d/OpenFOAM/_aethercfd_scratch/spikeC"
+if not (os.environ.get("AETHERCFD_TEST_DISTRO") and os.environ.get("AETHERCFD_TEST_SCRATCH")):
+    raise SystemExit("set AETHERCFD_TEST_DISTRO (WSL distro with OpenFOAM) and AETHERCFD_TEST_SCRATCH "
+                     "(a Windows folder this spike may write into)")
+DISTRO = os.environ["AETHERCFD_TEST_DISTRO"]
+WIN_ROOT = Path(os.environ["AETHERCFD_TEST_SCRATCH"]).resolve() / "spikeC"
+_w = WIN_ROOT.as_posix()
+WSL_ROOT = f"/mnt/{_w[0].lower()}{_w[2:]}"
 FORKS = {
     "esi": {"bashrc": "/usr/lib/openfoam/openfoam2306/etc/bashrc", "dir": "/usr/lib/openfoam/openfoam2306"},
     "of14": {"bashrc": "/opt/openfoam14/etc/bashrc", "dir": "/opt/openfoam14"},
@@ -82,7 +86,8 @@ if 1 in ONLY:
 
 # ------------------------------------------------------------------ 2. argv with spaces
 if 2 in ONLY:
-    spacey = "/mnt/d/OpenFOAM/RPL Apollo Lunar Module Ascent Engine"
+    (WIN_ROOT / "a folder with spaces").mkdir(parents=True, exist_ok=True)
+    spacey = f"{WSL_ROOT}/a folder with spaces"
     rc, out = wsl('printf "[%s]\\n" "$1"; ls -d "$1" >/dev/null && echo EXISTS\n', spacey, "second arg", name="argv")
     check("argv with spaces survives wsl.exe", f"[{spacey}]" in out and "EXISTS" in out, out.strip())
 

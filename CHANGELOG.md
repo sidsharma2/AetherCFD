@@ -126,7 +126,7 @@ Three hardening passes on top of the features below, merged in `release/hardenin
 
 ### Added
 
-- **Several versions of one fork side by side (ESI v2306 + v2606).** Tested on LMAE-OpenFOAM with v2606 (2606.0~rc2
+- **Several versions of one fork side by side (ESI v2306 + v2606).** Tested on a WSL Ubuntu 22.04 distro with v2606 (2606.0~rc2
   apt build) installed next to v2306 and Foundation 14: the fork probe finds all three, the new-case wizard lists
   both ESI versions, and the 7 ESI toy cases, the live template/run/codegen tests and the copilot note all pass on
   v2606. `scripts/toy_campaign.py --fork esi-v2606` picks the version to run; the live tests take
@@ -196,7 +196,7 @@ Three hardening passes on top of the features below, merged in `release/hardenin
   file could be planned. It now reads to the matching `)`.
 - **Runs: a healthy run is no longer marked "lost" by an unanswered liveness probe.** Under heavy host load the
   `alive` probe can return nothing or garbled output; that used to end a running job as `lost` (seen on
-  2026-10-11: a REV B.1 probe run at iteration ~326 while runner.sh, mpirun and all 8 rhoSimpleFoam ranks were
+  2026-10-11: a 1M-cell decomposed 3-D case at iteration ~326 while runner.sh, mpirun and all 8 rhoSimpleFoam ranks were
   computing). `RunManager.is_alive` now answers *unknown* (`None`) unless the reply is exactly `DEAD` or a complete
   `ALIVE <start> <boot>` line (and the probe exited cleanly), and a run is only declared lost after two consecutive
   definite DEAD replies (an unknown reply neither counts nor resets; the second probe follows ~5 s after the first).

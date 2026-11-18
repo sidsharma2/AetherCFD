@@ -4,7 +4,17 @@ dynamic = ["version"]
 description = "AetherCFD Studio: a desktop workbench that drives OpenFOAM without hiding it"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-authors = [{ name = "AetherCFD Studio authors" }]
+authors = [{ name = "Siddharth Sharma" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+keywords = ["OpenFOAM", "CFD", "computational fluid dynamics", "WSL", "PINN", "Qt"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = [
     # --- headless core (must never import Qt) ---
     "pydantic>=2.8,<3",
@@ -78,7 +88,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers --basetemp=build/pytest-tmp"
 markers = [
     "corpus: read-only tests over the real OpenFOAM cases under D:\\OpenFOAM",
-    "wsl: needs the LMAE-OpenFOAM WSL distro (fast)",
+    "wsl: needs the WSL distro named by AETHERCFD_TEST_DISTRO (fast)",
     "wsl_slow: needs WSL and runs a solver (minutes)",
     "gl: needs a real OpenGL context (not the offscreen platform)",
     "slow: takes more than a few seconds (e.g. a Cantera flame solve)",

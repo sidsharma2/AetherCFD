@@ -11,3 +11,6 @@ build/
 spikes/out/
 src/aethercfd/studio/resources/xterm/node_modules/
 .ml-env/
+
+# local agent worktrees
+/.claude/

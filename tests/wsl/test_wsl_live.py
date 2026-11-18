@@ -1,4 +1,4 @@
-"""Live checks against the LMAE-OpenFOAM distro (marker: wsl). They boot the distro if it is stopped,
+"""Live checks against the distro named by $AETHERCFD_TEST_DISTRO (marker: wsl). They boot the distro if it is stopped,
 run only read-only commands, and never shut anything down."""
 
 from __future__ import annotations
@@ -9,10 +9,9 @@ import pytest
 
 from aethercfd.backend.wsl.forks import EXIT_ALREADY_SOURCED, Family, prelude, probe_forks
 from aethercfd.backend.wsl.runner import WslRunner
-from tests.wsl._forks import by_family, expected_version
+from tests.wsl._forks import DISTRO, by_family, expected_version, needs_distro
 
-pytestmark = [pytest.mark.wsl, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL")]
-DISTRO = "LMAE-OpenFOAM"
+pytestmark = [pytest.mark.wsl, pytest.mark.skipif(shutil.which("wsl.exe") is None, reason="no WSL"), needs_distro]
 
 
 @pytest.fixture(scope="module")
@@ -43,7 +42,7 @@ def test_mixed_forks_are_refused(runner, forks):
 
 
 def test_argv_with_spaces_and_quotes_survives(runner):
-    args = ["/mnt/d/OpenFOAM/RPL Apollo Lunar Module Ascent Engine", 'say "hi"', "it's", ""]
+    args = ["/mnt/c/cases/a case with spaces", 'say "hi"', "it's", ""]
     res = runner.run_script('for a in "$@"; do printf "[%s]\\n" "$a"; done\n', args)
     assert res.stdout.splitlines() == [f"[{a}]" for a in args]
 
